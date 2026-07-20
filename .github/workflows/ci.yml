@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  local-runtime:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Lint
+        run: python -m ruff check environment_runtime tests
+      - name: Typecheck
+        run: python -m mypy environment_runtime
+      - name: Test
+        run: python -m pytest

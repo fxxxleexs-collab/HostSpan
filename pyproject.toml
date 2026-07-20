@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "environment-runtime"
+version = "0.1.0"
+description = "Stateful development environment runtime with workspaces, tasks, interactions, artifacts, and APIs."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{name = "OpenAI Codex"}]
+dependencies = [
+  "fastapi>=0.115,<1",
+  "pydantic>=2.8,<3",
+  "pydantic-settings>=2.3,<3",
+  "sqlalchemy>=2.0,<3",
+  "aiosqlite>=0.20,<1",
+  "typer>=0.12,<1",
+  "uvicorn>=0.30,<1",
+  "httpx>=0.27,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2,<9",
+  "pytest-asyncio>=0.23,<1",
+  "ruff>=0.5,<1",
+  "mypy>=1.10,<2",
+]
+
+[project.scripts]
+envrt = "environment_runtime.main:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["environment_runtime*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+asyncio_mode = "auto"
+markers = [
+  "unit: unit tests",
+  "integration: local integration tests",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["B008", "E501"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+check_untyped_defs = true
+strict_optional = true
+ignore_missing_imports = true
