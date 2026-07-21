@@ -2,6 +2,7 @@ from .artifact import ArtifactService
 from .endpoint import EndpointService
 from .environment import EnvironmentService
 from .interaction import InteractionService
+from .recovery import RecoveryService
 from .security import WriterLeaseService
 from .session import SessionService
 from .task import TaskService
@@ -12,6 +13,7 @@ __all__ = [
     "EndpointService",
     "EnvironmentService",
     "InteractionService",
+    "RecoveryService",
     "SessionService",
     "TaskService",
     "WorkspaceService",
