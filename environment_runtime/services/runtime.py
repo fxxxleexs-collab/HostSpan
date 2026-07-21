@@ -27,6 +27,7 @@ from environment_runtime.persistence.repositories import (
 from environment_runtime.providers.execution.local_process import LocalProcessHandle
 from environment_runtime.providers.registry import ProviderRegistry
 from environment_runtime.providers.session.local_pty import LocalSessionHandle
+from environment_runtime.services.recovery import RecoveryService
 
 
 @dataclass
@@ -61,7 +62,7 @@ async def build_runtime(settings: RuntimeSettings) -> RuntimeContext:
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     await create_schema(engine)
     providers = ProviderRegistry()
-    return RuntimeContext(
+    context = RuntimeContext(
         settings=settings,
         engine=engine,
         session_factory=session_factory,
@@ -86,6 +87,11 @@ async def build_runtime(settings: RuntimeSettings) -> RuntimeContext:
         ),
         leases=SqlAlchemyRepository(session_factory, "writer_lease", WriterLease.model_validate, "lease_id"),
     )
+    # A freshly built context has no live handles, so any persisted task/session
+    # claiming to be active is stale (its handle died with the previous process).
+    # Reconcile before serving so the DB no longer lies. See RecoveryService.
+    await RecoveryService(context).reconcile_on_startup()
+    return context
 
 
 async def shutdown_runtime(context: RuntimeContext) -> None:
