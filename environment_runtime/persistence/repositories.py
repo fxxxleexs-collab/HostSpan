@@ -127,3 +127,24 @@ class LogRepository:
                 {"stream": row.stream, "offset": row.offset, "chunk": row.chunk}
                 for row in result.scalars().all()
             ]
+
+    async def resume_offset(self, task_id: str) -> int:
+        """Byte position at which to resume tailing a detached task's log file.
+
+        Log records store the *start* offset of each chunk, so the resume point
+        is the last record's offset plus its chunk length (0 if no records).
+        Reconnect seeks the log file to this position so already-persisted bytes
+        are not re-appended.
+        """
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(LogRecord.offset, LogRecord.chunk)
+                .where(LogRecord.task_id == task_id)
+                .order_by(LogRecord.offset.desc())
+                .limit(1)
+            )
+            row = result.first()
+            if row is None:
+                return 0
+            offset, chunk = row
+            return int(offset) + len(chunk)
