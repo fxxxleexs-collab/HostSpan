@@ -34,11 +34,27 @@ class RecoveryService:
         return {"tasks": tasks_recovered, "sessions": sessions_recovered}
 
     async def _reconcile_tasks(self) -> int:
+        # Imported lazily to avoid a module-load cycle (task -> runtime -> recovery).
+        from environment_runtime.services.task import TaskService
+
         now = datetime.now(UTC)
         count = 0
         for task in await self.context.tasks.list():
             if task.state not in _TASK_RECOVERABLE_STATES:
                 continue
+            backend = (task.backend_ref or {}).get("backend")
+            if backend == "local_detached":
+                # Try to reclaim a surviving detached task (finalize from its
+                # status file, or re-watch it as still running). Recovery runs on
+                # every startup, so a failure to reclaim must not crash the boot.
+                try:
+                    reclaimed = await TaskService(self.context).reattach_on_startup(task)
+                except Exception:
+                    reclaimed = False
+                if reclaimed:
+                    count += 1
+                    continue
+            # Fallback: cannot reclaim -> mark lost so the DB stays honest.
             task.state = TaskState.LOST
             task.finished_at = now
             await self.context.tasks.upsert(task)

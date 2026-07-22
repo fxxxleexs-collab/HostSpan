@@ -61,7 +61,11 @@ async def build_runtime(settings: RuntimeSettings) -> RuntimeContext:
     engine = create_engine(settings)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     await create_schema(engine)
-    providers = ProviderRegistry()
+    # Ensure detached-task log/status directories exist.
+    data_dir = settings.runtime.data_dir
+    (data_dir / "logs").mkdir(parents=True, exist_ok=True)
+    (data_dir / "status").mkdir(parents=True, exist_ok=True)
+    providers = ProviderRegistry(settings)
     context = RuntimeContext(
         settings=settings,
         engine=engine,
@@ -96,7 +100,11 @@ async def build_runtime(settings: RuntimeSettings) -> RuntimeContext:
 
 async def shutdown_runtime(context: RuntimeContext) -> None:
     for task_handle in list(context.active.task_handles.values()):
-        if hasattr(task_handle, "cancel"):
+        # Detached (persistent) handles survive a shutdown: stop watching but
+        # leave the subprocess running. Others are killed as before.
+        if hasattr(task_handle, "detach"):
+            await task_handle.detach()
+        elif hasattr(task_handle, "cancel"):
             await task_handle.cancel()
     for session_handle in list(context.active.session_handles.values()):
         if hasattr(session_handle, "terminate"):

@@ -14,6 +14,8 @@ class RuntimeSection(BaseModel):
     data_dir: Path = Path("~/.environment-runtime").expanduser()
     log_level: str = "INFO"
     subscriber_queue_size: int = 1000
+    detached_poll_interval_seconds: float = 0.5
+    detached_kill_timeout_seconds: float = 5.0
 
 
 class SecuritySettings(BaseModel):
