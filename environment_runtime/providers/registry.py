@@ -6,15 +6,24 @@ from environment_runtime.config import RuntimeSettings
 from environment_runtime.providers.execution.local_detached import LocalDetachedExecutionProvider
 from environment_runtime.providers.execution.local_process import LocalProcessExecutionProvider
 from environment_runtime.providers.filesystem.local import LocalFilesystemProvider
+from environment_runtime.providers.filesystem.sftp import SFTPFilesystemProvider
 from environment_runtime.providers.session.local_pty import LocalSessionProvider
 from environment_runtime.providers.synchronization.snapshot import SnapshotSyncProvider
 from environment_runtime.providers.transport.local import LocalTransportProvider
+from environment_runtime.providers.transport.ssh import SSHTransportProvider
 
 
 class ProviderRegistry:
     def __init__(self, settings: RuntimeSettings | None = None) -> None:
-        self.transport = {"local": LocalTransportProvider()}
-        self.filesystem = {"local": LocalFilesystemProvider()}
+        ssh_transport = SSHTransportProvider()
+        self.transport: dict[str, Any] = {
+            "local": LocalTransportProvider(),
+            "ssh": ssh_transport,
+        }
+        self.filesystem: dict[str, Any] = {
+            "local": LocalFilesystemProvider(),
+            "sftp": SFTPFilesystemProvider(ssh_transport),
+        }
         # Execution providers have deliberately different start() shapes
         # (local_detached takes a task_id), so this map is dynamically dispatched.
         self.execution: dict[str, Any] = {"local_process": LocalProcessExecutionProvider()}

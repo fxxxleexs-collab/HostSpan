@@ -1,5 +1,5 @@
 from .artifact import Artifact
-from .endpoint import Endpoint, EndpointStatus
+from .endpoint import Endpoint, EndpointStatus, SSHEndpointConfig
 from .environment import Environment, EnvironmentState, ExecutionTarget
 from .interaction import InputRequest, InputRequestStatus, InputType, WriterLease
 from .session import InteractionState, Session, SessionState
@@ -29,6 +29,7 @@ __all__ = [
     "ReplicaState",
     "Session",
     "SessionState",
+    "SSHEndpointConfig",
     "Task",
     "TaskState",
     "Workspace",

@@ -12,6 +12,7 @@ from environment_runtime.services.runtime import build_runtime, shutdown_runtime
 async def runtime(tmp_path: Path):
     settings = RuntimeSettings(
         database={"url": f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}"},
+        runtime={"data_dir": tmp_path / "runtime-data"},
         security={"allowed_local_roots": [tmp_path]},
     )
     runtime = await build_runtime(settings)

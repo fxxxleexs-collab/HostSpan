@@ -53,6 +53,37 @@ def endpoint_add_local(name: str, root: str) -> None:
     asyncio.run(with_runtime(_run))
 
 
+@endpoint_app.command("add-ssh")
+def endpoint_add_ssh(
+    name: str,
+    hostname: str,
+    username: str,
+    known_hosts_file: str,
+    port: int = 22,
+    identity_file: str | None = None,
+    use_ssh_agent: bool = True,
+    proxy_jump: str | None = None,
+    connect_timeout: float = 15.0,
+    keepalive_interval: float = 20.0,
+) -> None:
+    async def _run(runtime):
+        result = await EndpointService(runtime).add_ssh(
+            name=name,
+            hostname=hostname,
+            username=username,
+            known_hosts_file=known_hosts_file,
+            port=port,
+            identity_file=identity_file,
+            use_ssh_agent=use_ssh_agent,
+            proxy_jump=proxy_jump,
+            connect_timeout=connect_timeout,
+            keepalive_interval=keepalive_interval,
+        )
+        print_json(result.model_dump(mode="json"))
+
+    asyncio.run(with_runtime(_run))
+
+
 @endpoint_app.command("list")
 def endpoint_list() -> None:
     async def _run(runtime):
