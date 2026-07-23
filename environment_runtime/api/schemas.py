@@ -8,6 +8,19 @@ class CreateLocalEndpointRequest(BaseModel):
     root: str
 
 
+class CreateSSHEndpointRequest(BaseModel):
+    name: str
+    hostname: str
+    username: str
+    known_hosts_file: str
+    port: int = 22
+    identity_file: str | None = None
+    use_ssh_agent: bool = True
+    proxy_jump: str | None = None
+    connect_timeout: float = 15.0
+    keepalive_interval: float = 20.0
+
+
 class CreateEnvironmentRequest(BaseModel):
     name: str
     endpoint_ids: list[str]

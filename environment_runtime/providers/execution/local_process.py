@@ -27,9 +27,10 @@ class LocalProcessHandle:
         await self.close()
 
     async def close(self) -> None:
-        for task in self.reader_tasks:
-            if not task.done():
-                task.cancel()
+        if self.process.returncode is None:
+            for task in self.reader_tasks:
+                if not task.done():
+                    task.cancel()
         for task in self.reader_tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
