@@ -5,6 +5,7 @@ from typing import Any
 from environment_runtime.config import RuntimeSettings
 from environment_runtime.providers.execution.local_detached import LocalDetachedExecutionProvider
 from environment_runtime.providers.execution.local_process import LocalProcessExecutionProvider
+from environment_runtime.providers.execution.ssh_detached import SSHDetachedExecutionProvider
 from environment_runtime.providers.filesystem.local import LocalFilesystemProvider
 from environment_runtime.providers.filesystem.sftp import SFTPFilesystemProvider
 from environment_runtime.providers.session.local_pty import LocalSessionProvider
@@ -34,5 +35,10 @@ class ProviderRegistry:
             self.execution["local_detached"] = LocalDetachedExecutionProvider(
                 log_dir=data_dir / "logs",
                 status_dir=data_dir / "status",
+                poll_interval=settings.runtime.detached_poll_interval_seconds,
+            )
+            self.execution["ssh_detached"] = SSHDetachedExecutionProvider(
+                transport=ssh_transport,
+                sftp=self.filesystem["sftp"],
                 poll_interval=settings.runtime.detached_poll_interval_seconds,
             )

@@ -43,7 +43,7 @@ class RecoveryService:
             if task.state not in _TASK_RECOVERABLE_STATES:
                 continue
             backend = (task.backend_ref or {}).get("backend")
-            if backend == "local_detached":
+            if backend in {"local_detached", "ssh_detached"}:
                 # Try to reclaim a surviving detached task (finalize from its
                 # status file, or re-watch it as still running). Recovery runs on
                 # every startup, so a failure to reclaim must not crash the boot.

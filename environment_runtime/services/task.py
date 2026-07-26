@@ -7,7 +7,7 @@ from pathlib import Path
 from environment_runtime.core.commands import CommandSpec
 from environment_runtime.core.errors import NotFoundError, ValidationError
 from environment_runtime.core.events import RuntimeEvent
-from environment_runtime.core.models import Task, TaskState
+from environment_runtime.core.models import Endpoint, Environment, ExecutionTarget, Task, TaskState
 from environment_runtime.services.runtime import RuntimeContext
 
 
@@ -50,8 +50,15 @@ class TaskService:
                 {"stream": stream, "offset": offset, "chunk": chunk, "task_id": task.task_id},
             )
 
+        environment, target, endpoint = await self._resolve_target(environment_id, target_id)
+
         if persistent:
+            if endpoint.provider_type == "ssh":
+                return await self._start_ssh_detached(task, command, cwd, on_output, endpoint)
             return await self._start_detached(task, command, cwd, on_output)
+
+        if target.provider == "ssh_process":
+            raise ValidationError("ssh_process execution is not implemented yet; use persistent=True")
 
         handle = await self.context.providers.execution["local_process"].start(
             command=command,
@@ -67,6 +74,23 @@ class TaskService:
         watcher = asyncio.create_task(self._watch_task(task.task_id))
         self.context.active.background_tasks.append(watcher)
         return task
+
+    async def _resolve_target(
+        self, environment_id: str, target_id: str
+    ) -> tuple[Environment, ExecutionTarget, Endpoint]:
+        environment = await self.context.environments.get(environment_id)
+        if environment is None:
+            raise NotFoundError(f"environment {environment_id} was not found")
+        target = next(
+            (item for item in environment.execution_targets if item.target_id == target_id),
+            None,
+        )
+        if target is None:
+            raise NotFoundError(f"target {target_id} was not found in environment {environment_id}")
+        endpoint = await self.context.endpoints.get(target.endpoint_id)
+        if endpoint is None:
+            raise NotFoundError(f"endpoint {target.endpoint_id} was not found")
+        return environment, target, endpoint
 
     async def _start_detached(
         self,
@@ -97,6 +121,45 @@ class TaskService:
         task.state = TaskState.RUNNING
         await self.context.tasks.upsert(task)
         await self._emit("task.started", task, {"pid": handle.pid, "persistent": True})
+        watcher = asyncio.create_task(self._watch_detached(task.task_id))
+        self.context.active.background_tasks.append(watcher)
+        return task
+
+    async def _start_ssh_detached(
+        self,
+        task: Task,
+        command: CommandSpec,
+        cwd: str | None,
+        on_output,
+        endpoint: Endpoint,
+    ) -> Task:
+        provider = self.context.providers.execution["ssh_detached"]
+        handle = await provider.start(
+            command=command,
+            cwd=cwd,
+            env=command.env,
+            on_output=on_output,
+            task_id=task.task_id,
+            endpoint=endpoint,
+        )
+        self.context.active.task_handles[task.task_id] = handle
+        task.backend_ref = {
+            "backend": "ssh_detached",
+            "endpoint_id": endpoint.endpoint_id,
+            "remote_pid": handle.remote_pid,
+            "remote_runtime_dir": endpoint.config.get("remote_runtime_dir", ".environment-runtime"),
+            "remote_launcher": provider._paths(task.task_id, endpoint)["launcher"],
+            "remote_log_file": handle.remote_log_file,
+            "remote_status_file": handle.remote_status_file,
+            "started_at": handle.started_at.isoformat(),
+        }
+        task.state = TaskState.RUNNING
+        await self.context.tasks.upsert(task)
+        await self._emit(
+            "task.started",
+            task,
+            {"pid": handle.remote_pid, "persistent": True, "backend": "ssh_detached"},
+        )
         watcher = asyncio.create_task(self._watch_detached(task.task_id))
         self.context.active.background_tasks.append(watcher)
         return task
@@ -184,9 +247,9 @@ class TaskService:
         reliably reclaimed (caller should mark it LOST).
         """
         ref = task.backend_ref or {}
-        if ref.get("backend") != "local_detached":
+        backend = ref.get("backend")
+        if backend not in {"local_detached", "ssh_detached"}:
             return False
-        provider = self.context.providers.execution["local_detached"]
         resume_offset = await self.context.log_repository.resume_offset(task.task_id)
         offset_counter = {"stdout": resume_offset}
 
@@ -200,7 +263,16 @@ class TaskService:
                 {"stream": stream, "offset": offset, "chunk": chunk, "task_id": task.task_id},
             )
 
-        outcome = await provider.reattach(task, on_output, resume_offset)
+        if backend == "ssh_detached":
+            endpoint_id = str(ref["endpoint_id"])
+            endpoint = await self.context.endpoints.get(endpoint_id)
+            if endpoint is None:
+                return False
+            provider = self.context.providers.execution["ssh_detached"]
+            outcome = await provider.reattach(task, endpoint, on_output, resume_offset)
+        else:
+            provider = self.context.providers.execution["local_detached"]
+            outcome = await provider.reattach(task, on_output, resume_offset)
         if outcome.finished:
             task.exit_code = outcome.exit_code
             task.finished_at = outcome.finished_at or datetime.now(UTC)

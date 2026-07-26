@@ -26,7 +26,13 @@ class EnvironmentService:
             targets.append(
                 ExecutionTarget(
                     endpoint_id=endpoint.endpoint_id,
-                    provider="local_process" if endpoint.provider_type == "local" else "unknown",
+                    provider=(
+                        "local_process"
+                        if endpoint.provider_type == "local"
+                        else "ssh_process"
+                        if endpoint.provider_type == "ssh"
+                        else "unknown"
+                    ),
                     capabilities=endpoint.capabilities,
                 )
             )
