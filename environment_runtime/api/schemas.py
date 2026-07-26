@@ -60,11 +60,21 @@ class CreateSessionRequest(BaseModel):
     target_id: str
     argv: list[str]
     cwd: str | None = None
+    env: dict[str, str] = Field(default_factory=dict)
+    backend: str | None = None
+    cols: int = 120
+    rows: int = 30
+    term_type: str = "xterm-256color"
 
 
 class WriteSessionRequest(BaseModel):
     owner_id: str
     data: str
+
+
+class ResizeSessionRequest(BaseModel):
+    cols: int
+    rows: int
 
 
 class CreateInputRequestRequest(BaseModel):
