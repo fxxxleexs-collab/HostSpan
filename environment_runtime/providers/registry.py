@@ -9,6 +9,7 @@ from environment_runtime.providers.execution.ssh_detached import SSHDetachedExec
 from environment_runtime.providers.filesystem.local import LocalFilesystemProvider
 from environment_runtime.providers.filesystem.sftp import SFTPFilesystemProvider
 from environment_runtime.providers.session.local_pty import LocalSessionProvider
+from environment_runtime.providers.session.ssh_pty import SSHPTYSessionProvider
 from environment_runtime.providers.synchronization.snapshot import SnapshotSyncProvider
 from environment_runtime.providers.transport.local import LocalTransportProvider
 from environment_runtime.providers.transport.ssh import SSHTransportProvider
@@ -28,7 +29,10 @@ class ProviderRegistry:
         # Execution providers have deliberately different start() shapes
         # (local_detached takes a task_id), so this map is dynamically dispatched.
         self.execution: dict[str, Any] = {"local_process": LocalProcessExecutionProvider()}
-        self.session = {"local_pty": LocalSessionProvider()}
+        self.session: dict[str, Any] = {
+            "local_pty": LocalSessionProvider(),
+            "ssh_pty": SSHPTYSessionProvider(ssh_transport),
+        }
         self.sync = {"snapshot": SnapshotSyncProvider()}
         if settings is not None:
             data_dir = settings.runtime.data_dir
