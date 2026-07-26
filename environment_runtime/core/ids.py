@@ -16,6 +16,7 @@ PREFIXES = {
     "lease": "lease",
     "forward": "forward",
     "event": "event",
+    "terminal_frame": "frame",
     "revision": "revision",
     "root": "root",
 }

@@ -6,6 +6,7 @@ import json
 import typer
 
 from environment_runtime.api.app import create_app
+from environment_runtime.broker import BrokerClient, LocalBrokerServer, default_broker_address
 from environment_runtime.config import RuntimeSettings
 from environment_runtime.services.artifact import ArtifactService
 from environment_runtime.services.endpoint import EndpointService
@@ -23,6 +24,7 @@ workspace_app = typer.Typer()
 task_app = typer.Typer()
 session_app = typer.Typer()
 artifact_app = typer.Typer()
+broker_app = typer.Typer()
 
 app.add_typer(endpoint_app, name="endpoint")
 app.add_typer(env_app, name="env")
@@ -30,6 +32,7 @@ app.add_typer(workspace_app, name="workspace")
 app.add_typer(task_app, name="task")
 app.add_typer(session_app, name="session")
 app.add_typer(artifact_app, name="artifact")
+app.add_typer(broker_app, name="broker")
 
 
 def print_json(value: object) -> None:
@@ -340,6 +343,38 @@ def artifact_download(artifact_id: str, destination: str) -> None:
         print_json({"path": path})
 
     asyncio.run(with_runtime(_run))
+
+
+@broker_app.command("address")
+def broker_address() -> None:
+    address = default_broker_address(RuntimeSettings())
+    print_json({"address": address.address, "family": address.family})
+
+
+@broker_app.command("serve")
+def broker_serve() -> None:
+    server = LocalBrokerServer(RuntimeSettings())
+    address = server.address
+    typer.echo(json.dumps({"address": address.address, "family": address.family}))
+    try:
+        asyncio.run(server.serve_forever())
+    except KeyboardInterrupt:
+        typer.echo("broker stopped")
+
+
+@broker_app.command("call")
+def broker_call(method: str, params_json: str = "{}") -> None:
+    params = json.loads(params_json)
+    if not isinstance(params, dict):
+        raise typer.BadParameter("params_json must decode to an object")
+    result = BrokerClient(default_broker_address(RuntimeSettings())).call(method, params)
+    print_json(result)
+
+
+@broker_app.command("shutdown")
+def broker_shutdown() -> None:
+    result = BrokerClient(default_broker_address(RuntimeSettings())).call("broker.shutdown")
+    print_json(result)
 
 
 @app.command("serve")

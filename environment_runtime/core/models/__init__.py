@@ -4,6 +4,7 @@ from .environment import Environment, EnvironmentState, ExecutionTarget
 from .interaction import InputRequest, InputRequestStatus, InputType, WriterLease
 from .session import InteractionState, Session, SessionState
 from .task import Task, TaskState
+from .terminal import TerminalFrame, TerminalFrameKind
 from .workspace import (
     BindingMode,
     ReplicaState,
@@ -32,6 +33,8 @@ __all__ = [
     "SSHEndpointConfig",
     "Task",
     "TaskState",
+    "TerminalFrame",
+    "TerminalFrameKind",
     "Workspace",
     "WorkspaceBinding",
     "WorkspaceReplica",

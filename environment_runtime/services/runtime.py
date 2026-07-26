@@ -24,6 +24,7 @@ from environment_runtime.persistence.repositories import (
     LogRepository,
     SqlAlchemyEventStore,
     SqlAlchemyRepository,
+    TerminalFrameRepository,
 )
 from environment_runtime.providers.registry import ProviderRegistry
 from environment_runtime.providers.session.base import SessionHandle
@@ -46,6 +47,7 @@ class RuntimeContext:
     event_bus: InMemoryEventBus
     event_store: SqlAlchemyEventStore
     log_repository: LogRepository
+    terminal_frames: TerminalFrameRepository
     endpoints: SqlAlchemyRepository[Endpoint]
     environments: SqlAlchemyRepository[Environment]
     workspaces: SqlAlchemyRepository[Workspace]
@@ -74,6 +76,7 @@ async def build_runtime(settings: RuntimeSettings) -> RuntimeContext:
         event_bus=InMemoryEventBus(),
         event_store=SqlAlchemyEventStore(session_factory),
         log_repository=LogRepository(session_factory),
+        terminal_frames=TerminalFrameRepository(session_factory),
         endpoints=SqlAlchemyRepository(session_factory, "endpoint", Endpoint.model_validate, "endpoint_id"),
         environments=SqlAlchemyRepository(
             session_factory, "environment", Environment.model_validate, "environment_id"

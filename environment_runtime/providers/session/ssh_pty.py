@@ -25,6 +25,8 @@ class SSHPTYSessionHandle:
     command: str
     backend_name: str = "ssh_pty"
     reader_tasks: list[asyncio.Task[None]] = field(default_factory=list)
+    _finished: bool = False
+    _exit_code: int | None = None
 
     def backend_ref(self) -> dict[str, object]:
         return {
@@ -37,7 +39,7 @@ class SSHPTYSessionHandle:
         writer = getattr(self.process, "stdin", None)
         if writer is None:
             return
-        payload = data.encode("utf-8")
+        payload = _to_pty_input(data).encode("utf-8")
         writer.write(payload)
         drain = getattr(writer, "drain", None)
         if drain is not None:
@@ -71,11 +73,18 @@ class SSHPTYSessionHandle:
         try:
             result = await self.process.wait()
         except (OSError, asyncssh.Error):
+            self._finished = True
             return None
         exit_status = getattr(result, "exit_status", None)
-        return int(exit_status) if isinstance(exit_status, int) else None
+        self._finished = True
+        self._exit_code = int(exit_status) if isinstance(exit_status, int) else None
+        return self._exit_code
 
     async def close(self) -> None:
+        if self._is_finished():
+            for task in self.reader_tasks:
+                await task
+            return
         for task in self.reader_tasks:
             if not task.done():
                 task.cancel()
@@ -83,11 +92,11 @@ class SSHPTYSessionHandle:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         close = getattr(self.process, "close", None)
-        if close is not None and not self._is_finished():
+        if close is not None:
             close()
 
     def _is_finished(self) -> bool:
-        return getattr(self.process, "returncode", None) is not None
+        return self._finished or getattr(self.process, "returncode", None) is not None
 
 
 class SSHPTYSessionProvider:
@@ -121,10 +130,10 @@ class SSHPTYSessionProvider:
             endpoint_id=params.endpoint.endpoint_id,
             command=command,
         )
-        handle.reader_tasks.append(asyncio.create_task(_pump("pty", process.stdout, on_output)))
+        handle.reader_tasks.extend(_stream_tasks("pty", process.stdout, on_output))
         stderr = getattr(process, "stderr", None)
         if stderr is not None:
-            handle.reader_tasks.append(asyncio.create_task(_pump("stderr", stderr, on_output)))
+            handle.reader_tasks.extend(_stream_tasks("stderr", stderr, on_output))
         return handle
 
     async def attach(
@@ -140,12 +149,39 @@ class SSHPTYSessionProvider:
         return SessionBackendStatus(alive=False, detail="ssh_pty status requires an active handle")
 
 
-async def _pump(stream_name: str, stream: Any, on_output: SessionOutputCallback) -> None:
+def _stream_tasks(
+    stream_name: str,
+    stream: Any,
+    on_output: SessionOutputCallback,
+) -> list[asyncio.Task[None]]:
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    return [
+        asyncio.create_task(_read_stream(stream, queue)),
+        asyncio.create_task(_dispatch_stream(stream_name, queue, on_output)),
+    ]
+
+
+async def _read_stream(stream: Any, queue: asyncio.Queue[str | None]) -> None:
+    try:
+        while True:
+            chunk = await stream.read(4096)
+            if not chunk:
+                return
+            await queue.put(_decode(chunk))
+    finally:
+        await queue.put(None)
+
+
+async def _dispatch_stream(
+    stream_name: str,
+    queue: asyncio.Queue[str | None],
+    on_output: SessionOutputCallback,
+) -> None:
     while True:
-        chunk = await stream.read(4096)
-        if not chunk:
+        chunk = await queue.get()
+        if chunk is None:
             return
-        await on_output(stream_name, _decode(chunk))
+        await on_output(stream_name, chunk)
 
 
 def _shell_command(params: SessionCreateParams) -> str:
@@ -164,3 +200,9 @@ def _decode(chunk: bytes | bytearray | memoryview | str) -> str:
     if isinstance(chunk, str):
         return chunk
     return bytes(chunk).decode("utf-8", errors="replace")
+
+
+def _to_pty_input(data: str) -> str:
+    # Terminal Enter is carriage return. Keep callers ergonomic by accepting
+    # plain "\n" from the REST/interaction APIs and translating it for PTY mode.
+    return data.replace("\r\n", "\r").replace("\n", "\r")
