@@ -42,7 +42,7 @@ class EnvironmentService:
             workspace_ids=workspace_ids or [],
             execution_targets=targets,
             default_execution_target_id=targets[0].target_id,
-            default_session_backend="local_pty",
+            default_session_backend=_default_session_backend(targets[0].provider),
             required_capabilities=set(),
             status=EnvironmentState.READY,
         )
@@ -89,3 +89,11 @@ class EnvironmentService:
         )
         await self.context.event_store.append(event)
         await self.context.event_bus.publish(event)
+
+
+def _default_session_backend(target_provider: str) -> str | None:
+    if target_provider == "local_process":
+        return "local_pty"
+    if target_provider == "ssh_process":
+        return "ssh_pty"
+    return None

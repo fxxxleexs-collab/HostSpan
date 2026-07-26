@@ -32,7 +32,12 @@ class Session(BaseModel):
     backend: str
     backend_ref: dict = Field(default_factory=dict)
     command: list[str] = Field(default_factory=list)
+    environment_variables: dict[str, str] = Field(default_factory=dict)
     default_workspace_id: str | None = None
     default_cwd: str | None = None
+    terminal_cols: int = 120
+    terminal_rows: int = 30
+    term_type: str = "xterm-256color"
     state: SessionState = SessionState.CREATING
     interaction_state: InteractionState = InteractionState.NONE
+    exit_code: int | None = None

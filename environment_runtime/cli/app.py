@@ -253,10 +253,26 @@ def task_cancel(task_id: str) -> None:
 
 
 @session_app.command("create")
-def session_create(environment_id: str, target_id: str, argv: list[str], cwd: str = "") -> None:
+def session_create(
+    environment_id: str,
+    target_id: str,
+    argv: list[str],
+    cwd: str = "",
+    backend: str = "",
+    cols: int = 120,
+    rows: int = 30,
+    term_type: str = "xterm-256color",
+) -> None:
     async def _run(runtime):
         result = await SessionService(runtime).create(
-            environment_id, target_id, argv, cwd=cwd or None
+            environment_id,
+            target_id,
+            argv,
+            cwd=cwd or None,
+            backend=backend or None,
+            cols=cols,
+            rows=rows,
+            term_type=term_type,
         )
         print_json(result.model_dump(mode="json"))
 
@@ -286,6 +302,15 @@ def session_attach(session_id: str, owner_id: str) -> None:
     async def _run(runtime):
         lease = await WriterLeaseService(runtime).acquire(session_id, "human", owner_id, force=True)
         print_json(lease.model_dump(mode="json"))
+
+    asyncio.run(with_runtime(_run))
+
+
+@session_app.command("resize")
+def session_resize(session_id: str, cols: int, rows: int) -> None:
+    async def _run(runtime):
+        result = await SessionService(runtime).resize(session_id, cols, rows)
+        print_json(result.model_dump(mode="json"))
 
     asyncio.run(with_runtime(_run))
 

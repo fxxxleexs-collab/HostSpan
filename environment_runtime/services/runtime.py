@@ -26,14 +26,14 @@ from environment_runtime.persistence.repositories import (
     SqlAlchemyRepository,
 )
 from environment_runtime.providers.registry import ProviderRegistry
-from environment_runtime.providers.session.local_pty import LocalSessionHandle
+from environment_runtime.providers.session.base import SessionHandle
 from environment_runtime.services.recovery import RecoveryService
 
 
 @dataclass
 class ActiveRuntimeState:
     task_handles: dict[str, Any] = field(default_factory=dict)
-    session_handles: dict[str, LocalSessionHandle] = field(default_factory=dict)
+    session_handles: dict[str, SessionHandle] = field(default_factory=dict)
     background_tasks: list[asyncio.Task[object]] = field(default_factory=list)
 
 
