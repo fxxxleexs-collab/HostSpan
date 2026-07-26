@@ -11,6 +11,8 @@ from environment_runtime.core.models import (
     InteractionState,
     Session,
     SessionState,
+    TerminalFrame,
+    TerminalFrameKind,
 )
 from environment_runtime.providers.session.base import SessionCreateParams, TerminalSize
 from environment_runtime.services.runtime import RuntimeContext
@@ -50,6 +52,12 @@ class SessionService:
         )
 
         async def on_output(stream: str, chunk: str) -> None:
+            await self.context.terminal_frames.append(
+                session.session_id,
+                TerminalFrameKind.OUTPUT,
+                chunk,
+                stream=stream,
+            )
             await self._emit(
                 "session.output",
                 session,
@@ -124,12 +132,37 @@ class SessionService:
             raise NotFoundError(f"session {session_id} was not found")
         return session
 
+    async def terminal_frames(
+        self,
+        session_id: str,
+        after_seq: int | None = None,
+        limit: int = 500,
+    ) -> list[TerminalFrame]:
+        await self.get(session_id)
+        if limit <= 0:
+            raise ValidationError("limit must be positive")
+        return await self.context.terminal_frames.list_frames(session_id, after_seq, limit)
+
+    async def terminal_tail(self, session_id: str, limit_chars: int = 20_000) -> dict[str, object]:
+        await self.get(session_id)
+        if limit_chars <= 0:
+            raise ValidationError("limit_chars must be positive")
+        text = await self.context.terminal_frames.tail_text(session_id, limit_chars)
+        last_seq = await self.context.terminal_frames.last_seq(session_id)
+        return {"session_id": session_id, "text": text, "last_seq": last_seq}
+
     async def write(self, session_id: str, data: str) -> Session:
         session = await self.get(session_id)
         handle = self.context.active.session_handles.get(session_id)
         if handle is None:
             raise NotFoundError(f"session {session_id} is not active")
         await handle.write(data)
+        await self.context.terminal_frames.append(
+            session.session_id,
+            TerminalFrameKind.REDACTED,
+            "[REDACTED_INPUT]",
+            stream="input",
+        )
         return session
 
     async def resize(self, session_id: str, cols: int, rows: int) -> Session:
@@ -140,6 +173,12 @@ class SessionService:
         if handle is None:
             raise NotFoundError(f"session {session_id} is not active")
         await handle.resize(cols, rows)
+        await self.context.terminal_frames.append(
+            session.session_id,
+            TerminalFrameKind.RESIZE,
+            f"{cols}x{rows}",
+            stream="control",
+        )
         session.terminal_cols = cols
         session.terminal_rows = rows
         await self.context.sessions.upsert(session)

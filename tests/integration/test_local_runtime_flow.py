@@ -98,6 +98,12 @@ async def test_session_input_flow(runtime, tmp_path) -> None:
     await InteractionService(runtime).submit_input(request.request_id, "agent-1", "hello\n")
     await asyncio.sleep(1)
     events = await runtime.event_store.list_events()
+    frames = await SessionService(runtime).terminal_frames(session.session_id)
+    tail = await SessionService(runtime).terminal_tail(session.session_id)
 
     assert any(event.event_type == "interaction.resolved" for event in events)
     assert any(event.event_type == "session.output" and "got=hello" in str(event.payload) for event in events)
+    assert any(frame.kind == "output" and "got=hello" in frame.data for frame in frames)
+    assert any(frame.kind == "redacted" and frame.data == "[REDACTED_INPUT]" for frame in frames)
+    assert "got=hello" in str(tail["text"])
+    assert "hello\n" not in str(tail["text"])

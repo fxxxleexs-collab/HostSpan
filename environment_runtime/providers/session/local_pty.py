@@ -47,12 +47,16 @@ class LocalSessionHandle:
         return await self.process.wait()
 
     async def close(self) -> None:
+        if self.process.returncode is None:
+            for task in self.reader_tasks:
+                if not task.done():
+                    task.cancel()
+            for task in self.reader_tasks:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            return
         for task in self.reader_tasks:
-            if not task.done():
-                task.cancel()
-        for task in self.reader_tasks:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+            await task
 
 
 class LocalSessionProvider:

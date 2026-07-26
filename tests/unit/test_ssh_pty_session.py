@@ -133,7 +133,7 @@ async def test_ssh_pty_provider_creates_interactive_process() -> None:
         "encoding": None,
     }
     assert output == [("pty", "hello from pty\r\n")]
-    assert connection.process.stdin.data == b"print('ok')\n"
+    assert connection.process.stdin.data == b"print('ok')\r"
     assert connection.process.resize == (120, 50)
     assert exit_code == 0
     assert handle.backend_ref()["backend"] == "ssh_pty"

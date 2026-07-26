@@ -50,3 +50,20 @@ class LogRecord(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
+
+
+class TerminalFrameRecord(Base):
+    __tablename__ = "terminal_frames"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    frame_id: Mapped[str] = mapped_column(String(128), unique=True)
+    session_id: Mapped[str] = mapped_column(String(128), index=True)
+    seq: Mapped[int] = mapped_column(Integer)
+    offset: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(32))
+    stream: Mapped[str] = mapped_column(String(32))
+    data: Mapped[str] = mapped_column(Text())
+    encoding: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )

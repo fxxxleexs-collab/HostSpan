@@ -62,10 +62,12 @@ async def test_session_resize_updates_metadata_and_emits_event(
     try:
         resized = await service.resize(session.session_id, 132, 44)
         events = await runtime.event_store.list_events()
+        frames = await service.terminal_frames(session.session_id)
 
         assert resized.terminal_cols == 132
         assert resized.terminal_rows == 44
         assert any(event.event_type == "session.resized" for event in events)
+        assert any(frame.kind == "resize" and frame.data == "132x44" for frame in frames)
     finally:
         await service.terminate(session.session_id)
 

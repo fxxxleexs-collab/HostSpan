@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from environment_runtime.api.dependencies import get_runtime
 from environment_runtime.api.schemas import (
@@ -38,6 +38,25 @@ async def list_sessions(runtime: RuntimeContext = Depends(get_runtime)):
 @router.get("/{session_id}")
 async def get_session(session_id: str, runtime: RuntimeContext = Depends(get_runtime)):
     return await SessionService(runtime).get(session_id)
+
+
+@router.get("/{session_id}/terminal/frames")
+async def get_terminal_frames(
+    session_id: str,
+    after_seq: int | None = None,
+    limit: int = Query(500, ge=1, le=5000),
+    runtime: RuntimeContext = Depends(get_runtime),
+):
+    return await SessionService(runtime).terminal_frames(session_id, after_seq, limit)
+
+
+@router.get("/{session_id}/terminal/tail")
+async def get_terminal_tail(
+    session_id: str,
+    limit_chars: int = Query(20_000, ge=1, le=1_000_000),
+    runtime: RuntimeContext = Depends(get_runtime),
+):
+    return await SessionService(runtime).terminal_tail(session_id, limit_chars)
 
 
 @router.post("/{session_id}/write")

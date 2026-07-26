@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 from typing import Generic, TypeVar
 
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from environment_runtime.core.events import ExposurePolicy, RuntimeEvent
-from environment_runtime.persistence.orm_models import EventRecord, LogRecord, ResourceRecord
+from environment_runtime.core.models import TerminalFrame, TerminalFrameKind
+from environment_runtime.persistence.orm_models import (
+    EventRecord,
+    LogRecord,
+    ResourceRecord,
+    TerminalFrameRecord,
+)
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -148,3 +155,117 @@ class LogRepository:
                 return 0
             offset, chunk = row
             return int(offset) + len(chunk)
+
+
+class TerminalFrameRepository:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+        self._append_lock = asyncio.Lock()
+
+    async def append(
+        self,
+        session_id: str,
+        kind: TerminalFrameKind,
+        data: str,
+        stream: str = "pty",
+        encoding: str = "utf-8",
+    ) -> TerminalFrame:
+        async with self._append_lock, self._session_factory() as session:
+            seq_result = await session.execute(
+                select(func.max(TerminalFrameRecord.seq)).where(
+                    TerminalFrameRecord.session_id == session_id
+                )
+            )
+            offset_result = await session.execute(
+                select(TerminalFrameRecord.offset, TerminalFrameRecord.data)
+                .where(TerminalFrameRecord.session_id == session_id)
+                .order_by(TerminalFrameRecord.seq.desc())
+                .limit(1)
+            )
+            last_seq = seq_result.scalar_one_or_none()
+            last = offset_result.first()
+            offset = 0 if last is None else int(last[0]) + len(str(last[1]))
+            frame = TerminalFrame(
+                session_id=session_id,
+                seq=0 if last_seq is None else int(last_seq) + 1,
+                offset=offset,
+                kind=kind,
+                stream=stream,
+                data=data,
+                encoding=encoding,
+            )
+            session.add(
+                TerminalFrameRecord(
+                    frame_id=frame.frame_id,
+                    session_id=frame.session_id,
+                    seq=frame.seq,
+                    offset=frame.offset,
+                    kind=frame.kind.value,
+                    stream=frame.stream,
+                    data=frame.data,
+                    encoding=frame.encoding,
+                    created_at=frame.created_at,
+                )
+            )
+            await session.commit()
+            return frame
+
+    async def list_frames(
+        self,
+        session_id: str,
+        after_seq: int | None = None,
+        limit: int = 500,
+    ) -> list[TerminalFrame]:
+        async with self._session_factory() as session:
+            query = select(TerminalFrameRecord).where(
+                TerminalFrameRecord.session_id == session_id
+            )
+            if after_seq is not None:
+                query = query.where(TerminalFrameRecord.seq > after_seq)
+            query = query.order_by(TerminalFrameRecord.seq.asc()).limit(limit)
+            result = await session.execute(query)
+            return [_frame_from_record(record) for record in result.scalars().all()]
+
+    async def tail_text(self, session_id: str, limit_chars: int = 20_000) -> str:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(TerminalFrameRecord)
+                .where(
+                    TerminalFrameRecord.session_id == session_id,
+                    TerminalFrameRecord.kind == TerminalFrameKind.OUTPUT.value,
+                )
+                .order_by(TerminalFrameRecord.seq.desc())
+            )
+            chunks: list[str] = []
+            total = 0
+            for record in result.scalars().all():
+                chunks.append(record.data)
+                total += len(record.data)
+                if total >= limit_chars:
+                    break
+            text = "".join(reversed(chunks))
+            return text[-limit_chars:]
+
+    async def last_seq(self, session_id: str) -> int | None:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(func.max(TerminalFrameRecord.seq)).where(
+                    TerminalFrameRecord.session_id == session_id
+                )
+            )
+            value = result.scalar_one_or_none()
+            return int(value) if value is not None else None
+
+
+def _frame_from_record(record: TerminalFrameRecord) -> TerminalFrame:
+    return TerminalFrame(
+        frame_id=record.frame_id,
+        session_id=record.session_id,
+        seq=record.seq,
+        offset=record.offset,
+        kind=TerminalFrameKind(record.kind),
+        stream=record.stream,
+        data=record.data,
+        encoding=record.encoding,
+        created_at=record.created_at,
+    )
