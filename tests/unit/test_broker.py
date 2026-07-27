@@ -14,6 +14,7 @@ import pytest
 from environment_runtime.broker import BrokerAddress, BrokerClient, LocalBrokerServer
 from environment_runtime.broker.commands import RuntimeCommandHandler
 from environment_runtime.config import RuntimeSettings
+from environment_runtime.core.errors import ProviderError
 
 
 @pytest.mark.unit
@@ -35,7 +36,7 @@ def test_local_broker_shares_active_session_across_client_calls(tmp_path: Path) 
     thread = threading.Thread(target=lambda: asyncio.run(server.serve_forever()), daemon=True)
     thread.start()
     assert server.ready.wait(timeout=10)
-    client = BrokerClient(address)
+    client = BrokerClient(address, settings=settings, principal_id="agent-a")
     try:
         assert client.call("broker.ping") == {"status": "ok"}
         endpoint = client.call("endpoint.add_local", {"name": "local", "root": str(tmp_path)})
@@ -58,6 +59,7 @@ def test_local_broker_shares_active_session_across_client_calls(tmp_path: Path) 
         )
 
         _wait_for_tail(client, session["session_id"], "BROKER_READY")
+        client.call("session.acquire_lease", {"session_id": session["session_id"], "force": True})
         client.call(
             "session.write",
             {"session_id": session["session_id"], "data": "from-client-two\n"},
@@ -87,7 +89,7 @@ def test_broker_event_subscription_replays_matching_events(tmp_path: Path) -> No
     thread = threading.Thread(target=lambda: asyncio.run(server.serve_forever()), daemon=True)
     thread.start()
     assert server.ready.wait(timeout=10)
-    client = BrokerClient(address)
+    client = BrokerClient(address, settings=settings)
     try:
         endpoint = client.call("endpoint.add_local", {"name": "local", "root": str(tmp_path)})
 
@@ -124,7 +126,7 @@ def test_broker_session_frame_subscription_replays_terminal_frames(tmp_path: Pat
     thread = threading.Thread(target=lambda: asyncio.run(server.serve_forever()), daemon=True)
     thread.start()
     assert server.ready.wait(timeout=10)
-    client = BrokerClient(address)
+    client = BrokerClient(address, settings=settings)
     try:
         endpoint = client.call("endpoint.add_local", {"name": "local", "root": str(tmp_path)})
         environment = client.call(
@@ -160,6 +162,80 @@ def test_broker_session_frame_subscription_replays_terminal_frames(tmp_path: Pat
         if thread.is_alive():
             with contextlib.suppress(Exception):
                 client.call("broker.shutdown")
+        thread.join(timeout=10)
+
+
+@pytest.mark.integration
+def test_broker_rejects_client_without_auth_token(tmp_path: Path) -> None:
+    address = _test_address(tmp_path)
+    settings = RuntimeSettings(
+        database={"url": f"sqlite+aiosqlite:///{tmp_path / 'broker-auth.db'}"},
+        runtime={"data_dir": tmp_path / "data-auth"},
+    )
+    server = LocalBrokerServer(settings, address)
+    thread = threading.Thread(target=lambda: asyncio.run(server.serve_forever()), daemon=True)
+    thread.start()
+    assert server.ready.wait(timeout=10)
+    trusted_client = BrokerClient(address, settings=settings)
+    untrusted_client = BrokerClient(address)
+    try:
+        with pytest.raises(ProviderError, match="broker auth token is required"):
+            untrusted_client.call("broker.ping")
+    finally:
+        if thread.is_alive():
+            with contextlib.suppress(Exception):
+                trusted_client.call("broker.shutdown")
+        thread.join(timeout=10)
+
+
+@pytest.mark.integration
+def test_broker_writer_lease_is_enforced_by_principal(tmp_path: Path) -> None:
+    address = _test_address(tmp_path)
+    settings = RuntimeSettings(
+        database={"url": f"sqlite+aiosqlite:///{tmp_path / 'broker-lease.db'}"},
+        runtime={"data_dir": tmp_path / "data-lease"},
+    )
+    server = LocalBrokerServer(settings, address)
+    thread = threading.Thread(target=lambda: asyncio.run(server.serve_forever()), daemon=True)
+    thread.start()
+    assert server.ready.wait(timeout=10)
+    agent_a = BrokerClient(address, settings=settings, principal_id="agent-a")
+    agent_b = BrokerClient(address, settings=settings, principal_id="agent-b")
+    try:
+        endpoint = agent_a.call("endpoint.add_local", {"name": "local", "root": str(tmp_path)})
+        environment = agent_a.call(
+            "env.create",
+            {"name": "env", "endpoint_ids": [endpoint["endpoint_id"]]},
+        )
+        session = agent_a.call(
+            "session.create",
+            {
+                "environment_id": environment["environment_id"],
+                "target_id": environment["default_execution_target_id"],
+                "argv": [
+                    sys.executable,
+                    "-u",
+                    "-c",
+                    "print('LEASE_READY'); value=input(); print(f'LEASE_GOT={value}')",
+                ],
+            },
+        )
+        _wait_for_tail(agent_a, session["session_id"], "LEASE_READY")
+        agent_a.call("session.acquire_lease", {"session_id": session["session_id"], "force": True})
+
+        with pytest.raises(ProviderError, match="writer lease is held by another owner"):
+            agent_b.call(
+                "session.write",
+                {"session_id": session["session_id"], "data": "from-agent-b\n"},
+            )
+
+        agent_a.call("session.write", {"session_id": session["session_id"], "data": "from-agent-a\n"})
+        tail = _wait_for_tail(agent_a, session["session_id"], "LEASE_GOT=from-agent-a")
+        assert "LEASE_GOT=from-agent-a" in tail["text"]
+    finally:
+        if thread.is_alive():
+            with contextlib.suppress(Exception):
+                agent_a.call("broker.shutdown")
         thread.join(timeout=10)
 
 

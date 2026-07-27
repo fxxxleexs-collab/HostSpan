@@ -17,7 +17,13 @@ from environment_runtime.broker.protocol import (
     stream_message,
 )
 from environment_runtime.config import RuntimeSettings
+from environment_runtime.core.errors import SecurityError
 from environment_runtime.services.runtime import RuntimeContext, build_runtime, shutdown_runtime
+from environment_runtime.services.security import (
+    Principal,
+    ensure_broker_token,
+    validate_broker_token,
+)
 
 
 class LocalBrokerServer:
@@ -41,6 +47,7 @@ class LocalBrokerServer:
         self._stop_event = asyncio.Event()
         self._runtime = await build_runtime(self.settings)
         self._handler = RuntimeCommandHandler(self._runtime)
+        ensure_broker_token(self.settings)
         self._prepare_address()
         self._listener = Listener(self.address.address, family=self.address.family, authkey=None)
         self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
@@ -110,6 +117,10 @@ class LocalBrokerServer:
         params = request.get("params", {})
         if not isinstance(params, dict):
             return error_response("ValidationError", "broker params must be an object")
+        try:
+            principal = self._authenticate(request)
+        except Exception as exc:
+            return error_response(type(exc).__name__, str(exc))
         if method == "broker.shutdown":
             await self.stop()
             return ok_response({"status": "stopping"})
@@ -117,7 +128,7 @@ class LocalBrokerServer:
         if handler is None:
             return error_response("BrokerNotReady", "broker handler is not ready")
         try:
-            return ok_response(await handler.handle(method, params))
+            return ok_response(await handler.handle(method, params, principal))
         except Exception as exc:
             return error_response(type(exc).__name__, str(exc))
 
@@ -130,6 +141,7 @@ class LocalBrokerServer:
                 encode_message(error_response("ValidationError", "broker params must be an object")),
             )
             return
+        principal = self._authenticate(request)
         runtime = self._runtime
         if runtime is None:
             await asyncio.to_thread(
@@ -139,10 +151,10 @@ class LocalBrokerServer:
             return
         try:
             if method == "event.subscribe":
-                await _stream_events(connection, runtime, params)
+                await _stream_events(connection, runtime, params, principal)
                 return
             if method == "session.subscribe_frames":
-                await _stream_session_frames(connection, runtime, params)
+                await _stream_session_frames(connection, runtime, params, principal)
                 return
             await asyncio.to_thread(
                 connection.send_bytes,
@@ -156,6 +168,21 @@ class LocalBrokerServer:
                     connection.send_bytes,
                     encode_message(error_response(type(exc).__name__, str(exc))),
                 )
+
+    def _authenticate(self, request: dict[str, Any]) -> Principal:
+        auth = request.get("auth")
+        if not isinstance(auth, dict):
+            raise SecurityError("broker auth payload is required")
+        token = auth.get("token")
+        validate_broker_token(self.settings, str(token) if token is not None else None)
+        principal_id = str(auth.get("principal_id") or "agent")
+        principal_type = str(auth.get("principal_type") or "agent")
+        scope_id = str(auth.get("scope_id") or "default")
+        return Principal(
+            principal_id=principal_id,
+            principal_type=principal_type,
+            scope_id=scope_id,
+        )
 
     async def _close(self) -> None:
         listener = self._listener
@@ -175,7 +202,9 @@ async def _stream_events(
     connection: Connection,
     runtime: RuntimeContext,
     params: dict[str, Any],
+    principal: Principal,
 ) -> None:
+    _ = principal
     after_sequence = int(params.get("after_sequence", 0))
     max_items = _optional_positive_int(params.get("max_items"))
     timeout_seconds = _optional_positive_float(params.get("timeout_seconds"))
@@ -228,7 +257,9 @@ async def _stream_session_frames(
     connection: Connection,
     runtime: RuntimeContext,
     params: dict[str, Any],
+    principal: Principal,
 ) -> None:
+    _ = principal
     session_id = str(params["session_id"])
     after_seq = params.get("after_seq")
     last_seq = int(after_seq) if after_seq is not None else -1
