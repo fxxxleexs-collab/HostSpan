@@ -1,10 +1,55 @@
 from __future__ import annotations
 
+import contextlib
+import hmac
+import os
+import secrets
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
-from environment_runtime.core.errors import ConflictError, NotFoundError
+from environment_runtime.config import RuntimeSettings
+from environment_runtime.core.errors import ConflictError, NotFoundError, SecurityError
 from environment_runtime.core.models import WriterLease
 from environment_runtime.services.runtime import RuntimeContext
+
+
+@dataclass(frozen=True)
+class Principal:
+    principal_id: str
+    principal_type: str = "agent"
+    scope_id: str = "default"
+
+
+def broker_token_path(settings: RuntimeSettings) -> Path:
+    return settings.runtime.data_dir / "broker.token"
+
+
+def ensure_broker_token(settings: RuntimeSettings) -> str:
+    path = broker_token_path(settings)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    token = secrets.token_urlsafe(32)
+    path.write_text(token, encoding="utf-8")
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o600)
+    return token
+
+
+def read_broker_token(settings: RuntimeSettings) -> str:
+    path = broker_token_path(settings)
+    if not path.exists():
+        raise SecurityError(f"broker token file does not exist: {path}")
+    return path.read_text(encoding="utf-8").strip()
+
+
+def validate_broker_token(settings: RuntimeSettings, token: str | None) -> None:
+    if token is None or not token.strip():
+        raise SecurityError("broker auth token is required")
+    expected = read_broker_token(settings)
+    if not hmac.compare_digest(expected, token):
+        raise SecurityError("broker auth token is invalid")
 
 
 class WriterLeaseService:

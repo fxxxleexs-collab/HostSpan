@@ -367,13 +367,15 @@ def broker_call(method: str, params_json: str = "{}") -> None:
     params = json.loads(params_json)
     if not isinstance(params, dict):
         raise typer.BadParameter("params_json must decode to an object")
-    result = BrokerClient(default_broker_address(RuntimeSettings())).call(method, params)
+    settings = RuntimeSettings()
+    result = BrokerClient(default_broker_address(settings), settings=settings).call(method, params)
     print_json(result)
 
 
 @broker_app.command("shutdown")
 def broker_shutdown() -> None:
-    result = BrokerClient(default_broker_address(RuntimeSettings())).call("broker.shutdown")
+    settings = RuntimeSettings()
+    result = BrokerClient(default_broker_address(settings), settings=settings).call("broker.shutdown")
     print_json(result)
 
 

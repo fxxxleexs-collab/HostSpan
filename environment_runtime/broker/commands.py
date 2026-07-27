@@ -8,7 +8,7 @@ from environment_runtime.core.errors import ValidationError
 from environment_runtime.services.endpoint import EndpointService
 from environment_runtime.services.environment import EnvironmentService
 from environment_runtime.services.runtime import RuntimeContext
-from environment_runtime.services.security import WriterLeaseService
+from environment_runtime.services.security import Principal, WriterLeaseService
 from environment_runtime.services.session import SessionService
 from environment_runtime.services.task import TaskService
 
@@ -17,7 +17,13 @@ class RuntimeCommandHandler:
     def __init__(self, context: RuntimeContext) -> None:
         self.context = context
 
-    async def handle(self, method: str, params: dict[str, Any]) -> Any:
+    async def handle(
+        self,
+        method: str,
+        params: dict[str, Any],
+        principal: Principal | None = None,
+    ) -> Any:
+        principal = principal or Principal(principal_id="trusted-local", principal_type="system")
         if method == "broker.ping":
             return {"status": "ok"}
         if method == "broker.status":
@@ -27,7 +33,7 @@ class RuntimeCommandHandler:
         if method.startswith("env."):
             return await self._environment(method, params)
         if method.startswith("session."):
-            return await self._session(method, params)
+            return await self._session(method, params, principal)
         if method.startswith("task."):
             return await self._task(method, params)
         raise ValidationError(f"unknown broker method: {method}")
@@ -80,7 +86,12 @@ class RuntimeCommandHandler:
             return _json(await service.list_all())
         raise ValidationError(f"unknown broker method: {method}")
 
-    async def _session(self, method: str, params: dict[str, Any]) -> Any:
+    async def _session(
+        self,
+        method: str,
+        params: dict[str, Any],
+        principal: Principal,
+    ) -> Any:
         service = SessionService(self.context)
         if method == "session.create":
             return _json(
@@ -103,18 +114,15 @@ class RuntimeCommandHandler:
         if method == "session.acquire_lease":
             lease = await WriterLeaseService(self.context).acquire(
                 str(params["session_id"]),
-                str(params.get("owner_type", "agent")),
-                str(params["owner_id"]),
+                str(params.get("owner_type", principal.principal_type)),
+                str(params.get("owner_id", principal.principal_id)),
                 ttl_seconds=int(params.get("ttl_seconds", 300)),
                 force=bool(params.get("force", False)),
             )
             return _json(lease)
         if method == "session.write":
-            owner_id = params.get("owner_id")
-            if owner_id is not None:
-                await WriterLeaseService(self.context).validate(
-                    str(params["session_id"]), str(owner_id)
-                )
+            owner_id = str(params.get("owner_id", principal.principal_id))
+            await WriterLeaseService(self.context).validate(str(params["session_id"]), owner_id)
             return _json(await service.write(str(params["session_id"]), str(params["data"])))
         if method == "session.resize":
             return _json(
