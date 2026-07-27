@@ -107,6 +107,7 @@ async def test_ssh_pty_provider_creates_interactive_process() -> None:
 
     handle = await provider.create(
         SessionCreateParams(
+            session_id="session_test",
             environment=environment,
             target=target,
             endpoint=endpoint,

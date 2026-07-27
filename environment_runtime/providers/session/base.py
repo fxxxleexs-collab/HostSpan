@@ -17,6 +17,7 @@ class TerminalSize:
 
 @dataclass(frozen=True)
 class SessionCreateParams:
+    session_id: str
     environment: Environment
     target: ExecutionTarget
     endpoint: Endpoint
@@ -32,6 +33,7 @@ class SessionBackendStatus:
     alive: bool
     exit_code: int | None = None
     detail: str | None = None
+    finished: bool = False
 
 
 class SessionHandle(Protocol):
@@ -72,9 +74,11 @@ class SessionBackendProvider(Protocol):
     async def attach(
         self,
         session: Session,
+        endpoint: Endpoint,
         on_output: SessionOutputCallback,
+        initial_output_offset: int = 0,
     ) -> SessionHandle:
         """Attach to a persisted session if the backend supports it."""
 
-    async def status(self, session: Session) -> SessionBackendStatus:
+    async def status(self, session: Session, endpoint: Endpoint) -> SessionBackendStatus:
         """Return best-effort backend liveness for a persisted session."""

@@ -110,7 +110,9 @@ async def shutdown_runtime(context: RuntimeContext) -> None:
         elif hasattr(task_handle, "cancel"):
             await task_handle.cancel()
     for session_handle in list(context.active.session_handles.values()):
-        if hasattr(session_handle, "terminate"):
+        if getattr(session_handle, "backend_name", None) == "ssh_tmux":
+            await session_handle.detach()
+        elif hasattr(session_handle, "terminate"):
             await session_handle.terminate()
     for task in context.active.background_tasks:
         if hasattr(task, "cancel") and not task.done():

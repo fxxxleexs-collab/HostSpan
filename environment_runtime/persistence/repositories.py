@@ -246,6 +246,17 @@ class TerminalFrameRepository:
             text = "".join(reversed(chunks))
             return text[-limit_chars:]
 
+    async def output_resume_offset(self, session_id: str) -> int:
+        """Return the number of output characters already persisted for a session."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(TerminalFrameRecord.data).where(
+                    TerminalFrameRecord.session_id == session_id,
+                    TerminalFrameRecord.kind == TerminalFrameKind.OUTPUT.value,
+                )
+            )
+            return sum(len(str(row[0])) for row in result.all())
+
     async def last_seq(self, session_id: str) -> int | None:
         async with self._session_factory() as session:
             result = await session.execute(

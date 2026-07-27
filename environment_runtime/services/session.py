@@ -51,24 +51,12 @@ class SessionService:
             state=SessionState.CREATING,
         )
 
-        async def on_output(stream: str, chunk: str) -> None:
-            await self.context.terminal_frames.append(
-                session.session_id,
-                TerminalFrameKind.OUTPUT,
-                chunk,
-                stream=stream,
-            )
-            await self._emit(
-                "session.output",
-                session,
-                {"stream": stream, "chunk": chunk, "session_id": session.session_id},
-            )
-
         provider = self.context.providers.session.get(backend_name)
         if provider is None:
             raise ValidationError(f"session backend is not registered: {backend_name}")
         handle = await provider.create(
             SessionCreateParams(
+                session_id=session.session_id,
                 environment=environment,
                 target=target,
                 endpoint=endpoint,
@@ -78,7 +66,7 @@ class SessionService:
                 terminal_size=TerminalSize(cols=cols, rows=rows),
                 term_type=term_type,
             ),
-            on_output=on_output,
+            on_output=self._make_output_callback(session),
         )
         session.state = SessionState.ACTIVE
         session.interaction_state = InteractionState.AUTOMATION_CONTROLLED
@@ -201,6 +189,51 @@ class SessionService:
         await self._emit("session.terminated", session, {"state": session.state})
         return session
 
+    async def reattach_on_startup(self, session: Session) -> bool:
+        """Try to reclaim a durable session backend after runtime restart."""
+        environment, target, endpoint = await self._resolve_target(
+            session.environment_id,
+            session.target_id,
+        )
+        _ = (environment, target)
+        provider = self.context.providers.session.get(session.backend)
+        if provider is None:
+            return False
+        status = await provider.status(session, endpoint)
+        if not status.alive:
+            if status.finished or status.exit_code is not None:
+                session.exit_code = status.exit_code
+                session.state = SessionState.TERMINATED
+                session.interaction_state = InteractionState.NONE
+                await self.context.sessions.upsert(session)
+                await self._emit(
+                    "session.recovered",
+                    session,
+                    {"returncode": status.exit_code, "session_id": session.session_id},
+                )
+                return True
+            return False
+        initial_offset = await self.context.terminal_frames.output_resume_offset(session.session_id)
+        handle = await provider.attach(
+            session,
+            endpoint,
+            self._make_output_callback(session),
+            initial_output_offset=initial_offset,
+        )
+        session.state = SessionState.ACTIVE
+        session.interaction_state = InteractionState.AUTOMATION_CONTROLLED
+        session.backend_ref = handle.backend_ref()
+        await self.context.sessions.upsert(session)
+        self.context.active.session_handles[session.session_id] = handle
+        watcher = asyncio.create_task(self._watch_session(session.session_id))
+        self.context.active.background_tasks.append(watcher)
+        await self._emit(
+            "session.reconnected",
+            session,
+            {"session_id": session.session_id, "backend": session.backend},
+        )
+        return True
+
     async def _watch_session(self, session_id: str) -> None:
         handle = self.context.active.session_handles.get(session_id)
         if handle is None:
@@ -214,6 +247,22 @@ class SessionService:
         await self.context.sessions.upsert(session)
         self.context.active.session_handles.pop(session_id, None)
         await self._emit("session.terminated", session, {"returncode": exit_code})
+
+    def _make_output_callback(self, session: Session):
+        async def on_output(stream: str, chunk: str) -> None:
+            await self.context.terminal_frames.append(
+                session.session_id,
+                TerminalFrameKind.OUTPUT,
+                chunk,
+                stream=stream,
+            )
+            await self._emit(
+                "session.output",
+                session,
+                {"stream": stream, "chunk": chunk, "session_id": session.session_id},
+            )
+
+        return on_output
 
     async def _emit(self, event_type: str, session: Session, payload: dict) -> None:
         event = RuntimeEvent(

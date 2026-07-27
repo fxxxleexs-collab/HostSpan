@@ -10,6 +10,7 @@ from environment_runtime.providers.filesystem.local import LocalFilesystemProvid
 from environment_runtime.providers.filesystem.sftp import SFTPFilesystemProvider
 from environment_runtime.providers.session.local_pty import LocalSessionProvider
 from environment_runtime.providers.session.ssh_pty import SSHPTYSessionProvider
+from environment_runtime.providers.session.ssh_tmux import SSHTmuxSessionProvider
 from environment_runtime.providers.synchronization.snapshot import SnapshotSyncProvider
 from environment_runtime.providers.transport.local import LocalTransportProvider
 from environment_runtime.providers.transport.ssh import SSHTransportProvider
@@ -32,6 +33,13 @@ class ProviderRegistry:
         self.session: dict[str, Any] = {
             "local_pty": LocalSessionProvider(),
             "ssh_pty": SSHPTYSessionProvider(ssh_transport),
+            "ssh_tmux": SSHTmuxSessionProvider(
+                ssh_transport,
+                self.filesystem["sftp"],
+                poll_interval=(
+                    settings.runtime.detached_poll_interval_seconds if settings is not None else 0.5
+                ),
+            ),
         }
         self.sync = {"snapshot": SnapshotSyncProvider()}
         if settings is not None:
