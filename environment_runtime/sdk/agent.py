@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import builtins
 import time
 from collections.abc import Iterator
@@ -19,6 +20,8 @@ class AgentRuntimeClient:
         self.broker = BrokerNamespace(transport)
         self.endpoints = EndpointNamespace(transport)
         self.environments = EnvironmentNamespace(transport)
+        self.workspaces = WorkspaceNamespace(transport)
+        self.files = FileNamespace(transport)
         self.tasks = TaskNamespace(transport)
         self.sessions = SessionNamespace(transport)
 
@@ -62,6 +65,9 @@ class BrokerNamespace:
 
     def status(self) -> dict[str, Any]:
         return self._transport.request("broker.status")
+
+    def commands(self) -> list[dict[str, Any]]:
+        return self._transport.request("broker.commands")
 
     def shutdown(self) -> dict[str, Any]:
         return self._transport.request("broker.shutdown")
@@ -155,38 +161,186 @@ class EnvironmentNamespace:
         return self._transport.request("env.list")
 
     def ensure_local(self, name: str, root: str | Path) -> dict[str, Any]:
-        root_text = str(root)
-        endpoint = self._find_endpoint(name, "local", {"root": root_text})
-        if endpoint is None:
-            endpoint = self._transport.request("endpoint.add_local", {"name": name, "root": root_text})
-        environment = self._find_environment(name, endpoint["endpoint_id"])
-        if environment is None:
-            environment = self.create(name, [endpoint["endpoint_id"]])
-        return {
-            "endpoint": endpoint,
-            "environment": environment,
-            "target_id": environment["default_execution_target_id"],
-        }
+        return self._transport.request("env.ensure_local", {"name": name, "root": str(root)})
 
-    def _find_endpoint(
+    def ensure_ssh(
         self,
         name: str,
-        provider_type: str,
-        config: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        for endpoint in self._transport.request("endpoint.list"):
-            if endpoint.get("name") != name or endpoint.get("provider_type") != provider_type:
-                continue
-            endpoint_config = dict(endpoint.get("config", {}))
-            if all(endpoint_config.get(key) == value for key, value in config.items()):
-                return endpoint
-        return None
+        hostname: str,
+        username: str,
+        known_hosts_file: str | Path,
+        port: int = 22,
+        identity_file: str | Path | None = None,
+        use_ssh_agent: bool = True,
+        proxy_jump: str | None = None,
+        connect_timeout: float = 15.0,
+        keepalive_interval: float = 20.0,
+    ) -> dict[str, Any]:
+        return self._transport.request(
+            "env.ensure_ssh",
+            {
+                "name": name,
+                "hostname": hostname,
+                "username": username,
+                "known_hosts_file": str(known_hosts_file),
+                "port": port,
+                "identity_file": str(identity_file) if identity_file is not None else None,
+                "use_ssh_agent": use_ssh_agent,
+                "proxy_jump": proxy_jump,
+                "connect_timeout": connect_timeout,
+                "keepalive_interval": keepalive_interval,
+            },
+        )
 
-    def _find_environment(self, name: str, endpoint_id: str) -> dict[str, Any] | None:
-        for environment in self.list():
-            if environment.get("name") == name and endpoint_id in environment.get("endpoint_ids", []):
-                return environment
-        return None
+
+class WorkspaceNamespace:
+    def __init__(self, transport: RuntimeTransport) -> None:
+        self._transport = transport
+
+    def create(self, name: str) -> dict[str, Any]:
+        return self._transport.request("workspace.create", {"name": name})
+
+    def get(self, workspace_id: str) -> dict[str, Any]:
+        return self._transport.request("workspace.get", {"workspace_id": workspace_id})
+
+    def list(self) -> list[dict[str, Any]]:
+        return self._transport.request("workspace.list")
+
+    def add_root(self, workspace_id: str, logical_path: str) -> dict[str, Any]:
+        return self._transport.request(
+            "workspace.add_root",
+            {"workspace_id": workspace_id, "logical_path": logical_path},
+        )
+
+    def add_replica(
+        self,
+        workspace_id: str,
+        endpoint_id: str,
+        physical_root: str | Path,
+    ) -> dict[str, Any]:
+        return self._transport.request(
+            "workspace.add_replica",
+            {
+                "workspace_id": workspace_id,
+                "endpoint_id": endpoint_id,
+                "physical_root": str(physical_root),
+            },
+        )
+
+    def bind(
+        self,
+        workspace_id: str,
+        source_replica_id: str,
+        target_replica_id: str,
+        mode: str = "ONE_WAY_MIRROR",
+    ) -> dict[str, Any]:
+        return self._transport.request(
+            "workspace.bind",
+            {
+                "workspace_id": workspace_id,
+                "source_replica_id": source_replica_id,
+                "target_replica_id": target_replica_id,
+                "mode": mode,
+            },
+        )
+
+    def revision(self, workspace_id: str, replica_id: str) -> dict[str, Any]:
+        return self._transport.request(
+            "workspace.revision",
+            {"workspace_id": workspace_id, "replica_id": replica_id},
+        )
+
+    def sync(self, workspace_id: str, binding_id: str) -> dict[str, Any]:
+        return self._transport.request(
+            "workspace.sync",
+            {"workspace_id": workspace_id, "binding_id": binding_id},
+        )
+
+
+class FileNamespace:
+    def __init__(self, transport: RuntimeTransport) -> None:
+        self._transport = transport
+
+    def exists(self, endpoint_id: str, path: str | Path) -> bool:
+        result = self._transport.request(
+            "file.exists",
+            {"endpoint_id": endpoint_id, "path": str(path)},
+        )
+        return bool(result["exists"])
+
+    def stat(self, endpoint_id: str, path: str | Path) -> dict[str, Any]:
+        return self._transport.request("file.stat", {"endpoint_id": endpoint_id, "path": str(path)})
+
+    def list(
+        self,
+        endpoint_id: str,
+        path: str | Path,
+        recursive: bool = False,
+    ) -> list[str]:
+        result = self._transport.request(
+            "file.list",
+            {"endpoint_id": endpoint_id, "path": str(path), "recursive": recursive},
+        )
+        return result["entries"]
+
+    def mkdir(self, endpoint_id: str, path: str | Path) -> dict[str, Any]:
+        return self._transport.request("file.mkdir", {"endpoint_id": endpoint_id, "path": str(path)})
+
+    def remove(self, endpoint_id: str, path: str | Path) -> dict[str, Any]:
+        return self._transport.request("file.remove", {"endpoint_id": endpoint_id, "path": str(path)})
+
+    def sha256(self, endpoint_id: str, path: str | Path) -> str:
+        result = self._transport.request(
+            "file.sha256",
+            {"endpoint_id": endpoint_id, "path": str(path)},
+        )
+        return str(result["sha256"])
+
+    def read_text(
+        self,
+        endpoint_id: str,
+        path: str | Path,
+        encoding: str = "utf-8",
+    ) -> str:
+        result = self._transport.request(
+            "file.read_text",
+            {"endpoint_id": endpoint_id, "path": str(path), "encoding": encoding},
+        )
+        return str(result["text"])
+
+    def write_text(
+        self,
+        endpoint_id: str,
+        path: str | Path,
+        text: str,
+        encoding: str = "utf-8",
+    ) -> dict[str, Any]:
+        return self._transport.request(
+            "file.write_text",
+            {
+                "endpoint_id": endpoint_id,
+                "path": str(path),
+                "text": text,
+                "encoding": encoding,
+            },
+        )
+
+    def read_bytes(self, endpoint_id: str, path: str | Path) -> bytes:
+        result = self._transport.request(
+            "file.read_bytes",
+            {"endpoint_id": endpoint_id, "path": str(path)},
+        )
+        return base64.b64decode(str(result["data_base64"]))
+
+    def write_bytes(self, endpoint_id: str, path: str | Path, data: bytes) -> dict[str, Any]:
+        return self._transport.request(
+            "file.write_bytes",
+            {
+                "endpoint_id": endpoint_id,
+                "path": str(path),
+                "data_base64": base64.b64encode(data).decode("ascii"),
+            },
+        )
 
 
 class TaskNamespace:
@@ -222,6 +376,25 @@ class TaskNamespace:
 
     def logs(self, task_id: str) -> builtins.list[dict[str, Any]]:
         return self._transport.request("task.logs", {"task_id": task_id})
+
+    def logs_text(self, task_id: str) -> str:
+        return "".join(str(item.get("chunk", "")) for item in self.logs(task_id))
+
+    def wait_for_log(
+        self,
+        task_id: str,
+        marker: str,
+        timeout_seconds: float = 30.0,
+        poll_interval_seconds: float = 0.25,
+    ) -> str:
+        deadline = time.monotonic() + timeout_seconds
+        text = self.logs_text(task_id)
+        while time.monotonic() < deadline:
+            if marker in text:
+                return text
+            time.sleep(poll_interval_seconds)
+            text = self.logs_text(task_id)
+        raise TimeoutError(f"marker {marker!r} was not observed in task {task_id}")
 
     def cancel(self, task_id: str) -> dict[str, Any]:
         return self._transport.request("task.cancel", {"task_id": task_id})
