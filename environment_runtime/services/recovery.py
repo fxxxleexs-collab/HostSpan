@@ -69,9 +69,19 @@ class RecoveryService:
         return count
 
     async def _reconcile_sessions(self) -> int:
+        # Imported lazily to avoid a module-load cycle (session -> runtime -> recovery).
+        from environment_runtime.services.session import SessionService
+
         count = 0
         for session in await self.context.sessions.list():
             if session.state not in _SESSION_RECOVERABLE_STATES:
+                continue
+            try:
+                reclaimed = await SessionService(self.context).reattach_on_startup(session)
+            except Exception:
+                reclaimed = False
+            if reclaimed:
+                count += 1
                 continue
             session.state = SessionState.DISCONNECTED
             session.interaction_state = InteractionState.NONE

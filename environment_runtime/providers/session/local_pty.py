@@ -96,11 +96,13 @@ class LocalSessionProvider:
     async def attach(
         self,
         session: Session,
+        endpoint,
         on_output: SessionOutputCallback,
+        initial_output_offset: int = 0,
     ) -> LocalSessionHandle:
-        _ = (session, on_output)
+        _ = (session, endpoint, on_output, initial_output_offset)
         raise ProviderError("local_pty sessions cannot be attached after runtime restart")
 
-    async def status(self, session: Session) -> SessionBackendStatus:
-        _ = session
+    async def status(self, session: Session, endpoint) -> SessionBackendStatus:
+        _ = (session, endpoint)
         return SessionBackendStatus(alive=False, detail="local_pty status requires an active handle")
