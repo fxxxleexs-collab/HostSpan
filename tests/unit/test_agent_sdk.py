@@ -24,23 +24,21 @@ class FakeTransport:
 
     def request(self, method: str, params: dict[str, Any] | None = None) -> Any:
         self.requests.append((method, params))
-        if method == "endpoint.list":
-            return []
-        if method == "endpoint.add_local":
+        if method == "env.ensure_local":
             return {
-                "endpoint_id": "endpoint_1",
-                "name": params["name"],
-                "provider_type": "local",
-                "config": {"root": params["root"]},
-            }
-        if method == "env.list":
-            return []
-        if method == "env.create":
-            return {
-                "environment_id": "env_1",
-                "name": params["name"],
-                "endpoint_ids": params["endpoint_ids"],
-                "default_execution_target_id": "target_1",
+                "endpoint": {
+                    "endpoint_id": "endpoint_1",
+                    "name": params["name"],
+                    "provider_type": "local",
+                    "config": {"root": params["root"]},
+                },
+                "environment": {
+                    "environment_id": "env_1",
+                    "name": params["name"],
+                    "endpoint_ids": ["endpoint_1"],
+                    "default_execution_target_id": "target_1",
+                },
+                "target_id": "target_1",
             }
         if method == "session.create":
             return {"session_id": "session_1", "backend": params.get("backend") or "local_pty"}
@@ -48,6 +46,14 @@ class FakeTransport:
             return {"lease_id": "lease_1", "session_id": params["session_id"]}
         if method == "session.write":
             return {"session_id": params["session_id"]}
+        if method == "file.write_text":
+            return {"size": len(params["text"])}
+        if method == "file.read_text":
+            return {"text": "hello"}
+        if method == "workspace.create":
+            return {"workspace_id": "workspace_1", "name": params["name"]}
+        if method == "task.logs":
+            return [{"stream": "stdout", "offset": 0, "chunk": "TASK_READY\n"}]
         raise AssertionError(f"unexpected method: {method}")
 
     def stream(
@@ -76,20 +82,29 @@ def test_agent_sdk_facade_maps_to_canonical_transport_methods(tmp_path: Path) ->
     )
     lease = client.sessions.acquire_lease(session["session_id"], force=True)
     client.sessions.write(session["session_id"], "print('ok')\n")
+    workspace = client.workspaces.create("workspace")
+    write_result = client.files.write_text("endpoint_1", "notes.txt", "hello")
+    text = client.files.read_text("endpoint_1", "notes.txt")
+    task_text = client.tasks.wait_for_log("task_1", "TASK_READY", timeout_seconds=1)
     frames = list(client.sessions.stream_frames(session["session_id"], max_items=1))
 
     assert bundle["endpoint"]["endpoint_id"] == "endpoint_1"
     assert session["session_id"] == "session_1"
     assert lease["lease_id"] == "lease_1"
+    assert workspace["workspace_id"] == "workspace_1"
+    assert write_result["size"] == len("hello")
+    assert text == "hello"
+    assert "TASK_READY" in task_text
     assert frames == [{"kind": "output", "data": "ready"}]
     assert [method for method, _ in transport.requests] == [
-        "endpoint.list",
-        "endpoint.add_local",
-        "env.list",
-        "env.create",
+        "env.ensure_local",
         "session.create",
         "session.acquire_lease",
         "session.write",
+        "workspace.create",
+        "file.write_text",
+        "file.read_text",
+        "task.logs",
     ]
     assert transport.streams == [
         (
@@ -118,6 +133,9 @@ def test_agent_sdk_runs_session_flow_over_broker_transport(tmp_path: Path) -> No
     try:
         assert client.broker.ping() == {"status": "ok"}
         bundle = client.environments.ensure_local("sdk-env", tmp_path)
+        client.files.write_text(bundle["endpoint"]["endpoint_id"], "agent-sdk.txt", "hello sdk")
+        assert client.files.read_text(bundle["endpoint"]["endpoint_id"], "agent-sdk.txt") == "hello sdk"
+        assert "agent-sdk.txt" in client.files.list(bundle["endpoint"]["endpoint_id"], ".")
         session = client.sessions.create(
             bundle["environment"]["environment_id"],
             bundle["target_id"],
@@ -150,6 +168,55 @@ def test_agent_sdk_runs_session_flow_over_broker_transport(tmp_path: Path) -> No
         assert "SDK_GOT=from-sdk" in final_tail["text"]
         assert frames
         assert frames[0]["kind"] == "output"
+    finally:
+        if thread.is_alive():
+            with contextlib.suppress(Exception):
+                client.broker.shutdown()
+        client.close()
+        thread.join(timeout=10)
+
+
+@pytest.mark.integration
+def test_agent_sdk_tracks_local_persistent_task_over_broker_transport(tmp_path: Path) -> None:
+    address = _test_address(tmp_path)
+    settings = RuntimeSettings(
+        database={"url": f"sqlite+aiosqlite:///{tmp_path / 'agent-sdk-task.db'}"},
+        runtime={"data_dir": tmp_path / "agent-sdk-task-data", "detached_poll_interval_seconds": 0.1},
+    )
+    server = LocalBrokerServer(settings, address)
+    thread = threading.Thread(target=lambda: asyncio.run(server.serve_forever()), daemon=True)
+    thread.start()
+    assert server.ready.wait(timeout=10)
+    client = AgentRuntimeClient.from_broker(address=address, settings=settings, principal_id="sdk-agent")
+    try:
+        bundle = client.environments.ensure_local("sdk-task-env", tmp_path)
+        task = client.tasks.start(
+            bundle["environment"]["environment_id"],
+            bundle["target_id"],
+            [
+                sys.executable,
+                "-u",
+                "-c",
+                (
+                    "import time\n"
+                    "for i in range(4):\n"
+                    "    print(f'SDK_TASK_TICK={i}', flush=True)\n"
+                    "    time.sleep(0.25)\n"
+                ),
+            ],
+            persistent=True,
+        )
+
+        mid_logs = client.tasks.wait_for_log(task["task_id"], "SDK_TASK_TICK=1", timeout_seconds=10)
+        mid_state = client.tasks.get(task["task_id"])
+        final = client.tasks.wait(task["task_id"], timeout_seconds=10)
+        final_logs = client.tasks.logs_text(task["task_id"])
+
+        assert "SDK_TASK_TICK=1" in mid_logs
+        assert mid_state["state"] in {"RUNNING", "SUCCEEDED"}
+        assert final["state"] == "SUCCEEDED"
+        assert final["exit_code"] == 0
+        assert "SDK_TASK_TICK=3" in final_logs
     finally:
         if thread.is_alive():
             with contextlib.suppress(Exception):

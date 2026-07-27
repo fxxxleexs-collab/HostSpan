@@ -16,6 +16,11 @@ from environment_runtime.broker.protocol import (
     ok_response,
     stream_message,
 )
+from environment_runtime.broker.schemas import (
+    EventSubscribeParams,
+    SessionSubscribeFramesParams,
+    parse_params,
+)
 from environment_runtime.config import RuntimeSettings
 from environment_runtime.core.errors import SecurityError
 from environment_runtime.services.runtime import RuntimeContext, build_runtime, shutdown_runtime
@@ -205,13 +210,14 @@ async def _stream_events(
     principal: Principal,
 ) -> None:
     _ = principal
-    after_sequence = int(params.get("after_sequence", 0))
-    max_items = _optional_positive_int(params.get("max_items"))
-    timeout_seconds = _optional_positive_float(params.get("timeout_seconds"))
-    heartbeat_seconds = float(params.get("heartbeat_seconds", 15.0))
-    resource_type = params.get("resource_type")
-    resource_id = params.get("resource_id")
-    event_types = set(params.get("event_types", []))
+    data = parse_params(EventSubscribeParams, params)
+    after_sequence = data.after_sequence
+    max_items = data.max_items
+    timeout_seconds = data.timeout_seconds
+    heartbeat_seconds = data.heartbeat_seconds
+    resource_type = data.resource_type
+    resource_id = data.resource_id
+    event_types = set(data.event_types)
     sent = 0
     last_sequence = after_sequence
     queue = await runtime.event_bus.subscribe()
@@ -260,12 +266,12 @@ async def _stream_session_frames(
     principal: Principal,
 ) -> None:
     _ = principal
-    session_id = str(params["session_id"])
-    after_seq = params.get("after_seq")
-    last_seq = int(after_seq) if after_seq is not None else -1
-    max_items = _optional_positive_int(params.get("max_items"))
-    timeout_seconds = _optional_positive_float(params.get("timeout_seconds"))
-    heartbeat_seconds = float(params.get("heartbeat_seconds", 15.0))
+    data = parse_params(SessionSubscribeFramesParams, params)
+    session_id = data.session_id
+    last_seq = data.after_seq if data.after_seq is not None else -1
+    max_items = data.max_items
+    timeout_seconds = data.timeout_seconds
+    heartbeat_seconds = data.heartbeat_seconds
     sent = 0
     queue = await runtime.event_bus.subscribe()
     deadline = _deadline(timeout_seconds)
@@ -348,20 +354,6 @@ def _event_matches(
     if resource_id is not None and event.resource_id != str(resource_id):
         return False
     return not (event_types and event.event_type not in {str(item) for item in event_types})
-
-
-def _optional_positive_int(value: Any) -> int | None:
-    if value is None:
-        return None
-    parsed = int(value)
-    return parsed if parsed > 0 else None
-
-
-def _optional_positive_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    parsed = float(value)
-    return parsed if parsed > 0 else None
 
 
 def _deadline(timeout_seconds: float | None) -> float | None:

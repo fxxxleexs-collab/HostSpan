@@ -25,6 +25,19 @@ async def test_broker_command_handler_exposes_runtime_status(runtime) -> None:
     assert result == {"status": "ok", "active_tasks": 0, "active_sessions": 0}
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_broker_command_handler_exposes_canonical_command_metadata(runtime) -> None:
+    result = await RuntimeCommandHandler(runtime).handle("broker.commands", {})
+
+    methods = {item["method"] for item in result}
+    assert "env.ensure_local" in methods
+    assert "event.subscribe" in methods
+    assert "workspace.create" in methods
+    assert "file.write_text" in methods
+    assert "session.subscribe_frames" in methods
+
+
 @pytest.mark.integration
 def test_local_broker_shares_active_session_across_client_calls(tmp_path: Path) -> None:
     address = _test_address(tmp_path)
@@ -236,6 +249,87 @@ def test_broker_writer_lease_is_enforced_by_principal(tmp_path: Path) -> None:
         if thread.is_alive():
             with contextlib.suppress(Exception):
                 agent_a.call("broker.shutdown")
+        thread.join(timeout=10)
+
+
+@pytest.mark.integration
+def test_broker_workspace_and_local_file_commands(tmp_path: Path) -> None:
+    address = _test_address(tmp_path)
+    settings = RuntimeSettings(
+        database={"url": f"sqlite+aiosqlite:///{tmp_path / 'broker-files.db'}"},
+        runtime={"data_dir": tmp_path / "data-files"},
+    )
+    server = LocalBrokerServer(settings, address)
+    thread = threading.Thread(target=lambda: asyncio.run(server.serve_forever()), daemon=True)
+    thread.start()
+    assert server.ready.wait(timeout=10)
+    client = BrokerClient(address, settings=settings)
+    try:
+        bundle = client.call("env.ensure_local", {"name": "files-env", "root": str(tmp_path)})
+        endpoint_id = bundle["endpoint"]["endpoint_id"]
+        workspace = client.call("workspace.create", {"name": "workspace"})
+        with_root = client.call(
+            "workspace.add_root",
+            {"workspace_id": workspace["workspace_id"], "logical_path": "."},
+        )
+        client.call(
+            "workspace.add_replica",
+            {
+                "workspace_id": workspace["workspace_id"],
+                "endpoint_id": endpoint_id,
+                "physical_root": str(tmp_path),
+            },
+        )
+        write_result = client.call(
+            "file.write_text",
+            {"endpoint_id": endpoint_id, "path": "nested/hello.txt", "text": "hello broker"},
+        )
+        read_result = client.call(
+            "file.read_text",
+            {"endpoint_id": endpoint_id, "path": "nested/hello.txt"},
+        )
+        entries = client.call("file.list", {"endpoint_id": endpoint_id, "path": "nested"})
+        digest = client.call("file.sha256", {"endpoint_id": endpoint_id, "path": "nested/hello.txt"})
+
+        assert with_root["roots"][0]["logical_path"] == "."
+        assert write_result["size"] == len("hello broker")
+        assert read_result["text"] == "hello broker"
+        assert entries["entries"] == ["hello.txt"]
+        assert len(digest["sha256"]) == 64
+
+        with pytest.raises(ProviderError, match="local file path must stay within the endpoint root"):
+            client.call("file.read_text", {"endpoint_id": endpoint_id, "path": "../outside.txt"})
+    finally:
+        if thread.is_alive():
+            with contextlib.suppress(Exception):
+                client.call("broker.shutdown")
+        thread.join(timeout=10)
+
+
+@pytest.mark.integration
+def test_broker_command_params_are_validated(tmp_path: Path) -> None:
+    address = _test_address(tmp_path)
+    settings = RuntimeSettings(
+        database={"url": f"sqlite+aiosqlite:///{tmp_path / 'broker-validation.db'}"},
+        runtime={"data_dir": tmp_path / "data-validation"},
+    )
+    server = LocalBrokerServer(settings, address)
+    thread = threading.Thread(target=lambda: asyncio.run(server.serve_forever()), daemon=True)
+    thread.start()
+    assert server.ready.wait(timeout=10)
+    client = BrokerClient(address, settings=settings)
+    try:
+        with pytest.raises(ProviderError, match="argv"):
+            client.call(
+                "task.start",
+                {"environment_id": "env", "target_id": "target", "argv": []},
+            )
+        with pytest.raises(ProviderError, match="endpoint_id"):
+            client.call("file.read_text", {"path": "missing-endpoint.txt"})
+    finally:
+        if thread.is_alive():
+            with contextlib.suppress(Exception):
+                client.call("broker.shutdown")
         thread.join(timeout=10)
 
 
