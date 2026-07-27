@@ -76,6 +76,93 @@ def test_local_broker_shares_active_session_across_client_calls(tmp_path: Path) 
         thread.join(timeout=10)
 
 
+@pytest.mark.integration
+def test_broker_event_subscription_replays_matching_events(tmp_path: Path) -> None:
+    address = _test_address(tmp_path)
+    settings = RuntimeSettings(
+        database={"url": f"sqlite+aiosqlite:///{tmp_path / 'broker-events.db'}"},
+        runtime={"data_dir": tmp_path / "data-events"},
+    )
+    server = LocalBrokerServer(settings, address)
+    thread = threading.Thread(target=lambda: asyncio.run(server.serve_forever()), daemon=True)
+    thread.start()
+    assert server.ready.wait(timeout=10)
+    client = BrokerClient(address)
+    try:
+        endpoint = client.call("endpoint.add_local", {"name": "local", "root": str(tmp_path)})
+
+        events = list(
+            client.stream(
+                "event.subscribe",
+                {
+                    "resource_type": "endpoint",
+                    "resource_id": endpoint["endpoint_id"],
+                    "max_items": 1,
+                    "timeout_seconds": 5,
+                },
+            )
+        )
+
+        assert len(events) == 1
+        assert events[0]["event_type"] == "endpoint.connected"
+        assert events[0]["resource_id"] == endpoint["endpoint_id"]
+    finally:
+        if thread.is_alive():
+            with contextlib.suppress(Exception):
+                client.call("broker.shutdown")
+        thread.join(timeout=10)
+
+
+@pytest.mark.integration
+def test_broker_session_frame_subscription_replays_terminal_frames(tmp_path: Path) -> None:
+    address = _test_address(tmp_path)
+    settings = RuntimeSettings(
+        database={"url": f"sqlite+aiosqlite:///{tmp_path / 'broker-frames.db'}"},
+        runtime={"data_dir": tmp_path / "data-frames"},
+    )
+    server = LocalBrokerServer(settings, address)
+    thread = threading.Thread(target=lambda: asyncio.run(server.serve_forever()), daemon=True)
+    thread.start()
+    assert server.ready.wait(timeout=10)
+    client = BrokerClient(address)
+    try:
+        endpoint = client.call("endpoint.add_local", {"name": "local", "root": str(tmp_path)})
+        environment = client.call(
+            "env.create",
+            {"name": "env", "endpoint_ids": [endpoint["endpoint_id"]]},
+        )
+        session = client.call(
+            "session.create",
+            {
+                "environment_id": environment["environment_id"],
+                "target_id": environment["default_execution_target_id"],
+                "argv": [sys.executable, "-u", "-c", "print('FRAME_STREAM_READY')"],
+            },
+        )
+        _wait_for_tail(client, session["session_id"], "FRAME_STREAM_READY")
+
+        frames = list(
+            client.stream(
+                "session.subscribe_frames",
+                {
+                    "session_id": session["session_id"],
+                    "after_seq": -1,
+                    "max_items": 1,
+                    "timeout_seconds": 5,
+                },
+            )
+        )
+
+        assert len(frames) == 1
+        assert frames[0]["kind"] == "output"
+        assert "FRAME_STREAM_READY" in frames[0]["data"]
+    finally:
+        if thread.is_alive():
+            with contextlib.suppress(Exception):
+                client.call("broker.shutdown")
+        thread.join(timeout=10)
+
+
 def _wait_for_tail(
     client: BrokerClient,
     session_id: str,

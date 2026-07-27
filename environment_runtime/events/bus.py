@@ -12,8 +12,11 @@ class InMemoryEventBus:
         self._subscribers: set[asyncio.Queue[RuntimeEvent]] = set()
 
     async def publish(self, event: RuntimeEvent) -> RuntimeEvent:
-        self._sequence += 1
-        event.sequence = self._sequence
+        if event.sequence:
+            self._sequence = max(self._sequence, event.sequence)
+        else:
+            self._sequence += 1
+            event.sequence = self._sequence
         self._events.append(event)
         for queue in list(self._subscribers):
             await queue.put(event)

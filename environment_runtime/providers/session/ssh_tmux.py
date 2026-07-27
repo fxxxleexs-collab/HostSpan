@@ -352,7 +352,30 @@ async def _tmux_status(
         return SessionBackendStatus(alive=False, detail=f"tmux status failed: {exc}")
     if getattr(result, "exit_status", 1) == 0:
         return SessionBackendStatus(alive=True, detail="tmux session is alive")
+    delayed_payload = await _read_status_when_available(endpoint, sftp, remote_status_file)
+    if delayed_payload is not None:
+        return SessionBackendStatus(
+            alive=False,
+            exit_code=_payload_exit_code(delayed_payload),
+            detail="tmux session finished",
+            finished=True,
+        )
     return SessionBackendStatus(alive=False, detail="tmux session is not alive")
+
+
+async def _read_status_when_available(
+    endpoint: Endpoint,
+    sftp: SFTPFilesystemProvider,
+    remote_status_file: str,
+    timeout: float = 1.0,
+    interval: float = 0.1,
+) -> dict[str, object] | None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        if await sftp.exists(endpoint, remote_status_file):
+            return await _read_status(endpoint, sftp, remote_status_file)
+        await asyncio.sleep(interval)
+    return None
 
 
 async def _read_status(
