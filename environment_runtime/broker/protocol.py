@@ -25,3 +25,7 @@ def ok_response(result: Any) -> dict[str, Any]:
 
 def error_response(error_type: str, message: str) -> dict[str, Any]:
     return {"ok": False, "error": {"type": error_type, "message": message}}
+
+
+def stream_message(event: str, result: Any) -> dict[str, Any]:
+    return {"ok": True, "stream": True, "event": event, "result": result}

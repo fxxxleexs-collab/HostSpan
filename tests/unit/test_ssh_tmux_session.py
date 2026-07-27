@@ -9,8 +9,10 @@ from environment_runtime.core.models import (
     Endpoint,
     Environment,
     ExecutionTarget,
+    InteractionState,
     Session,
     SessionState,
+    TerminalFrameKind,
 )
 from environment_runtime.providers.session.base import SessionCreateParams, TerminalSize
 from environment_runtime.providers.session.ssh_tmux import SSHTmuxSessionProvider
@@ -66,6 +68,21 @@ class FakeSFTP:
         if path not in self.files:
             raise OSError(path)
         self.files.pop(path)
+
+
+class DelayedStatusSFTP(FakeSFTP):
+    def __init__(self, delayed_path: str, delayed_data: bytes) -> None:
+        super().__init__()
+        self.delayed_path = delayed_path
+        self.delayed_data = delayed_data
+        self.exists_count = 0
+
+    async def exists(self, endpoint: Endpoint, path: str) -> bool:
+        if path == self.delayed_path:
+            self.exists_count += 1
+            if self.exists_count >= 2:
+                self.files[path] = self.delayed_data
+        return await super().exists(endpoint, path)
 
 
 @pytest.fixture
@@ -193,6 +210,69 @@ async def test_ssh_tmux_status_restores_exit_code(ssh_endpoint: Endpoint) -> Non
 
     assert status.alive is False
     assert status.exit_code == 7
+    assert status.finished is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ssh_tmux_status_waits_briefly_for_delayed_status_file(
+    ssh_endpoint: Endpoint,
+) -> None:
+    connection = FakeConnection()
+    connection.tmux_alive = False
+    status_file = ".envrt/sessions/envrt_session_race/status.json"
+    sftp = DelayedStatusSFTP(
+        status_file,
+        b'{"exit_code":0,"finished_at":"2026-07-27T00:00:00Z"}',
+    )
+    provider = SSHTmuxSessionProvider(  # type: ignore[arg-type]
+        FakeTransport(connection),
+        sftp,
+    )
+    session = Session(
+        session_id="session_race",
+        environment_id="env",
+        target_id="target",
+        backend="ssh_tmux",
+        command=["bash", "-l"],
+        backend_ref={
+            "tmux_session": "envrt_session_race",
+            "remote_status_file": status_file,
+        },
+        state=SessionState.ACTIVE,
+    )
+
+    status = await provider.status(session, ssh_endpoint)
+
+    assert status.alive is False
+    assert status.finished is True
+    assert status.exit_code == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_recovery_marks_unattachable_session_disconnected(runtime, tmp_path) -> None:
+    endpoint = await EndpointService(runtime).add_local("local", str(tmp_path))
+    environment = await EnvironmentService(runtime).create("env", [endpoint.endpoint_id])
+    target_id = environment.default_execution_target_id
+    assert target_id is not None
+    session = Session(
+        environment_id=environment.environment_id,
+        target_id=target_id,
+        backend="local_pty",
+        command=["python", "-i"],
+        state=SessionState.ACTIVE,
+        interaction_state=InteractionState.AUTOMATION_CONTROLLED,
+    )
+    await runtime.sessions.upsert(session)
+
+    result = await RecoveryService(runtime).reconcile_on_startup()
+    recovered = await runtime.sessions.get(session.session_id)
+
+    assert result["sessions"] == 1
+    assert recovered is not None
+    assert recovered.state == SessionState.DISCONNECTED
+    assert recovered.interaction_state == InteractionState.NONE
 
 
 class FakeDurableHandle:
@@ -277,3 +357,70 @@ async def test_recovery_reattaches_durable_session(runtime, tmp_path) -> None:
     assert recovered.state == SessionState.ACTIVE
     assert session.session_id in runtime.active.session_handles
     assert provider.initial_output_offset == len("already")
+
+
+class FakeFinishedProvider:
+    backend_name = "finished_fake"
+
+    async def create(self, params, on_output):
+        _ = (params, on_output)
+        raise AssertionError("create should not be called during recovery")
+
+    async def status(self, session: Session, endpoint: Endpoint):
+        _ = (session, endpoint)
+        return SimpleNamespace(alive=False, exit_code=None, finished=True)
+
+    async def attach(
+        self,
+        session: Session,
+        endpoint: Endpoint,
+        on_output,
+        initial_output_offset: int = 0,
+    ):
+        _ = (session, endpoint, on_output, initial_output_offset)
+        raise AssertionError("attach should not be called for finished sessions")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_recovery_finalizes_finished_durable_session_without_exit_code(
+    runtime,
+    tmp_path,
+) -> None:
+    endpoint = await EndpointService(runtime).add_local("local", str(tmp_path))
+    environment = await EnvironmentService(runtime).create("env", [endpoint.endpoint_id])
+    target_id = environment.default_execution_target_id
+    assert target_id is not None
+    runtime.providers.session["finished_fake"] = FakeFinishedProvider()
+    session = Session(
+        environment_id=environment.environment_id,
+        target_id=target_id,
+        backend="finished_fake",
+        command=["bash", "-l"],
+        state=SessionState.ACTIVE,
+        interaction_state=InteractionState.AUTOMATION_CONTROLLED,
+    )
+    await runtime.sessions.upsert(session)
+
+    result = await RecoveryService(runtime).reconcile_on_startup()
+    recovered = await runtime.sessions.get(session.session_id)
+
+    assert result["sessions"] == 1
+    assert recovered is not None
+    assert recovered.state == SessionState.TERMINATED
+    assert recovered.exit_code is None
+    assert recovered.interaction_state == InteractionState.NONE
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_output_resume_offset_counts_only_output_frames(runtime) -> None:
+    session_id = "session_resume"
+    await runtime.terminal_frames.append(session_id, TerminalFrameKind.OUTPUT, "abc")
+    await runtime.terminal_frames.append(session_id, TerminalFrameKind.REDACTED, "[REDACTED_INPUT]")
+    await runtime.terminal_frames.append(session_id, TerminalFrameKind.RESIZE, "120x30")
+    await runtime.terminal_frames.append(session_id, TerminalFrameKind.OUTPUT, "defg")
+
+    offset = await runtime.terminal_frames.output_resume_offset(session_id)
+
+    assert offset == len("abcdefg")
