@@ -19,6 +19,7 @@ dependencies = [
   "uvicorn>=0.30,<1",
   "httpx>=0.27,<1",
   "asyncssh>=2.14,<3",
+  "rich>=13.7,<14",
 ]
 
 [project.optional-dependencies]
@@ -31,12 +32,13 @@ dev = [
 
 [project.scripts]
 envrt = "environment_runtime.main:main"
+mini-harness = "mini_harness.cli:main"
 
 [tool.setuptools]
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["environment_runtime*"]
+include = ["environment_runtime*", "mini_harness*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -45,6 +47,8 @@ asyncio_mode = "auto"
 markers = [
   "unit: unit tests",
   "integration: local integration tests",
+  "llm: optional real model smoke tests",
+  "manual: manual tests",
 ]
 
 [tool.ruff]

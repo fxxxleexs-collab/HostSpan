@@ -44,3 +44,7 @@ Thumbs.db
 # Docker or integration-test scratch data
 tests/docker/keys/*
 !tests/docker/keys/.gitkeep
+
+
+.mini-harness.toml
+*mini-harness.toml

@@ -1,0 +1,8 @@
+{"sequence": 1, "timestamp": "2026-07-29T15:34:34.287268Z", "event_type": "agent.started", "state": "created", "summary": "Agent started", "payload": {}}
+{"sequence": 2, "timestamp": "2026-07-29T15:34:34.288268Z", "event_type": "agent.state_changed", "state": "initializing", "summary": "created -> initializing", "payload": {"from": "created", "to": "initializing"}}
+{"sequence": 3, "timestamp": "2026-07-29T15:34:34.293185Z", "event_type": "agent.state_changed", "state": "ready", "summary": "initializing -> ready", "payload": {"from": "initializing", "to": "ready"}}
+{"sequence": 4, "timestamp": "2026-07-29T15:34:34.295185Z", "event_type": "agent.state_changed", "state": "planning", "summary": "ready -> planning", "payload": {"from": "ready", "to": "planning"}}
+{"sequence": 5, "timestamp": "2026-07-29T15:34:34.297654Z", "event_type": "agent.state_changed", "state": "waiting_for_model", "summary": "planning -> waiting_for_model", "payload": {"from": "planning", "to": "waiting_for_model"}}
+{"sequence": 6, "timestamp": "2026-07-29T15:34:34.302832Z", "event_type": "model.request.started", "state": "waiting_for_model", "summary": "Model request started", "payload": {"message_count": 3, "tools": ["list_files", "read_file", "write_file", "run_command", "observe_task", "cancel_task"]}}
+{"sequence": 7, "timestamp": "2026-07-29T15:34:40.374050Z", "event_type": "agent.state_changed", "state": "failed", "summary": "waiting_for_model -> failed", "payload": {"from": "waiting_for_model", "to": "failed"}}
+{"sequence": 8, "timestamp": "2026-07-29T15:34:40.377146Z", "event_type": "agent.failed", "state": "failed", "summary": "Anthropic model request failed: HTTPStatusError", "payload": {"error_code": "MODEL_INVALID_RESPONSE", "recoverable": true}}

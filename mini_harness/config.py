@@ -1,0 +1,127 @@
+from __future__ import annotations
+
+import os
+import tomllib
+from pathlib import Path
+from typing import Literal, cast
+
+from pydantic import BaseModel, Field
+
+
+class AgentConfig(BaseModel):
+    max_iterations: int = Field(default=30, ge=1)
+    max_consecutive_tool_errors: int = Field(default=3, ge=1)
+    repeated_action_limit: int = Field(default=3, ge=2)
+    max_context_chars: int = Field(default=120_000, ge=1_000)
+    max_tool_result_chars: int = Field(default=20_000, ge=1_000)
+    recent_tool_turns: int = Field(default=12, ge=1)
+    tool_timeout_seconds: float = Field(default=30.0, gt=0)
+    task_observe_poll_seconds: float = Field(default=0.5, ge=0)
+
+
+ProviderName = Literal["openai", "openai-compatible", "anthropic"]
+
+
+class ModelConfig(BaseModel):
+    provider: ProviderName = "openai"
+    model: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    timeout_seconds: float = Field(default=60.0, gt=0)
+    max_retries: int = Field(default=2, ge=0)
+    max_tokens: int = Field(default=4096, ge=1)
+    anthropic_version: str = "2023-06-01"
+
+    @classmethod
+    def from_env(
+        cls, model: str | None = None, provider: ProviderName | None = None
+    ) -> ModelConfig:
+        configured_provider = provider or _provider_from_env() or "openai"
+        api_key = os.getenv("MINI_AGENT_API_KEY")
+        if configured_provider == "anthropic":
+            api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+        return cls(
+            provider=configured_provider,
+            model=model or os.getenv("MINI_AGENT_MODEL") or _default_model(configured_provider),
+            base_url=os.getenv("MINI_AGENT_BASE_URL") or _default_base_url(configured_provider),
+            api_key=api_key,
+        )
+
+
+class HarnessConfig(BaseModel):
+    agent: AgentConfig = Field(default_factory=AgentConfig)
+    model: ModelConfig = Field(default_factory=ModelConfig.from_env)
+
+
+def load_harness_config(
+    config_path: str | None = None,
+    project_root: str | None = None,
+    model_override: str | None = None,
+    provider_override: str | None = None,
+    max_iterations_override: int | None = None,
+) -> HarnessConfig:
+    payload: dict[str, object] = {}
+    path = _resolve_config_path(config_path, project_root)
+    if path is not None:
+        payload = tomllib.loads(path.read_text(encoding="utf-8-sig"))
+    config = HarnessConfig.model_validate(payload)
+    model = config.model
+    env_provider = _provider_from_env()
+    provider = normalize_provider(provider_override) or env_provider or model.provider
+    model = model.model_copy(
+        update={
+            "provider": provider,
+            "model": model_override
+            or os.getenv("MINI_AGENT_MODEL")
+            or model.model
+            or _default_model(provider),
+            "base_url": os.getenv("MINI_AGENT_BASE_URL")
+            or model.base_url
+            or _default_base_url(provider),
+            "api_key": os.getenv("MINI_AGENT_API_KEY")
+            or (os.getenv("ANTHROPIC_API_KEY") if provider == "anthropic" else None)
+            or model.api_key,
+        }
+    )
+    agent = config.agent
+    if max_iterations_override is not None:
+        agent = agent.model_copy(update={"max_iterations": max_iterations_override})
+    return HarnessConfig(agent=agent, model=model)
+
+
+def normalize_provider(value: str | None) -> ProviderName | None:
+    if value is None:
+        return None
+    if value in {"openai", "openai-compatible", "anthropic"}:
+        return cast(ProviderName, value)
+    raise ValueError("provider must be one of: openai, openai-compatible, anthropic")
+
+
+def _resolve_config_path(config_path: str | None, project_root: str | None) -> Path | None:
+    if config_path:
+        return Path(config_path).expanduser().resolve()
+    candidates: list[Path] = []
+    if project_root:
+        root = Path(project_root).resolve()
+        candidates.extend([root / "mini-harness.toml", root / ".mini-harness.toml"])
+    candidates.extend([Path.cwd() / "mini-harness.toml", Path.cwd() / ".mini-harness.toml"])
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _provider_from_env() -> ProviderName | None:
+    return normalize_provider(os.getenv("MINI_AGENT_PROVIDER"))
+
+
+def _default_base_url(provider: ProviderName) -> str:
+    if provider == "anthropic":
+        return "https://api.anthropic.com"
+    return "https://api.openai.com/v1"
+
+
+def _default_model(provider: ProviderName) -> str | None:
+    if provider == "anthropic":
+        return None
+    return "gpt-4.1-mini"
