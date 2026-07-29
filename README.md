@@ -390,6 +390,39 @@ For new agent harness work, prefer:
 from environment_runtime.sdk import AgentRuntimeClient
 ```
 
+## Mini Harness Agent
+
+This repository now includes `mini_harness`, a small SDK-consuming coding-agent harness for validating the recommended integration path:
+
+```text
+Mini Harness -> AgentRuntimeClient -> BrokerTransport -> local broker -> services/providers
+```
+
+Run a deterministic local sample:
+
+```powershell
+.\.venv\Scripts\mini-harness.exe run --embedded-broker --fake-model --project tests\mini_harness\sample_project "检查测试失败的原因，修改代码并确保所有测试通过。"
+```
+
+Without refreshing console scripts, the same command is available as:
+
+```powershell
+.\.venv\Scripts\python.exe -m mini_harness run --embedded-broker --fake-model --project tests\mini_harness\sample_project "检查测试失败的原因，修改代码并确保所有测试通过。"
+```
+
+See `docs/mini-harness.md` and `MINI_HARNESS_STATUS.md` for architecture, commands, verification status, and current limitations.
+
+Mini Harness supports TOML configuration for OpenAI-compatible APIs and Anthropic:
+
+```toml
+[model]
+provider = "anthropic" # or "openai" / "openai-compatible"
+model = "claude-your-model-name"
+api_key = "..."
+```
+
+Use `--config path\to\mini-harness.toml` or place `mini-harness.toml` in the project root.
+
 ## Recovery Behavior
 
 On runtime startup, recovery reconciles persisted live resources:
@@ -456,7 +489,7 @@ Broker/API/CLI/SDK are adapters over those services.
 
 High-value next steps:
 
-- Build the first real agent harness over `AgentRuntimeClient`: `read`, `write`, `bash`, `set_task`, `stop_task`, and `observe`.
+- Use Mini Harness to identify the most painful SDK/workspace gaps.
 - Improve workspace sync with SFTP directory upload/download, include/exclude rules, incremental revisions, and conflict strategy.
 - Implement SSH `proxy_jump`.
 - Add task log streaming as a first-class broker stream.
