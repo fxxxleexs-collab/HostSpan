@@ -4,6 +4,7 @@ import base64
 import builtins
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -12,11 +13,29 @@ from environment_runtime.config import RuntimeSettings
 from environment_runtime.sdk.transport import BrokerTransport, RuntimeTransport
 
 
+@dataclass(frozen=True)
+class RuntimePolicy:
+    """Default backend choices for semantic SDK helpers.
+
+    Low-level namespaces such as ``tasks`` and ``sessions`` remain explicit.
+    This policy is only used by higher-level helpers such as ``commands`` and
+    ``terminals``.
+    """
+
+    local_command_persistent: bool = False
+    remote_command_persistent: bool = True
+    local_terminal_backend: str = "local_pty"
+    remote_terminal_backend: str = "ssh_tmux"
+    allow_ssh_pty_fallback: bool = True
+    writer_lease_ttl_seconds: int = 300
+
+
 class AgentRuntimeClient:
     """Agent-facing facade over the runtime command surface."""
 
-    def __init__(self, transport: RuntimeTransport) -> None:
+    def __init__(self, transport: RuntimeTransport, policy: RuntimePolicy | None = None) -> None:
         self.transport = transport
+        self.policy = policy or RuntimePolicy()
         self.broker = BrokerNamespace(transport)
         self.endpoints = EndpointNamespace(transport)
         self.environments = EnvironmentNamespace(transport)
@@ -24,6 +43,8 @@ class AgentRuntimeClient:
         self.files = FileNamespace(transport)
         self.tasks = TaskNamespace(transport)
         self.sessions = SessionNamespace(transport)
+        self.commands = CommandNamespace(transport, self.policy)
+        self.terminals = TerminalNamespace(transport, self.policy)
 
     @classmethod
     def from_broker(
@@ -34,6 +55,7 @@ class AgentRuntimeClient:
         principal_id: str = "agent",
         principal_type: str = "agent",
         scope_id: str = "default",
+        policy: RuntimePolicy | None = None,
     ) -> AgentRuntimeClient:
         return cls(
             BrokerTransport(
@@ -43,7 +65,8 @@ class AgentRuntimeClient:
                 principal_id=principal_id,
                 principal_type=principal_type,
                 scope_id=scope_id,
-            )
+            ),
+            policy=policy,
         )
 
     def close(self) -> None:
@@ -380,6 +403,46 @@ class TaskNamespace:
     def logs_text(self, task_id: str) -> str:
         return "".join(str(item.get("chunk", "")) for item in self.logs(task_id))
 
+    def observe(
+        self,
+        task_id: str,
+        cursor: int = 0,
+        max_chars: int = 12_000,
+        wait_seconds: float = 0.0,
+        poll_interval_seconds: float = 0.25,
+    ) -> dict[str, Any]:
+        if cursor < 0:
+            raise ValueError("cursor must be greater than or equal to 0")
+        if max_chars <= 0:
+            raise ValueError("max_chars must be positive")
+        deadline = time.monotonic() + wait_seconds
+        task = self.get(task_id)
+        text = self.logs_text(task_id)
+        while wait_seconds > 0 and len(text) <= cursor and not _is_terminal_task(task):
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(poll_interval_seconds)
+            task = self.get(task_id)
+            text = self.logs_text(task_id)
+        next_cursor = len(text)
+        start = min(cursor, len(text))
+        chunk = text[start:]
+        truncated = len(chunk) > max_chars
+        if truncated:
+            chunk = chunk[-max_chars:]
+        is_terminal = _is_terminal_task(task)
+        return {
+            "task": task,
+            "task_id": task_id,
+            "text": chunk,
+            "cursor": next_cursor,
+            "truncated": truncated,
+            "state": task.get("state"),
+            "exit_code": task.get("exit_code"),
+            "is_terminal": is_terminal,
+            "terminal": is_terminal,
+        }
+
     def wait_for_log(
         self,
         task_id: str,
@@ -533,6 +596,204 @@ class SessionNamespace:
             time.sleep(poll_interval_seconds)
             last = self.tail(session_id, limit_chars)
         raise TimeoutError(f"marker {marker!r} was not observed in session {session_id}")
+
+
+class CommandNamespace:
+    def __init__(self, transport: RuntimeTransport, policy: RuntimePolicy) -> None:
+        self._transport = transport
+        self._policy = policy
+        self._tasks = TaskNamespace(transport)
+
+    def run(
+        self,
+        environment_id: str,
+        target_id: str | None,
+        argv: list[str],
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        persistent: bool | None = None,
+    ) -> dict[str, Any]:
+        target = _resolve_target(self._transport, environment_id, target_id)
+        resolved_persistent = persistent
+        if resolved_persistent is None:
+            resolved_persistent = (
+                self._policy.remote_command_persistent
+                if _is_remote_target(target)
+                else self._policy.local_command_persistent
+            )
+        task = self._tasks.start(
+            environment_id,
+            str(target["target_id"]),
+            argv,
+            cwd=cwd,
+            env=env,
+            persistent=resolved_persistent,
+        )
+        task["sdk"] = {
+            "operation": "commands.run",
+            "target_provider": target.get("provider"),
+            "persistent": resolved_persistent,
+        }
+        return task
+
+    def observe(
+        self,
+        task_id: str,
+        cursor: int = 0,
+        max_chars: int = 12_000,
+        wait_seconds: float = 0.0,
+        poll_interval_seconds: float = 0.25,
+    ) -> dict[str, Any]:
+        return self._tasks.observe(
+            task_id,
+            cursor=cursor,
+            max_chars=max_chars,
+            wait_seconds=wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+        )
+
+
+class TerminalNamespace:
+    def __init__(self, transport: RuntimeTransport, policy: RuntimePolicy) -> None:
+        self._transport = transport
+        self._policy = policy
+        self._sessions = SessionNamespace(transport)
+
+    def open(
+        self,
+        environment_id: str,
+        target_id: str | None,
+        argv: list[str],
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        backend: str | None = None,
+        cols: int = 120,
+        rows: int = 30,
+        term_type: str = "xterm-256color",
+        acquire_lease: bool = True,
+        force_lease: bool = True,
+    ) -> dict[str, Any]:
+        target = _resolve_target(self._transport, environment_id, target_id)
+        selected_backend = backend or (
+            self._policy.remote_terminal_backend
+            if _is_remote_target(target)
+            else self._policy.local_terminal_backend
+        )
+        fallback_from: str | None = None
+        try:
+            session = self._sessions.create(
+                environment_id,
+                str(target["target_id"]),
+                argv,
+                cwd=cwd,
+                env=env,
+                backend=selected_backend,
+                cols=cols,
+                rows=rows,
+                term_type=term_type,
+            )
+        except Exception:
+            if not (
+                _is_remote_target(target)
+                and selected_backend == "ssh_tmux"
+                and self._policy.allow_ssh_pty_fallback
+            ):
+                raise
+            fallback_from = selected_backend
+            selected_backend = "ssh_pty"
+            session = self._sessions.create(
+                environment_id,
+                str(target["target_id"]),
+                argv,
+                cwd=cwd,
+                env=env,
+                backend=selected_backend,
+                cols=cols,
+                rows=rows,
+                term_type=term_type,
+            )
+
+        lease = None
+        if acquire_lease:
+            lease = self._sessions.acquire_lease(
+                str(session["session_id"]),
+                ttl_seconds=self._policy.writer_lease_ttl_seconds,
+                force=force_lease,
+            )
+        return {
+            "session": session,
+            "lease": lease,
+            "session_id": session["session_id"],
+            "backend": session.get("backend", selected_backend),
+            "fallback_from": fallback_from,
+            "target_provider": target.get("provider"),
+        }
+
+    def observe(
+        self,
+        session_id: str,
+        after_seq: int | None = None,
+        limit: int = 500,
+        limit_chars: int = 20_000,
+    ) -> dict[str, Any]:
+        frames = self._sessions.frames(session_id, after_seq=after_seq, limit=limit)
+        tail = self._sessions.tail(session_id, limit_chars=limit_chars)
+        last_seq = tail.get("last_seq")
+        if frames:
+            last_seq = frames[-1].get("seq", last_seq)
+        return {
+            "session_id": session_id,
+            "frames": frames,
+            "text": tail.get("text", ""),
+            "cursor": last_seq,
+            "last_seq": last_seq,
+        }
+
+    def write(self, session_id: str, data: str, owner_id: str | None = None) -> dict[str, Any]:
+        return self._sessions.write(session_id, data, owner_id=owner_id)
+
+    def resize(self, session_id: str, cols: int, rows: int) -> dict[str, Any]:
+        return self._sessions.resize(session_id, cols, rows)
+
+    def close(self, session_id: str) -> dict[str, Any]:
+        return self._sessions.terminate(session_id)
+
+    def stream(
+        self,
+        session_id: str,
+        after_seq: int | None = None,
+        max_items: int | None = None,
+        timeout_seconds: float | None = None,
+        heartbeat_seconds: float = 15.0,
+    ) -> Iterator[dict[str, Any]]:
+        yield from self._sessions.stream_frames(
+            session_id,
+            after_seq=after_seq,
+            max_items=max_items,
+            timeout_seconds=timeout_seconds,
+            heartbeat_seconds=heartbeat_seconds,
+        )
+
+
+def _resolve_target(
+    transport: RuntimeTransport,
+    environment_id: str,
+    target_id: str | None,
+) -> dict[str, Any]:
+    environment = transport.request("env.get", {"environment_id": environment_id})
+    resolved_target_id = target_id or environment.get("default_execution_target_id")
+    for target in environment.get("execution_targets", []):
+        if target.get("target_id") == resolved_target_id:
+            return target
+    raise ValueError(f"target {resolved_target_id!r} was not found in environment {environment_id}")
+
+
+def _is_remote_target(target: dict[str, Any]) -> bool:
+    return str(target.get("provider", "")).startswith("ssh")
+
+
+def _is_terminal_task(task: dict[str, Any]) -> bool:
+    return str(task.get("state")) in {"SUCCEEDED", "FAILED", "CANCELLED", "LOST"}
 
 
 def _set_optional(params: dict[str, Any], key: str, value: Any) -> None:

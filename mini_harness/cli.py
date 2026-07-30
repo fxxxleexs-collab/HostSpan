@@ -20,12 +20,41 @@ from mini_harness.config import load_harness_config
 from mini_harness.trace.writer import TraceWriter
 from mini_harness.ui.console import RichEventRenderer
 
-app = typer.Typer(help="Mini Harness Agent")
+app = typer.Typer(help="Mini Harness Agent", invoke_without_command=True)
 
 
 @app.callback()
-def _main_callback() -> None:
-    return None
+def _main_callback(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    typer.echo("Mini Harness Agent interactive launcher")
+    project = typer.prompt("Project root", default=str(Path.cwd()))
+    config_file = typer.prompt("Config file (blank for auto-discovery)", default="")
+    task = typer.prompt("Task")
+    fake_model = typer.confirm("Use fake model?", default=False)
+    verbose = typer.confirm("Verbose output?", default=True)
+    try:
+        asyncio.run(
+            _run_async(
+                task=task,
+                project=project,
+                config_file=config_file or None,
+                provider=None,
+                model=None,
+                fake_model=fake_model,
+                max_iterations=30,
+                runtime_url=None,
+                endpoint_id=None,
+                environment_id=None,
+                target_id=None,
+                verbose=verbose,
+                no_color=False,
+                embedded_broker=True,
+            )
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    raise typer.Exit()
 
 
 @app.command("run")
