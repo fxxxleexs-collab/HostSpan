@@ -196,7 +196,7 @@ class RunCommandTool(RuntimeTool):
             context.target_id,
             data.argv,
             cwd,
-            True,
+            False,
         )
         task_id = str(task["task_id"])
         context.active_task_id = task_id

@@ -14,7 +14,7 @@ import pytest
 
 from environment_runtime.broker import BrokerAddress, LocalBrokerServer
 from environment_runtime.config import RuntimeSettings
-from environment_runtime.sdk import AgentRuntimeClient
+from environment_runtime.sdk import AgentRuntimeClient, RuntimePolicy
 
 
 class FakeTransport:
@@ -40,20 +40,64 @@ class FakeTransport:
                 },
                 "target_id": "target_1",
             }
+        if method == "env.get":
+            if params["environment_id"] == "env_ssh":
+                return {
+                    "environment_id": "env_ssh",
+                    "name": "ssh-env",
+                    "endpoint_ids": ["endpoint_ssh"],
+                    "default_execution_target_id": "target_ssh",
+                    "execution_targets": [
+                        {
+                            "target_id": "target_ssh",
+                            "endpoint_id": "endpoint_ssh",
+                            "provider": "ssh_process",
+                        }
+                    ],
+                }
+            return {
+                "environment_id": "env_1",
+                "name": "local-env",
+                "endpoint_ids": ["endpoint_1"],
+                "default_execution_target_id": "target_1",
+                "execution_targets": [
+                    {
+                        "target_id": "target_1",
+                        "endpoint_id": "endpoint_1",
+                        "provider": "local_process",
+                    }
+                ],
+            }
         if method == "session.create":
             return {"session_id": "session_1", "backend": params.get("backend") or "local_pty"}
         if method == "session.acquire_lease":
             return {"lease_id": "lease_1", "session_id": params["session_id"]}
         if method == "session.write":
             return {"session_id": params["session_id"]}
+        if method == "session.frames":
+            return [{"seq": 7, "kind": "output", "data": "READY\n"}]
+        if method == "session.tail":
+            return {"session_id": params["session_id"], "text": "READY\n", "last_seq": 7}
         if method == "file.write_text":
             return {"size": len(params["text"])}
         if method == "file.read_text":
             return {"text": "hello"}
         if method == "workspace.create":
             return {"workspace_id": "workspace_1", "name": params["name"]}
+        if method == "task.start":
+            return {
+                "task_id": "task_1",
+                "state": "RUNNING",
+                "persistent": params["persistent"],
+                "command": {"argv": params["argv"]},
+            }
+        if method == "task.get":
+            return {"task_id": params["task_id"], "state": "RUNNING", "exit_code": None}
         if method == "task.logs":
-            return [{"stream": "stdout", "offset": 0, "chunk": "TASK_READY\n"}]
+            return [
+                {"stream": "stdout", "offset": 0, "chunk": "TASK_READY\n"},
+                {"stream": "stdout", "offset": 11, "chunk": "TASK_MORE\n"},
+            ]
         raise AssertionError(f"unexpected method: {method}")
 
     def stream(
@@ -116,6 +160,50 @@ def test_agent_sdk_facade_maps_to_canonical_transport_methods(tmp_path: Path) ->
             },
         )
     ]
+
+
+@pytest.mark.unit
+def test_agent_sdk_semantic_command_policy_selects_remote_persistence() -> None:
+    transport = FakeTransport()
+    client = AgentRuntimeClient(transport)
+
+    local_task = client.commands.run("env_1", None, ["python", "-m", "pytest"])
+    remote_task = client.commands.run("env_ssh", None, ["bash", "-lc", "pytest"])
+    observed = client.tasks.observe("task_1", cursor=len("TASK_READY\n"), max_chars=100)
+
+    start_requests = [
+        params for method, params in transport.requests if method == "task.start"
+    ]
+    assert local_task["sdk"]["persistent"] is False
+    assert remote_task["sdk"]["persistent"] is True
+    assert start_requests[0]["persistent"] is False
+    assert start_requests[1]["persistent"] is True
+    assert observed["text"] == "TASK_MORE\n"
+    assert observed["cursor"] == len("TASK_READY\nTASK_MORE\n")
+
+
+@pytest.mark.unit
+def test_agent_sdk_terminal_policy_defaults_remote_to_tmux_and_acquires_lease() -> None:
+    transport = FakeTransport()
+    client = AgentRuntimeClient(
+        transport,
+        policy=RuntimePolicy(remote_terminal_backend="ssh_tmux", writer_lease_ttl_seconds=60),
+    )
+
+    opened = client.terminals.open("env_ssh", None, ["bash", "-l"])
+    observed = client.terminals.observe(opened["session_id"], after_seq=0)
+    client.terminals.write(opened["session_id"], "echo ok\n")
+
+    create_request = next(params for method, params in transport.requests if method == "session.create")
+    lease_request = next(
+        params for method, params in transport.requests if method == "session.acquire_lease"
+    )
+    assert opened["backend"] == "ssh_tmux"
+    assert opened["lease"]["lease_id"] == "lease_1"
+    assert create_request["backend"] == "ssh_tmux"
+    assert lease_request["ttl_seconds"] == 60
+    assert observed["cursor"] == 7
+    assert observed["text"] == "READY\n"
 
 
 @pytest.mark.integration

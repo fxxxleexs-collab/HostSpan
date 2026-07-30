@@ -122,7 +122,7 @@ def default_fake_model() -> FakeModelProvider:
             ToolDecision(
                 type="tool",
                 tool_name="run_command",
-                arguments={"argv": [sys.executable, "-m", "pytest", "-q"], "cwd": "."},
+                arguments={"argv": [*_test_python_argv(), "-m", "pytest", "-q"], "cwd": "."},
                 reason_summary="Run the tests through the runtime task API.",
             ),
             ToolDecision(
@@ -143,7 +143,7 @@ def default_fake_model() -> FakeModelProvider:
             ToolDecision(
                 type="tool",
                 tool_name="run_command",
-                arguments={"argv": [sys.executable, "-m", "pytest", "-q"], "cwd": "."},
+                arguments={"argv": [*_test_python_argv(), "-m", "pytest", "-q"], "cwd": "."},
                 reason_summary="Rerun tests after the fix.",
             ),
             ToolDecision(
@@ -174,3 +174,12 @@ def build_model_provider(
     if config.provider == "anthropic":
         return AnthropicModelProvider(config)
     return OpenAICompatibleModelProvider(config)
+
+
+def _test_python_argv() -> list[str]:
+    if getattr(sys, "frozen", False):
+        local_venv_python = Path.cwd() / ".venv" / "Scripts" / "python.exe"
+        if local_venv_python.exists():
+            return [str(local_venv_python)]
+        return ["python"]
+    return [sys.executable]

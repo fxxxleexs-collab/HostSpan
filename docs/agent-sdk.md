@@ -13,9 +13,16 @@ Only `BrokerTransport` is implemented today, but the facade is designed so futur
 ## Create A Client
 
 ```python
-from environment_runtime.sdk import AgentRuntimeClient
+from environment_runtime.sdk import AgentRuntimeClient, RuntimePolicy
 
-client = AgentRuntimeClient.from_broker(principal_id="agent-a")
+client = AgentRuntimeClient.from_broker(
+    principal_id="agent-a",
+    policy=RuntimePolicy(
+        remote_command_persistent=True,
+        remote_terminal_backend="ssh_tmux",
+        allow_ssh_pty_fallback=True,
+    ),
+)
 ```
 
 With explicit settings:
@@ -43,6 +50,8 @@ The facade exposes:
 - `client.files`
 - `client.tasks`
 - `client.sessions`
+- `client.commands`
+- `client.terminals`
 
 ## Environment Helpers
 
@@ -123,7 +132,27 @@ client.tasks.wait_for_log(task["task_id"], "TICK=2", timeout_seconds=20)
 final = client.tasks.wait(task["task_id"], timeout_seconds=60)
 ```
 
-For SSH tasks, use `persistent=True`.
+For low-level SSH tasks, use `persistent=True`. The higher-level `client.commands.run`
+helper does this automatically for SSH targets.
+
+Incremental observation:
+
+```python
+cursor = 0
+task = client.commands.run(
+    environment_id,
+    target_id,
+    ["bash", "-lc", "for i in 0 1 2; do echo TICK=$i; sleep 1; done"],
+)
+
+while True:
+    update = client.tasks.observe(task["task_id"], cursor=cursor, wait_seconds=1)
+    cursor = update["cursor"]
+    if update["text"]:
+        print(update["text"], end="")
+    if update["is_terminal"]:
+        break
+```
 
 ## Session Tools
 
@@ -159,14 +188,57 @@ for frame in client.sessions.stream_frames(session["session_id"], after_seq=-1):
     print(frame["kind"], frame["stream"], frame["data"])
 ```
 
+## Semantic Agent Helpers
+
+`client.commands` and `client.terminals` are policy-based wrappers over the lower-level
+task and session namespaces.
+
+Run a non-interactive command:
+
+```python
+task = client.commands.run(
+    environment_id,
+    target_id,
+    ["pytest", "-q"],
+    cwd=".",
+)
+```
+
+Default command policy:
+
+- Local targets start normal tasks unless the policy says otherwise.
+- SSH targets start persistent detached tasks so logs, status, and recovery are available.
+
+Open an interactive terminal:
+
+```python
+opened = client.terminals.open(
+    environment_id,
+    target_id,
+    ["bash", "-l"],
+)
+
+client.terminals.write(opened["session_id"], "echo hello\n")
+terminal = client.terminals.observe(opened["session_id"], after_seq=0)
+```
+
+Default terminal policy:
+
+- Local targets use `local_pty`.
+- SSH targets use `ssh_tmux`.
+- If `ssh_tmux` fails and `allow_ssh_pty_fallback=True`, the SDK retries with `ssh_pty`.
+- `terminals.open` acquires a writer lease by default.
+
 ## Suggested Harness Mapping
 
 - `read`: `client.files.read_text` or `client.files.read_bytes`
 - `write`: `client.files.write_text` or `client.files.write_bytes`
-- `bash`: `client.tasks.start`, usually `persistent=True` for remote targets
+- `bash`: `client.commands.run`
 - `set_task`: harness-side record of active `task_id`, `session_id`, environment, and target
 - `stop_task`: `client.tasks.cancel`
-- `observe`: `client.tasks.logs_text`, `client.tasks.wait_for_log`, `client.sessions.tail`, or `client.sessions.stream_frames`
+- `observe`: `client.tasks.observe`, `client.terminals.observe`, or `client.terminals.stream`
+- `open_terminal`: `client.terminals.open`
+- `send_input`: `client.terminals.write`
 
 ## Current SDK Limits
 
@@ -174,4 +246,4 @@ for frame in client.sessions.stream_frames(session["session_id"], after_seq=-1):
 - The facade is synchronous. The legacy HTTP SDK has async methods, but the new agent facade currently targets local broker usage.
 - No automatic broker startup helper yet.
 - No high-level workspace project sync helper yet.
-- No task log stream helper yet.
+- No task log stream helper yet; `tasks.observe` is cursor-based polling.
