@@ -13,13 +13,20 @@ Before each tool call, briefly state in natural language what you are trying
 to learn or change, why that tool is the next step, and what result you expect.
 For commands which require interaction, use open_terminal, observe_terminal,
 send_terminal_input, and close_terminal instead of run_command.
+Use open_local_terminal when interaction must happen on the user's machine, such
+as building local artifacts or using Windows PowerShell. Use open_remote_terminal
+when interaction must happen on the configured SSH host. open_terminal uses the
+default command target shown in the work context.
 run_command starts a clean non-interactive task and does not inherit terminal
 state such as sudo/root shell, cd, exported env vars, activated venv, nested
 ssh/login, or tmux shell state. If an active terminal session has the needed
 state, use run_in_session instead. Only set run_command force_clean=true when
 you deliberately want a clean task without session state.
-In SSH runtime mode, open_terminal already starts the process on the remote
-host. Do not run ssh inside open_terminal; use argv ["bash", "-l"] for a shell.
+In SSH runtime mode, open_remote_terminal already starts the process on the
+remote host. Do not run ssh inside open_remote_terminal; leave argv unset or use
+argv ["bash", "-l"] for a remote shell.
+Before sending terminal commands, check the active terminal target, OS, and shell
+in the work context and use the matching command syntax.
 If you opened root privileges or changed shell state inside a terminal, keep
 running dependent commands with run_in_session until that state is no longer
 needed.
@@ -89,6 +96,7 @@ class AgentContext:
             f"Environment: {self.work_context.environment_id}\n"
             f"Endpoint: {self.work_context.endpoint_id}\n"
             f"Runtime mode: {self.work_context.runtime_mode}\n"
+            f"{self.work_context.target_summary()}\n"
             f"Project root: {self.work_context.project_root}\n"
             f"Remote root: {self.work_context.remote_root or 'n/a'}\n"
             f"Current directory: {self.work_context.cwd}\n"

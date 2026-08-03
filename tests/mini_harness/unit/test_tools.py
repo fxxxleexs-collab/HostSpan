@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from mini_harness.agent.controller import AgentController
@@ -91,6 +93,8 @@ async def test_runtime_tools_map_remote_paths_and_terminal_tools(fake_runtime) -
     assert read.ok
     assert run.metadata["cwd"] == "/srv/app"
     assert opened.resource_ref == "session:session_1"
+    assert opened.metadata["target"] == "remote"
+    assert opened.metadata["backend"] == "ssh_tmux"
     assert "TERMINAL_READY" in str(observed.content)
     assert sent.ok
     assert closed.state == "TERMINATED"
@@ -98,6 +102,48 @@ async def test_runtime_tools_map_remote_paths_and_terminal_tools(fake_runtime) -
     assert fake_runtime.requests[0][1]["path"] == "/srv/app"
     assert fake_runtime.requests[1][1]["path"] == "/srv/app/calculator.py"
     assert fake_runtime.requests[2][1]["cwd"] == "/srv/app"
+
+
+@pytest.mark.asyncio
+async def test_open_local_terminal_is_available_in_ssh_runtime(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root="/local/project",
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+        local_endpoint_id="endpoint_1",
+        local_environment_id="env_1",
+        local_target_id="target_1",
+        local_os="windows",
+        local_shell="powershell",
+        remote_os="linux",
+        remote_shell="bash",
+    )
+
+    opened = await registry.execute("open_local_terminal", {}, context)
+
+    assert opened.ok
+    assert opened.metadata["target"] == "local"
+    assert opened.metadata["target_os"] == "windows"
+    assert opened.metadata["target_shell"] == "powershell"
+    assert context.active_session_target == "local"
+    assert context.active_session_os == "windows"
+    assert fake_runtime.requests[-1] == (
+        "open_terminal",
+        {
+            "environment_id": "env_1",
+            "target_id": "target_1",
+            "argv": ["powershell.exe", "-NoLogo"],
+            "cwd": str(Path("/local/project").resolve()),
+            "cols": 120,
+            "rows": 30,
+        },
+    )
 
 
 @pytest.mark.asyncio
@@ -387,6 +433,7 @@ async def test_registry_handles_unknown_tool(fake_runtime) -> None:
 @pytest.mark.asyncio
 async def test_controller_configures_ssh_runtime_before_loop(fake_runtime) -> None:
     sink = InMemoryEventSink()
+    project_root = str(Path("/local/project").resolve())
     controller = AgentController(
         fake_runtime,
         FakeModelProvider([FinalDecision(type="final", summary="ok")]),
@@ -409,6 +456,9 @@ async def test_controller_configures_ssh_runtime_before_loop(fake_runtime) -> No
 
     assert result.final_state == AgentState.COMPLETED
     assert fake_runtime.requests[:2] == [
+        ("ensure_local", {"name": "mini-harness-local", "root": project_root}),
         ("ensure_ssh", {"name": "remote-test", "hostname": "example.test"}),
+    ]
+    assert fake_runtime.requests[2:3] == [
         ("ensure_dir", {"endpoint_id": "endpoint_ssh", "path": "/srv/app"}),
     ]

@@ -198,15 +198,22 @@ class FakeHarnessRuntime:
                 },
             )
         )
-        if self.terminal_fallback:
+        is_remote = target_id.endswith("_ssh")
+        if self.terminal_fallback and is_remote:
             return {
                 "session_id": "session_1",
                 "backend": "ssh_pty",
                 "fallback_from": "ssh_tmux",
                 "fallback_error": "tmux: command not found",
                 "lease": {"lease_id": "lease_1"},
+                "target_provider": "ssh_process",
             }
-        return {"session_id": "session_1", "backend": "local_pty", "lease": {"lease_id": "lease_1"}}
+        return {
+            "session_id": "session_1",
+            "backend": "ssh_tmux" if is_remote else "local_pty",
+            "lease": {"lease_id": "lease_1"},
+            "target_provider": "ssh_process" if is_remote else "local_process",
+        }
 
     def observe_terminal(
         self,

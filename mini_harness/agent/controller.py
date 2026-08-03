@@ -67,6 +67,7 @@ class AgentController:
                 remote_root=self.runtime_config.ssh.remote_root,
             )
         elif self.runtime_config.mode == "ssh":
+            local_bundle = self.runtime_client.ensure_local("mini-harness-local", project_path)
             bundle = self.runtime_client.ensure_ssh(
                 self.runtime_config.name,
                 self.runtime_config.ssh,
@@ -82,6 +83,11 @@ class AgentController:
                 project_root=project_path,
                 runtime_mode="ssh",
                 remote_root=remote_root,
+                local_endpoint_id=str(local_bundle["endpoint"]["endpoint_id"]),
+                local_environment_id=str(local_bundle["environment"]["environment_id"]),
+                local_target_id=str(local_bundle["target_id"]),
+                remote_os="linux",
+                remote_shell="bash",
             )
         else:
             bundle = self.runtime_client.ensure_local("mini-harness-local", project_path)

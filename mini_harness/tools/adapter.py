@@ -10,7 +10,7 @@ from pydantic import BaseModel, ValidationError
 
 from mini_harness.errors import ErrorCode, MiniHarnessError
 from mini_harness.runtime.client import HarnessRuntimeClient
-from mini_harness.runtime.work_context import WorkContext
+from mini_harness.runtime.work_context import ResolvedTerminalTarget, TargetBinding, WorkContext
 from mini_harness.tools.base import AgentTool
 from mini_harness.tools.schemas import (
     CancelTaskInput,
@@ -402,13 +402,24 @@ class EnsureRemoteToolTool(RuntimeTool):
 
 
 class OpenTerminalTool(RuntimeTool):
-    def __init__(self, runtime: HarnessRuntimeClient) -> None:
+    def __init__(
+        self,
+        runtime: HarnessRuntimeClient,
+        name: str = "open_terminal",
+        fixed_target: ResolvedTerminalTarget | None = None,
+    ) -> None:
+        description = (
+            "Open an interactive runtime terminal session."
+            if fixed_target is None
+            else f"Open an interactive {fixed_target} terminal session."
+        )
         super().__init__(
             runtime,
-            "open_terminal",
-            "Open an interactive runtime terminal session.",
+            name,
+            description,
             OpenTerminalInput,
         )
+        self.fixed_target = fixed_target
 
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = (
@@ -416,27 +427,38 @@ class OpenTerminalTool(RuntimeTool):
             if isinstance(parsed, OpenTerminalInput)
             else OpenTerminalInput.model_validate(parsed)
         )
-        if context.runtime_mode == "ssh" and _starts_nested_ssh(data.argv):
+        requested_target = self.fixed_target or data.target
+        target = context.terminal_target(requested_target)
+        argv = data.argv or _default_terminal_argv(target)
+        if not argv:
+            return ToolResult(
+                ok=False,
+                summary="terminal argv cannot be empty",
+                error_code=ErrorCode.TOOL_ARGUMENT_INVALID.value,
+                recoverable=True,
+                metadata={"target": target.location},
+            )
+        if target.location == "remote" and _starts_nested_ssh(argv):
             return ToolResult(
                 ok=False,
                 summary=(
-                    "open_terminal argv must start a program on the configured remote target, "
+                    f"{self.definition.name} argv must start a program on the configured remote target, "
                     "not run ssh again. Use argv=['bash', '-l'] for a remote shell."
                 ),
                 error_code=ErrorCode.TOOL_ARGUMENT_INVALID.value,
                 recoverable=True,
                 metadata={
-                    "argv": data.argv,
-                    "runtime_mode": context.runtime_mode,
+                    "argv": argv,
+                    "target": target.location,
                     "recommended_arguments": {"argv": ["bash", "-l"], "cwd": data.cwd},
                 },
             )
         opened = await asyncio.to_thread(
             self.runtime.open_terminal,
-            context.environment_id,
-            context.target_id,
-            data.argv,
-            context.runtime_cwd(data.cwd),
+            target.environment_id,
+            target.target_id,
+            argv,
+            context.runtime_cwd_for(data.cwd, target.location),
             data.cols,
             data.rows,
         )
@@ -445,13 +467,24 @@ class OpenTerminalTool(RuntimeTool):
         context.terminal_cursor = None
         fallback_from = opened.get("fallback_from")
         backend = opened.get("backend", "unknown")
-        context.mark_session_state(kind=_session_kind(str(backend)), privilege="user")
-        summary = f"opened session:{session_id} using {backend}"
+        target_provider = opened.get("target_provider")
+        context.mark_session_state(
+            target=target.location,
+            os_name=target.os_name,
+            shell=target.shell,
+            kind=_session_kind(str(backend)),
+            privilege="user",
+        )
+        summary = (
+            f"opened {target.location} session:{session_id} "
+            f"using {backend} on {target.os_name}/{target.shell}"
+        )
         recommended_action = None
         if fallback_from:
             recommended_action = "run ensure_remote_tool with tool=tmux and install=true"
             summary = (
-                f"opened session:{session_id} using {backend} after {fallback_from} failed; "
+                f"opened {target.location} session:{session_id} using {backend} "
+                f"after {fallback_from} failed; "
                 f"{recommended_action}"
             )
         return ToolResult(
@@ -461,10 +494,15 @@ class OpenTerminalTool(RuntimeTool):
             state="ACTIVE",
             metadata={
                 "session_id": session_id,
+                "target": target.location,
+                "target_os": target.os_name,
+                "target_shell": target.shell,
+                "target_provider": target_provider,
                 "backend": backend,
                 "fallback_from": fallback_from,
                 "fallback_error": opened.get("fallback_error"),
                 "recommended_action": recommended_action,
+                "argv": argv,
             },
         )
 
@@ -725,6 +763,8 @@ def build_runtime_tools(runtime: HarnessRuntimeClient) -> list[AgentTool]:
         CancelTaskTool(runtime),
         EnsureRemoteToolTool(runtime),
         OpenTerminalTool(runtime),
+        OpenTerminalTool(runtime, "open_local_terminal", fixed_target="local"),
+        OpenTerminalTool(runtime, "open_remote_terminal", fixed_target="remote"),
         ObserveTerminalTool(runtime),
         SendTerminalInputTool(runtime),
         RunInSessionTool(runtime),
@@ -758,12 +798,30 @@ def _starts_nested_ssh(argv: list[str]) -> bool:
     return bool(argv) and argv[0].lower() == "ssh"
 
 
+def _default_terminal_argv(target: TargetBinding) -> list[str]:
+    if target.os_name == "windows":
+        if target.shell == "powershell":
+            return ["powershell.exe", "-NoLogo"]
+        return ["cmd.exe"]
+    shell = target.shell or "sh"
+    if shell in {"bash", "zsh", "fish"}:
+        return [shell, "-l"]
+    if shell.endswith(("bash", "zsh", "fish")):
+        return [shell, "-l"]
+    return [shell]
+
+
 def _clean_task_session_guard(
     argv: list[str],
     context: WorkContext,
     force_clean: bool,
 ) -> ToolResult | None:
     if force_clean or not context.active_session_id:
+        return None
+    if (
+        context.active_session_target is not None
+        and context.active_session_target != context.default_terminal_target()
+    ):
         return None
     if not context.active_session_stateful and context.active_session_privilege != "root":
         return None
