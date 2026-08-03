@@ -24,11 +24,15 @@ async def test_anthropic_provider_converts_tool_use() -> None:
             json={
                 "content": [
                     {
+                        "type": "text",
+                        "text": "I will read the file before changing anything.",
+                    },
+                    {
                         "type": "tool_use",
                         "id": "toolu_1",
                         "name": "read_file",
                         "input": {"path": "calculator.py"},
-                    }
+                    },
                 ]
             },
         )
@@ -60,6 +64,9 @@ async def test_anthropic_provider_converts_tool_use() -> None:
     assert isinstance(decision, ToolDecision)
     assert decision.tool_name == "read_file"
     assert decision.arguments == {"path": "calculator.py"}
+    assert decision.reason_summary == "I will read the file before changing anything."
+    assert decision.raw_output is not None
+    assert "tool_use" in decision.raw_output
     payload = captured["payload"]
     assert isinstance(payload, dict)
     assert payload["system"] == "system rules"
@@ -104,6 +111,7 @@ async def test_anthropic_provider_converts_structured_final() -> None:
     assert isinstance(decision, FinalDecision)
     assert decision.summary == "done"
     assert decision.details == "tests passed"
+    assert decision.raw_output == '{"type":"final","summary":"done","details":"tests passed"}'
 
 
 @pytest.mark.asyncio

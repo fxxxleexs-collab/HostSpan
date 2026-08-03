@@ -28,6 +28,7 @@ class RuntimePolicy:
     remote_terminal_backend: str = "ssh_tmux"
     allow_ssh_pty_fallback: bool = True
     writer_lease_ttl_seconds: int = 300
+    renew_terminal_lease_on_write: bool = True
 
 
 class AgentRuntimeClient:
@@ -42,7 +43,7 @@ class AgentRuntimeClient:
         self.workspaces = WorkspaceNamespace(transport)
         self.files = FileNamespace(transport)
         self.tasks = TaskNamespace(transport)
-        self.sessions = SessionNamespace(transport)
+        self.sessions = SessionNamespace(transport, self.policy)
         self.commands = CommandNamespace(transport, self.policy)
         self.terminals = TerminalNamespace(transport, self.policy)
 
@@ -480,8 +481,9 @@ class TaskNamespace:
 
 
 class SessionNamespace:
-    def __init__(self, transport: RuntimeTransport) -> None:
+    def __init__(self, transport: RuntimeTransport, policy: RuntimePolicy | None = None) -> None:
         self._transport = transport
+        self._policy = policy
 
     def create(
         self,
@@ -533,7 +535,31 @@ class SessionNamespace:
         _set_optional(params, "owner_type", owner_type)
         return self._transport.request("session.acquire_lease", params)
 
-    def write(self, session_id: str, data: str, owner_id: str | None = None) -> dict[str, Any]:
+    def write(
+        self,
+        session_id: str,
+        data: str,
+        owner_id: str | None = None,
+        renew_lease: bool | None = None,
+        ttl_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        should_renew = bool(
+            renew_lease
+            if renew_lease is not None
+            else self._policy and self._policy.renew_terminal_lease_on_write
+        )
+        if should_renew:
+            self.acquire_lease(
+                session_id,
+                ttl_seconds=ttl_seconds
+                or (
+                    self._policy.writer_lease_ttl_seconds
+                    if self._policy is not None
+                    else 300
+                ),
+                force=True,
+                owner_id=owner_id,
+            )
         params = {"session_id": session_id, "data": data}
         _set_optional(params, "owner_id", owner_id)
         return self._transport.request("session.write", params)
@@ -657,7 +683,7 @@ class TerminalNamespace:
     def __init__(self, transport: RuntimeTransport, policy: RuntimePolicy) -> None:
         self._transport = transport
         self._policy = policy
-        self._sessions = SessionNamespace(transport)
+        self._sessions = SessionNamespace(transport, policy)
 
     def open(
         self,
@@ -680,6 +706,7 @@ class TerminalNamespace:
             else self._policy.local_terminal_backend
         )
         fallback_from: str | None = None
+        fallback_error: str | None = None
         try:
             session = self._sessions.create(
                 environment_id,
@@ -692,7 +719,7 @@ class TerminalNamespace:
                 rows=rows,
                 term_type=term_type,
             )
-        except Exception:
+        except Exception as exc:
             if not (
                 _is_remote_target(target)
                 and selected_backend == "ssh_tmux"
@@ -700,6 +727,7 @@ class TerminalNamespace:
             ):
                 raise
             fallback_from = selected_backend
+            fallback_error = str(exc)
             selected_backend = "ssh_pty"
             session = self._sessions.create(
                 environment_id,
@@ -726,6 +754,7 @@ class TerminalNamespace:
             "session_id": session["session_id"],
             "backend": session.get("backend", selected_backend),
             "fallback_from": fallback_from,
+            "fallback_error": fallback_error,
             "target_provider": target.get("provider"),
         }
 
@@ -749,8 +778,24 @@ class TerminalNamespace:
             "last_seq": last_seq,
         }
 
-    def write(self, session_id: str, data: str, owner_id: str | None = None) -> dict[str, Any]:
-        return self._sessions.write(session_id, data, owner_id=owner_id)
+    def write(
+        self,
+        session_id: str,
+        data: str,
+        owner_id: str | None = None,
+        renew_lease: bool | None = None,
+    ) -> dict[str, Any]:
+        should_renew = (
+            self._policy.renew_terminal_lease_on_write
+            if renew_lease is None
+            else renew_lease
+        )
+        return self._sessions.write(
+            session_id,
+            data,
+            owner_id=owner_id,
+            renew_lease=should_renew,
+        )
 
     def resize(self, session_id: str, cols: int, rows: int) -> dict[str, Any]:
         return self._sessions.resize(session_id, cols, rows)

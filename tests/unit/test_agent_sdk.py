@@ -5,6 +5,7 @@ import contextlib
 import os
 import sys
 import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ class FakeTransport:
     def __init__(self) -> None:
         self.requests: list[tuple[str, dict[str, Any] | None]] = []
         self.streams: list[tuple[str, dict[str, Any] | None]] = []
+        self.fail_tmux_create = False
 
     def request(self, method: str, params: dict[str, Any] | None = None) -> Any:
         self.requests.append((method, params))
@@ -69,6 +71,8 @@ class FakeTransport:
                 ],
             }
         if method == "session.create":
+            if self.fail_tmux_create and params.get("backend") == "ssh_tmux":
+                raise RuntimeError("tmux: command not found")
             return {"session_id": "session_1", "backend": params.get("backend") or "local_pty"}
         if method == "session.acquire_lease":
             return {"lease_id": "lease_1", "session_id": params["session_id"]}
@@ -144,6 +148,7 @@ def test_agent_sdk_facade_maps_to_canonical_transport_methods(tmp_path: Path) ->
         "env.ensure_local",
         "session.create",
         "session.acquire_lease",
+        "session.acquire_lease",
         "session.write",
         "workspace.create",
         "file.write_text",
@@ -195,15 +200,107 @@ def test_agent_sdk_terminal_policy_defaults_remote_to_tmux_and_acquires_lease() 
     client.terminals.write(opened["session_id"], "echo ok\n")
 
     create_request = next(params for method, params in transport.requests if method == "session.create")
-    lease_request = next(
+    lease_requests = [
         params for method, params in transport.requests if method == "session.acquire_lease"
-    )
+    ]
     assert opened["backend"] == "ssh_tmux"
     assert opened["lease"]["lease_id"] == "lease_1"
     assert create_request["backend"] == "ssh_tmux"
-    assert lease_request["ttl_seconds"] == 60
+    assert [request["ttl_seconds"] for request in lease_requests] == [60, 60]
+    assert lease_requests[1]["force"] is True
     assert observed["cursor"] == 7
     assert observed["text"] == "READY\n"
+
+
+@pytest.mark.unit
+def test_agent_sdk_terminal_write_can_skip_lease_renewal() -> None:
+    transport = FakeTransport()
+    client = AgentRuntimeClient(
+        transport,
+        policy=RuntimePolicy(renew_terminal_lease_on_write=False),
+    )
+
+    client.terminals.write("session_1", "echo ok\n")
+
+    assert [method for method, _ in transport.requests] == ["session.write"]
+
+
+@pytest.mark.unit
+def test_agent_sdk_terminal_write_renews_lease_with_owner_override() -> None:
+    transport = FakeTransport()
+    client = AgentRuntimeClient(
+        transport,
+        policy=RuntimePolicy(writer_lease_ttl_seconds=45),
+    )
+
+    client.terminals.write("session_1", "echo ok\n", owner_id="agent-owner")
+
+    assert transport.requests == [
+        (
+            "session.acquire_lease",
+            {
+                "session_id": "session_1",
+                "ttl_seconds": 45,
+                "force": True,
+                "owner_id": "agent-owner",
+            },
+        ),
+        (
+            "session.write",
+            {"session_id": "session_1", "data": "echo ok\n", "owner_id": "agent-owner"},
+        ),
+    ]
+
+
+@pytest.mark.unit
+def test_agent_sdk_session_write_renews_lease_by_default() -> None:
+    transport = FakeTransport()
+    client = AgentRuntimeClient(
+        transport,
+        policy=RuntimePolicy(writer_lease_ttl_seconds=75),
+    )
+
+    client.sessions.write("session_1", "echo ok\n")
+
+    assert transport.requests == [
+        (
+            "session.acquire_lease",
+            {"session_id": "session_1", "ttl_seconds": 75, "force": True},
+        ),
+        ("session.write", {"session_id": "session_1", "data": "echo ok\n"}),
+    ]
+
+
+@pytest.mark.unit
+def test_agent_sdk_session_write_can_skip_lease_renewal() -> None:
+    transport = FakeTransport()
+    client = AgentRuntimeClient(transport)
+
+    client.sessions.write("session_1", "echo ok\n", renew_lease=False)
+
+    assert transport.requests == [
+        ("session.write", {"session_id": "session_1", "data": "echo ok\n"}),
+    ]
+
+
+@pytest.mark.unit
+def test_agent_sdk_terminal_policy_reports_tmux_fallback_error() -> None:
+    transport = FakeTransport()
+    transport.fail_tmux_create = True
+    client = AgentRuntimeClient(
+        transport,
+        policy=RuntimePolicy(remote_terminal_backend="ssh_tmux", allow_ssh_pty_fallback=True),
+    )
+
+    opened = client.terminals.open("env_ssh", None, ["bash", "-l"])
+    create_backends = [
+        params["backend"] for method, params in transport.requests if method == "session.create"
+    ]
+
+    assert opened["backend"] == "ssh_pty"
+    assert opened["fallback_from"] == "ssh_tmux"
+    assert opened["fallback_error"] == "tmux: command not found"
+    assert create_backends == ["ssh_tmux", "ssh_pty"]
 
 
 @pytest.mark.integration
@@ -237,7 +334,7 @@ def test_agent_sdk_runs_session_flow_over_broker_transport(tmp_path: Path) -> No
 
         ready_tail = client.sessions.tail_until(session["session_id"], "SDK_READY", timeout_seconds=10)
         client.sessions.acquire_lease(session["session_id"], force=True)
-        client.sessions.write(session["session_id"], "from-sdk\n")
+        client.sessions.write(session["session_id"], "from-sdk\n", renew_lease=False)
         final_tail = client.sessions.tail_until(
             session["session_id"],
             "SDK_GOT=from-sdk",
@@ -261,6 +358,77 @@ def test_agent_sdk_runs_session_flow_over_broker_transport(tmp_path: Path) -> No
             with contextlib.suppress(Exception):
                 client.broker.shutdown()
         client.close()
+        thread.join(timeout=10)
+
+
+@pytest.mark.integration
+def test_agent_sdk_session_write_renews_expired_lease_after_agent_restart(
+    tmp_path: Path,
+) -> None:
+    address = _test_address(tmp_path)
+    settings = RuntimeSettings(
+        database={"url": f"sqlite+aiosqlite:///{tmp_path / 'agent-sdk-renew.db'}"},
+        runtime={"data_dir": tmp_path / "agent-sdk-renew-data"},
+    )
+    server = LocalBrokerServer(settings, address)
+    thread = threading.Thread(target=lambda: asyncio.run(server.serve_forever()), daemon=True)
+    thread.start()
+    assert server.ready.wait(timeout=10)
+    agent_a = AgentRuntimeClient.from_broker(
+        address=address,
+        settings=settings,
+        principal_id="sdk-agent-a",
+        policy=RuntimePolicy(writer_lease_ttl_seconds=30),
+    )
+    agent_b = AgentRuntimeClient.from_broker(
+        address=address,
+        settings=settings,
+        principal_id="sdk-agent-b",
+        policy=RuntimePolicy(writer_lease_ttl_seconds=30),
+    )
+    try:
+        bundle = agent_a.environments.ensure_local("sdk-renew-env", tmp_path)
+        session = agent_a.sessions.create(
+            bundle["environment"]["environment_id"],
+            bundle["target_id"],
+            [
+                sys.executable,
+                "-u",
+                "-c",
+                (
+                    "print('RENEW_READY', flush=True)\n"
+                    "first = input()\n"
+                    "print(f'RENEW_GOT={first}', flush=True)\n"
+                ),
+            ],
+        )
+        agent_a.sessions.tail_until(session["session_id"], "RENEW_READY", timeout_seconds=10)
+        agent_a.sessions.acquire_lease(
+            session["session_id"],
+            ttl_seconds=1,
+            force=True,
+        )
+        time.sleep(1.2)
+
+        recovered = next(
+            item
+            for item in agent_b.sessions.list()
+            if item["session_id"] == session["session_id"]
+        )
+        agent_b.sessions.write(recovered["session_id"], "from-agent-b\n")
+        tail = agent_b.sessions.tail_until(
+            recovered["session_id"],
+            "RENEW_GOT=from-agent-b",
+            timeout_seconds=10,
+        )
+
+        assert "RENEW_GOT=from-agent-b" in tail["text"]
+    finally:
+        if thread.is_alive():
+            with contextlib.suppress(Exception):
+                agent_a.broker.shutdown()
+        agent_a.close()
+        agent_b.close()
         thread.join(timeout=10)
 
 

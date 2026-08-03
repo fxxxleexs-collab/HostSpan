@@ -15,6 +15,7 @@ import pytest
 from environment_runtime.broker import BrokerAddress, LocalBrokerServer
 from environment_runtime.config import RuntimeSettings
 from environment_runtime.sdk import AgentRuntimeClient
+from mini_harness.config import SSHRuntimeConfig
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool:
@@ -33,6 +34,8 @@ class FakeHarnessRuntime:
         self.task_state = "SUCCEEDED"
         self.task_exit_code = 0
         self.logs = [{"chunk": ".\n1 passed\n"}]
+        self.tmux_present = False
+        self.terminal_fallback = False
 
     def ensure_local(self, name: str, root: str) -> dict[str, Any]:
         self.requests.append(("ensure_local", {"name": name, "root": root}))
@@ -42,19 +45,31 @@ class FakeHarnessRuntime:
             "target_id": "target_1",
         }
 
+    def ensure_ssh(self, name: str, ssh: SSHRuntimeConfig) -> dict[str, Any]:
+        self.requests.append(("ensure_ssh", {"name": name, "hostname": ssh.hostname}))
+        return {
+            "endpoint": {"endpoint_id": "endpoint_ssh"},
+            "environment": {"environment_id": "env_ssh"},
+            "target_id": "target_ssh",
+        }
+
     def list_files(self, endpoint_id: str, path: str, recursive: bool = False) -> list[str]:
         self.requests.append(
             ("list_files", {"endpoint_id": endpoint_id, "path": path, "recursive": recursive})
         )
         return sorted(self.files)
 
+    def ensure_dir(self, endpoint_id: str, path: str) -> dict[str, Any]:
+        self.requests.append(("ensure_dir", {"endpoint_id": endpoint_id, "path": path}))
+        return {"endpoint_id": endpoint_id, "path": path}
+
     def read_text(self, endpoint_id: str, path: str) -> str:
         self.requests.append(("read_text", {"endpoint_id": endpoint_id, "path": path}))
-        return self.files[path]
+        return self.files.get(path, self.files[Path(path).name])
 
     def write_text(self, endpoint_id: str, path: str, text: str) -> dict[str, Any]:
         self.requests.append(("write_text", {"endpoint_id": endpoint_id, "path": path}))
-        self.files[path] = text
+        self.files[Path(path).name] = text
         return {"size": len(text.encode("utf-8"))}
 
     def start_task(
@@ -90,6 +105,140 @@ class FakeHarnessRuntime:
     def cancel_task(self, task_id: str) -> dict[str, Any]:
         self.requests.append(("cancel_task", {"task_id": task_id}))
         return {"task_id": task_id, "state": "CANCELLED"}
+
+    def run_command(
+        self,
+        environment_id: str,
+        target_id: str,
+        argv: list[str],
+        cwd: str,
+    ) -> dict[str, Any]:
+        command_text = " ".join(argv)
+        self.requests.append(
+            (
+                "run_command",
+                {
+                    "environment_id": environment_id,
+                    "target_id": target_id,
+                    "argv": argv,
+                    "cwd": cwd,
+                },
+            )
+        )
+        if "ENVRT_TOOL" in command_text:
+            if self.tmux_present:
+                self.task_state = "SUCCEEDED"
+                self.task_exit_code = 0
+                self.logs = [{"chunk": "ENVRT_TOOL_PRESENT tmux\ntmux 3.4\n"}]
+            elif "apt-get" in command_text:
+                self.tmux_present = True
+                self.task_state = "SUCCEEDED"
+                self.task_exit_code = 0
+                self.logs = [
+                    {"chunk": "ENVRT_TOOL_MISSING tmux\nENVRT_TOOL_INSTALLED tmux\ntmux 3.4\n"}
+                ]
+            else:
+                self.task_state = "FAILED"
+                self.task_exit_code = 7
+                self.logs = [{"chunk": "ENVRT_TOOL_MISSING tmux\n"}]
+        return {"task_id": self.task_id, "state": "RUNNING"}
+
+    def observe_task(
+        self,
+        task_id: str,
+        cursor: int,
+        max_chars: int,
+        wait_seconds: float,
+    ) -> dict[str, Any]:
+        self.requests.append(
+            (
+                "observe_task",
+                {
+                    "task_id": task_id,
+                    "cursor": cursor,
+                    "max_chars": max_chars,
+                    "wait_seconds": wait_seconds,
+                },
+            )
+        )
+        text = "".join(str(item.get("chunk", "")) for item in self.logs)
+        return {
+            "task": {
+                "task_id": task_id,
+                "state": self.task_state,
+                "exit_code": self.task_exit_code,
+            },
+            "text": text[cursor:],
+            "cursor": len(text),
+            "truncated": False,
+            "state": self.task_state,
+            "exit_code": self.task_exit_code,
+            "is_terminal": self.task_state in {"SUCCEEDED", "FAILED", "CANCELLED", "LOST"},
+        }
+
+    def open_terminal(
+        self,
+        environment_id: str,
+        target_id: str,
+        argv: list[str],
+        cwd: str,
+        cols: int,
+        rows: int,
+    ) -> dict[str, Any]:
+        self.requests.append(
+            (
+                "open_terminal",
+                {
+                    "environment_id": environment_id,
+                    "target_id": target_id,
+                    "argv": argv,
+                    "cwd": cwd,
+                    "cols": cols,
+                    "rows": rows,
+                },
+            )
+        )
+        if self.terminal_fallback:
+            return {
+                "session_id": "session_1",
+                "backend": "ssh_pty",
+                "fallback_from": "ssh_tmux",
+                "fallback_error": "tmux: command not found",
+                "lease": {"lease_id": "lease_1"},
+            }
+        return {"session_id": "session_1", "backend": "local_pty", "lease": {"lease_id": "lease_1"}}
+
+    def observe_terminal(
+        self,
+        session_id: str,
+        after_seq: int | None,
+        limit_chars: int,
+    ) -> dict[str, Any]:
+        self.requests.append(
+            (
+                "observe_terminal",
+                {"session_id": session_id, "after_seq": after_seq, "limit_chars": limit_chars},
+            )
+        )
+        frames = (
+            []
+            if after_seq is not None and after_seq >= 1
+            else [{"seq": 1, "data": "TERMINAL_READY\n"}]
+        )
+        return {
+            "session_id": session_id,
+            "frames": frames,
+            "text": "TERMINAL_READY\n",
+            "cursor": 1,
+        }
+
+    def write_terminal(self, session_id: str, data: str) -> dict[str, Any]:
+        self.requests.append(("write_terminal", {"session_id": session_id, "data": data}))
+        return {"session_id": session_id}
+
+    def close_terminal(self, session_id: str) -> dict[str, Any]:
+        self.requests.append(("close_terminal", {"session_id": session_id}))
+        return {"session_id": session_id, "state": "TERMINATED"}
 
 
 @pytest.fixture

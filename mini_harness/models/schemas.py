@@ -15,6 +15,7 @@ class FinalDecision(BaseModel):
     type: Literal["final"]
     summary: str
     details: str | None = None
+    raw_output: str | None = None
 
 
 class ToolDecision(BaseModel):
@@ -22,6 +23,7 @@ class ToolDecision(BaseModel):
     tool_name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
     reason_summary: str
+    raw_output: str | None = None
 
 
 AgentDecision = FinalDecision | ToolDecision

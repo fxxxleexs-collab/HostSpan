@@ -22,7 +22,7 @@ The package lives at `mini_harness/` so it remains independent from Runtime serv
 
 ## Tools
 
-The first version exposes only:
+The current version exposes:
 
 - `list_files`
 - `read_file`
@@ -30,8 +30,14 @@ The first version exposes only:
 - `run_command`
 - `observe_task`
 - `cancel_task`
+- `ensure_remote_tool`
+- `open_terminal`
+- `observe_terminal`
+- `send_terminal_input`
+- `run_in_session`
+- `close_terminal`
 
-Tool schemas hide endpoint, environment, target, broker, process, and persistence details from the model. `WorkContext` injects the stable Runtime resource IDs.
+Tool schemas hide endpoint, environment, target, broker, process, persistence, SSH, and tmux details from the model. `WorkContext` injects stable Runtime resource IDs and maps relative paths to either the local project root or the configured SSH `remote_root`.
 
 ## Running
 
@@ -44,19 +50,19 @@ Start a broker in one terminal:
 Run the deterministic sample flow:
 
 ```powershell
-.\.venv\Scripts\mini-harness.exe run --fake-model --project tests\mini_harness\sample_project "检查测试失败的原因，修改代码并确保所有测试通过。"
+.\.venv\Scripts\mini-harness.exe run --fake-model --project tests\mini_harness\sample_project "Fix the failing tests and verify they pass."
 ```
 
 If the editable install has not been refreshed yet, use the module entrypoint:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_harness run --fake-model --project tests\mini_harness\sample_project "检查测试失败的原因，修改代码并确保所有测试通过。"
+.\.venv\Scripts\python.exe -m mini_harness run --fake-model --project tests\mini_harness\sample_project "Fix the failing tests and verify they pass."
 ```
 
 For a self-contained local smoke run, use the embedded broker:
 
 ```powershell
-.\.venv\Scripts\mini-harness.exe run --embedded-broker --fake-model --project tests\mini_harness\sample_project "检查测试失败的原因，修改代码并确保所有测试通过。"
+.\.venv\Scripts\mini-harness.exe run --embedded-broker --fake-model --project tests\mini_harness\sample_project "Fix the failing tests and verify they pass."
 ```
 
 For a real model:
@@ -65,7 +71,7 @@ For a real model:
 $env:MINI_AGENT_API_KEY = "..."
 $env:MINI_AGENT_MODEL = "..."
 $env:MINI_AGENT_BASE_URL = "https://api.openai.com/v1"
-.\.venv\Scripts\mini-harness.exe run --embedded-broker --project tests\mini_harness\sample_project "修复失败测试并验证通过"
+.\.venv\Scripts\mini-harness.exe run --embedded-broker --project tests\mini_harness\sample_project "Fix the failing tests and verify they pass."
 ```
 
 Real model runs are smoke tests only. They are non-deterministic and are not part of default CI.
@@ -80,7 +86,7 @@ Mini Harness reads TOML config from:
 4. `./mini-harness.toml`
 5. `./.mini-harness.toml`
 
-CLI options and environment variables override the file. Common overrides:
+CLI options and environment variables override the file. Common model overrides:
 
 ```text
 MINI_AGENT_PROVIDER=openai | openai-compatible | anthropic
@@ -125,6 +131,72 @@ max_retries = 2
 ```
 
 For secrets, prefer environment variables instead of writing `api_key` in the file.
+
+## SSH Runtime
+
+Mini Harness can configure a remote SSH Runtime target from TOML:
+
+```toml
+[runtime]
+mode = "ssh"
+name = "remote-dev"
+
+[runtime.ssh]
+hostname = "127.0.0.1"
+username = "envrt"
+port = 2222
+known_hosts_file = "manual_ssh_test/known_hosts"
+identity_file = "manual_ssh_test/envrt_test_key"
+use_ssh_agent = false
+remote_root = ".environment-runtime/mini-harness-project"
+prefer_tmux = true
+allow_ssh_pty_fallback = true
+```
+
+Equivalent CLI overrides:
+
+```powershell
+.\.venv\Scripts\mini-harness.exe run `
+  --embedded-broker `
+  --runtime-mode ssh `
+  --ssh-host 127.0.0.1 `
+  --ssh-user envrt `
+  --ssh-port 2222 `
+  --ssh-key manual_ssh_test\envrt_test_key `
+  --ssh-known-hosts manual_ssh_test\known_hosts `
+  --remote-root .environment-runtime/mini-harness-project `
+  "Inspect the remote project and run tests."
+```
+
+Environment variable overrides:
+
+```text
+MINI_AGENT_RUNTIME_MODE=ssh
+MINI_AGENT_SSH_HOST=...
+MINI_AGENT_SSH_USER=...
+MINI_AGENT_SSH_PORT=22
+MINI_AGENT_SSH_KEY=...
+MINI_AGENT_SSH_KNOWN_HOSTS=...
+MINI_AGENT_REMOTE_ROOT=...
+```
+
+Remote behavior:
+
+- File tools use SFTP and map relative paths under `remote_root`.
+- `run_command` uses SDK `commands.run` as a clean task. It does not inherit terminal state such as root shell, `cd`, exported env vars, activated venv, nested login, or tmux shell state.
+- `observe_task` uses cursor-based SDK observation.
+- Interactive work uses `open_terminal`, `observe_terminal`, `send_terminal_input`, and `close_terminal`.
+- If a terminal session has important state, use `run_in_session` for dependent commands. For example, after opening a root shell with `sudo -i`, install commands should run with `run_in_session`, not `run_command`.
+- When a privileged or stateful terminal session is active, `run_command` returns a recoverable warning unless `force_clean=true` is explicitly set.
+- `observe_terminal` supports `wait_seconds` and `idle_seconds`; for a terminal command expected to run for 10 seconds, observe with a window such as `wait_seconds=12`.
+- `send_terminal_input.data` is the exact terminal input bytes. Use `""` or `"\n"` to press Enter, and include a trailing `"\n"` to submit a shell command.
+- `send_terminal_input.run_directly=true` appends Enter when `data` does not already end with one, so `{"data": "id", "run_directly": true}` executes `id` immediately.
+- In SSH runtime mode, `open_terminal` already starts the process on the configured remote host. Do not pass `ssh remote` as `argv`; use `["bash", "-l"]` for an interactive remote shell.
+- SSH terminals default to `ssh_tmux`; if tmux startup fails and fallback is enabled, the SDK retries with `ssh_pty`.
+- If `open_terminal` falls back from `ssh_tmux` to `ssh_pty`, the result includes `fallback_from`, `fallback_error`, and a recommended action.
+- `ensure_remote_tool` can check for `tmux` and optionally attempt non-interactive installation with the remote package manager.
+
+Password SSH authentication is not wired through Runtime endpoint creation yet. Use an identity file or SSH agent for this first version.
 
 ## API Troubleshooting
 
