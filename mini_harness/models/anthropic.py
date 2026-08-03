@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import httpx
@@ -151,9 +152,20 @@ def _convert_response(payload: dict[str, Any]) -> AgentDecision:
                 type="tool",
                 tool_name=str(block.get("name") or ""),
                 arguments=arguments,
-                reason_summary="Model selected a tool call.",
+                reason_summary=_tool_reason(text_parts),
+                raw_output="\n".join(
+                    [
+                        *text_parts,
+                        json.dumps(block, ensure_ascii=False, indent=2),
+                    ]
+                ).strip(),
             )
         if block.get("type") == "text":
             text_parts.append(str(block.get("text") or ""))
     text = "\n".join(part for part in text_parts if part).strip()
     return parse_final_decision(text)
+
+
+def _tool_reason(text_parts: list[str]) -> str:
+    text = "\n".join(part.strip() for part in text_parts if part.strip()).strip()
+    return text or "Model selected a tool call."

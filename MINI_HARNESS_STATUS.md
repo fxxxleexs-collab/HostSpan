@@ -15,7 +15,14 @@
   - `run_command`
   - `observe_task`
   - `cancel_task`
+  - `ensure_remote_tool`
+  - `open_terminal`
+  - `observe_terminal`
+  - `send_terminal_input`
+  - `run_in_session`
+  - `close_terminal`
 - Added `WorkContext` with endpoint/environment/target IDs, path validation, active task tracking, and incremental log cursor.
+- Added terminal session state tracking and a `run_command` guard so clean tasks do not accidentally discard root/session state.
 - Added Rich event renderer for terminal status/tool/task/final output.
 - Added trace writer under `.mini-harness/runs/<run-id>/`.
 - Added `mini-harness` console script.
@@ -49,11 +56,11 @@ Results:
 
 - Mini Harness ruff: passed
 - Mini Harness ruff format check: passed
-- Mini Harness unit tests: 16 passed
+- Mini Harness unit tests: 35 passed
 - Mini Harness runtime integration tests: 1 passed
 - Full repository ruff: passed
 - Full repository mypy: passed over 113 source files
-- Full repository pytest: 58 passed, 1 skipped
+- Full repository pytest: 84 passed, 1 skipped
 - CLI smoke with `python -m mini_harness run --embedded-broker --fake-model`: passed
 - CLI smoke with an Anthropic `mini-harness.toml` and `--fake-model`: passed
 
@@ -61,8 +68,7 @@ Note: refreshing the editable install with `pip install -e .` was attempted, but
 
 ## Known Limitations
 
-- First version validates local Runtime/Broker only.
-- SSH, tmux, Docker, browser UI, workspace bidirectional sync, MCP, RAG, long-term memory, sub-agents, and interactive user input are intentionally out of scope.
+- Browser UI, workspace bidirectional sync, MCP, RAG, long-term memory, and sub-agents are intentionally out of scope.
 - `write_file` performs full overwrite only; patch application is intentionally not implemented.
 - `observe_task` implements an in-harness cursor over the current SDK `task.logs` result because the SDK currently returns complete task logs.
 - Runtime task `cwd` is currently interpreted by Runtime execution providers as a process cwd, not automatically as an endpoint-root-relative path. Mini Harness accepts only relative cwd from the model and projects it into the local `project_root` before calling the SDK.

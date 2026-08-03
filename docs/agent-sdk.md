@@ -170,9 +170,12 @@ session = client.sessions.create(
 Write safely:
 
 ```python
-client.sessions.acquire_lease(session["session_id"], force=True)
 client.sessions.write(session["session_id"], "echo hello\n")
 ```
+
+`sessions.write` renews the writer lease before writing by default. If you
+already acquired a lease and want strict manual control, pass
+`renew_lease=False`.
 
 Observe:
 
@@ -228,6 +231,9 @@ Default terminal policy:
 - SSH targets use `ssh_tmux`.
 - If `ssh_tmux` fails and `allow_ssh_pty_fallback=True`, the SDK retries with `ssh_pty`.
 - `terminals.open` acquires a writer lease by default.
+- `sessions.write` and `terminals.write` renew the writer lease before writing by default, using
+  `RuntimePolicy.writer_lease_ttl_seconds`. Pass `renew_lease=False` only when
+  you intentionally want to manage leases through `client.sessions` yourself.
 
 ## Suggested Harness Mapping
 

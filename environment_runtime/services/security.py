@@ -10,6 +10,7 @@ from pathlib import Path
 
 from environment_runtime.config import RuntimeSettings
 from environment_runtime.core.errors import ConflictError, NotFoundError, SecurityError
+from environment_runtime.core.ids import new_id
 from environment_runtime.core.models import WriterLease
 from environment_runtime.services.runtime import RuntimeContext
 
@@ -72,6 +73,7 @@ class WriterLeaseService:
         if current and current.expires_at > now and not force:
             raise ConflictError("session already has an active writer lease")
         lease = WriterLease(
+            lease_id=current.lease_id if current else new_id("lease"),
             session_id=session_id,
             owner_type=owner_type,
             owner_id=owner_id,
@@ -83,16 +85,16 @@ class WriterLeaseService:
 
     async def get_for_session(self, session_id: str) -> WriterLease | None:
         leases = await self.context.leases.list()
-        for lease in leases:
-            if lease.session_id == session_id:
-                return lease
-        return None
+        matches = [lease for lease in leases if lease.session_id == session_id]
+        if not matches:
+            return None
+        return max(matches, key=lambda lease: (lease.version, lease.expires_at))
 
     async def validate(self, session_id: str, owner_id: str) -> None:
         lease = await self.get_for_session(session_id)
         if lease is None:
             raise ConflictError("session has no writer lease")
-        if lease.owner_id != owner_id:
-            raise ConflictError("writer lease is held by another owner")
         if lease.expires_at <= datetime.now(UTC):
             raise ConflictError("writer lease has expired")
+        if lease.owner_id != owner_id:
+            raise ConflictError("writer lease is held by another owner")

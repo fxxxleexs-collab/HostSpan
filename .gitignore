@@ -27,6 +27,7 @@ environment-runtime.db
 environment-runtime.db-*
 *_test/
 .environment-runtime/
+.mini-harness/
 .manual-runtime
 
 # Logs and temporary files

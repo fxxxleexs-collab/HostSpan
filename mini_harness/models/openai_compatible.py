@@ -129,7 +129,12 @@ def _convert_response(payload: dict[str, Any]) -> AgentDecision:
             type="tool",
             tool_name=str(function.get("name") or ""),
             arguments=arguments,
-            reason_summary="Model selected a tool call.",
+            reason_summary=_tool_reason(message.get("content")),
+            raw_output=json.dumps(
+                {"content": message.get("content"), "tool_calls": tool_calls},
+                ensure_ascii=False,
+                indent=2,
+            ),
         )
     content = str(message.get("content") or "").strip()
     return parse_final_decision(content)
@@ -137,10 +142,17 @@ def _convert_response(payload: dict[str, Any]) -> AgentDecision:
 
 def parse_final_decision(content: str) -> AgentDecision:
     try:
-        return _DECISION_ADAPTER.validate_json(content)
+        decision = _DECISION_ADAPTER.validate_json(content)
+        return decision.model_copy(update={"raw_output": content})
     except ValidationError as exc:
         raise MiniHarnessError(
             ErrorCode.MODEL_INVALID_RESPONSE,
             "model final response was not a structured decision",
             recoverable=True,
         ) from exc
+
+
+def _tool_reason(content: Any) -> str:
+    if isinstance(content, str) and content.strip():
+        return content.strip()
+    return "Model selected a tool call."

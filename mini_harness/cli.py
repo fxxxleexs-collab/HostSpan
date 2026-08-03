@@ -43,6 +43,13 @@ def _main_callback(ctx: typer.Context) -> None:
                 model=None,
                 fake_model=fake_model,
                 max_iterations=30,
+                runtime_mode=None,
+                ssh_host=None,
+                ssh_user=None,
+                ssh_port=None,
+                ssh_key=None,
+                ssh_known_hosts=None,
+                remote_root=None,
                 runtime_url=None,
                 endpoint_id=None,
                 environment_id=None,
@@ -72,6 +79,19 @@ def run(
         False, "--fake-model", help="Use deterministic fake decisions."
     ),
     max_iterations: int = typer.Option(30, "--max-iterations"),
+    runtime_mode: str | None = typer.Option(
+        None, "--runtime-mode", help="Runtime target mode: local or ssh."
+    ),
+    ssh_host: str | None = typer.Option(None, "--ssh-host", help="SSH hostname override."),
+    ssh_user: str | None = typer.Option(None, "--ssh-user", help="SSH username override."),
+    ssh_port: int | None = typer.Option(None, "--ssh-port", help="SSH port override."),
+    ssh_key: str | None = typer.Option(None, "--ssh-key", help="SSH identity file override."),
+    ssh_known_hosts: str | None = typer.Option(
+        None, "--ssh-known-hosts", help="SSH known_hosts file override."
+    ),
+    remote_root: str | None = typer.Option(
+        None, "--remote-root", help="Remote project root for SSH mode."
+    ),
     runtime_url: str | None = typer.Option(None, "--runtime-url", help="Broker address override."),
     endpoint_id: str | None = typer.Option(None, "--endpoint-id"),
     environment_id: str | None = typer.Option(None, "--environment-id"),
@@ -92,6 +112,13 @@ def run(
                 model=model,
                 fake_model=fake_model,
                 max_iterations=max_iterations,
+                runtime_mode=runtime_mode,
+                ssh_host=ssh_host,
+                ssh_user=ssh_user,
+                ssh_port=ssh_port,
+                ssh_key=ssh_key,
+                ssh_known_hosts=ssh_known_hosts,
+                remote_root=remote_root,
                 runtime_url=runtime_url,
                 endpoint_id=endpoint_id,
                 environment_id=environment_id,
@@ -113,6 +140,13 @@ async def _run_async(
     model: str | None,
     fake_model: bool,
     max_iterations: int,
+    runtime_mode: str | None,
+    ssh_host: str | None,
+    ssh_user: str | None,
+    ssh_port: int | None,
+    ssh_key: str | None,
+    ssh_known_hosts: str | None,
+    remote_root: str | None,
     runtime_url: str | None,
     endpoint_id: str | None,
     environment_id: str | None,
@@ -128,6 +162,13 @@ async def _run_async(
         model_override=model,
         provider_override=provider,
         max_iterations_override=max_iterations,
+        runtime_mode_override=runtime_mode,
+        ssh_host_override=ssh_host,
+        ssh_user_override=ssh_user,
+        ssh_port_override=ssh_port,
+        ssh_key_override=ssh_key,
+        ssh_known_hosts_override=ssh_known_hosts,
+        remote_root_override=remote_root,
     )
     address = _address_from_runtime_url(runtime_url)
     settings = RuntimeSettings(security=SecuritySettings(allowed_local_roots=[Path(project_root)]))
@@ -142,7 +183,7 @@ async def _run_async(
         model="fake"
         if fake_model
         else f"{harness_config.model.provider}:{harness_config.model.model}",
-        environment=environment_id or "ensure-local",
+        environment=environment_id or f"ensure-{harness_config.runtime.mode}",
         project=project_root,
         max_iterations=max_iterations,
         transport="BrokerTransport",
@@ -154,6 +195,7 @@ async def _run_async(
         sink,
         address=address,
         settings=settings,
+        runtime_config=harness_config.runtime,
     )
     try:
         result = await controller.run(

@@ -3,12 +3,17 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from environment_runtime.sdk import AgentRuntimeClient
+from mini_harness.config import SSHRuntimeConfig
 
 
 class HarnessRuntimeClient(Protocol):
     def ensure_local(self, name: str, root: str) -> dict[str, Any]: ...
 
+    def ensure_ssh(self, name: str, ssh: SSHRuntimeConfig) -> dict[str, Any]: ...
+
     def list_files(self, endpoint_id: str, path: str, recursive: bool = False) -> list[str]: ...
+
+    def ensure_dir(self, endpoint_id: str, path: str) -> dict[str, Any]: ...
 
     def read_text(self, endpoint_id: str, path: str) -> str: ...
 
@@ -29,6 +34,43 @@ class HarnessRuntimeClient(Protocol):
 
     def cancel_task(self, task_id: str) -> dict[str, Any]: ...
 
+    def run_command(
+        self,
+        environment_id: str,
+        target_id: str,
+        argv: list[str],
+        cwd: str,
+    ) -> dict[str, Any]: ...
+
+    def observe_task(
+        self,
+        task_id: str,
+        cursor: int,
+        max_chars: int,
+        wait_seconds: float,
+    ) -> dict[str, Any]: ...
+
+    def open_terminal(
+        self,
+        environment_id: str,
+        target_id: str,
+        argv: list[str],
+        cwd: str,
+        cols: int,
+        rows: int,
+    ) -> dict[str, Any]: ...
+
+    def observe_terminal(
+        self,
+        session_id: str,
+        after_seq: int | None,
+        limit_chars: int,
+    ) -> dict[str, Any]: ...
+
+    def write_terminal(self, session_id: str, data: str) -> dict[str, Any]: ...
+
+    def close_terminal(self, session_id: str) -> dict[str, Any]: ...
+
 
 class SDKRuntimeClient:
     def __init__(self, client: AgentRuntimeClient) -> None:
@@ -37,8 +79,27 @@ class SDKRuntimeClient:
     def ensure_local(self, name: str, root: str) -> dict[str, Any]:
         return self.client.environments.ensure_local(name, root)
 
+    def ensure_ssh(self, name: str, ssh: SSHRuntimeConfig) -> dict[str, Any]:
+        if not ssh.hostname or not ssh.username or not ssh.known_hosts_file:
+            raise ValueError("ssh runtime requires hostname, username, and known_hosts_file")
+        return self.client.environments.ensure_ssh(
+            name=name,
+            hostname=ssh.hostname,
+            username=ssh.username,
+            known_hosts_file=ssh.known_hosts_file,
+            port=ssh.port,
+            identity_file=ssh.identity_file,
+            use_ssh_agent=ssh.use_ssh_agent,
+            proxy_jump=ssh.proxy_jump,
+            connect_timeout=ssh.connect_timeout,
+            keepalive_interval=ssh.keepalive_interval,
+        )
+
     def list_files(self, endpoint_id: str, path: str, recursive: bool = False) -> list[str]:
         return self.client.files.list(endpoint_id, path, recursive)
+
+    def ensure_dir(self, endpoint_id: str, path: str) -> dict[str, Any]:
+        return self.client.files.mkdir(endpoint_id, path)
 
     def read_text(self, endpoint_id: str, path: str) -> str:
         return self.client.files.read_text(endpoint_id, path)
@@ -70,3 +131,62 @@ class SDKRuntimeClient:
 
     def cancel_task(self, task_id: str) -> dict[str, Any]:
         return self.client.tasks.cancel(task_id)
+
+    def run_command(
+        self,
+        environment_id: str,
+        target_id: str,
+        argv: list[str],
+        cwd: str,
+    ) -> dict[str, Any]:
+        return self.client.commands.run(environment_id, target_id, argv, cwd=cwd)
+
+    def observe_task(
+        self,
+        task_id: str,
+        cursor: int,
+        max_chars: int,
+        wait_seconds: float,
+    ) -> dict[str, Any]:
+        return self.client.tasks.observe(
+            task_id,
+            cursor=cursor,
+            max_chars=max_chars,
+            wait_seconds=wait_seconds,
+        )
+
+    def open_terminal(
+        self,
+        environment_id: str,
+        target_id: str,
+        argv: list[str],
+        cwd: str,
+        cols: int,
+        rows: int,
+    ) -> dict[str, Any]:
+        return self.client.terminals.open(
+            environment_id,
+            target_id,
+            argv,
+            cwd=cwd,
+            cols=cols,
+            rows=rows,
+        )
+
+    def observe_terminal(
+        self,
+        session_id: str,
+        after_seq: int | None,
+        limit_chars: int,
+    ) -> dict[str, Any]:
+        return self.client.terminals.observe(
+            session_id,
+            after_seq=after_seq,
+            limit_chars=limit_chars,
+        )
+
+    def write_terminal(self, session_id: str, data: str) -> dict[str, Any]:
+        return self.client.terminals.write(session_id, data)
+
+    def close_terminal(self, session_id: str) -> dict[str, Any]:
+        return self.client.terminals.close(session_id)

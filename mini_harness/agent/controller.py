@@ -5,10 +5,10 @@ from pathlib import Path
 
 from environment_runtime.broker import BrokerAddress
 from environment_runtime.config import RuntimeSettings
-from environment_runtime.sdk import AgentRuntimeClient
+from environment_runtime.sdk import AgentRuntimeClient, RuntimePolicy
 from mini_harness.agent.events import AgentEventSink, InMemoryEventSink
 from mini_harness.agent.loop import AgentLoop, AgentRunResult
-from mini_harness.config import AgentConfig, ModelConfig
+from mini_harness.config import AgentConfig, ModelConfig, RuntimeConfig
 from mini_harness.models.anthropic import AnthropicModelProvider
 from mini_harness.models.base import ModelProvider
 from mini_harness.models.fake import FakeModelProvider
@@ -40,10 +40,12 @@ class AgentController:
         model_provider: ModelProvider,
         config: AgentConfig | None = None,
         event_sink: AgentEventSink | None = None,
+        runtime_config: RuntimeConfig | None = None,
     ) -> None:
         self.runtime_client = runtime_client
         self.model_provider = model_provider
         self.config = config or AgentConfig()
+        self.runtime_config = runtime_config or RuntimeConfig()
         self.event_sink = event_sink or InMemoryEventSink()
 
     async def run(
@@ -61,6 +63,25 @@ class AgentController:
                 environment_id=environment_id,
                 target_id=target_id,
                 project_root=project_path,
+                runtime_mode=self.runtime_config.mode,
+                remote_root=self.runtime_config.ssh.remote_root,
+            )
+        elif self.runtime_config.mode == "ssh":
+            bundle = self.runtime_client.ensure_ssh(
+                self.runtime_config.name,
+                self.runtime_config.ssh,
+            )
+            endpoint = bundle["endpoint"]
+            environment = bundle["environment"]
+            remote_root = self.runtime_config.ssh.remote_root
+            self.runtime_client.ensure_dir(str(endpoint["endpoint_id"]), remote_root)
+            work_context = WorkContext(
+                endpoint_id=str(endpoint["endpoint_id"]),
+                environment_id=str(environment["environment_id"]),
+                target_id=str(bundle["target_id"]),
+                project_root=project_path,
+                runtime_mode="ssh",
+                remote_root=remote_root,
             )
         else:
             bundle = self.runtime_client.ensure_local("mini-harness-local", project_path)
@@ -89,13 +110,28 @@ def build_sdk_controller(
     event_sink: AgentEventSink,
     address: BrokerAddress | None = None,
     settings: RuntimeSettings | None = None,
+    runtime_config: RuntimeConfig | None = None,
 ) -> tuple[AgentController, AgentRuntimeClient]:
+    runtime_config = runtime_config or RuntimeConfig()
     client = AgentRuntimeClient.from_broker(
         address=address,
         settings=settings,
         principal_id="mini-harness",
+        policy=RuntimePolicy(
+            remote_terminal_backend="ssh_tmux" if runtime_config.ssh.prefer_tmux else "ssh_pty",
+            allow_ssh_pty_fallback=runtime_config.ssh.allow_ssh_pty_fallback,
+        ),
     )
-    return AgentController(SDKRuntimeClient(client), model_provider, config, event_sink), client
+    return (
+        AgentController(
+            SDKRuntimeClient(client),
+            model_provider,
+            config,
+            event_sink,
+            runtime_config,
+        ),
+        client,
+    )
 
 
 def default_fake_model() -> FakeModelProvider:

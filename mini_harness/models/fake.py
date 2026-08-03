@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections import deque
 
 from mini_harness.errors import ErrorCode, MiniHarnessError
@@ -24,4 +25,15 @@ class FakeModelProvider:
                 "fake model has no decisions left",
                 recoverable=False,
             )
-        return self.decisions.popleft()
+        decision = self.decisions.popleft()
+        if decision.raw_output is None:
+            decision = decision.model_copy(
+                update={
+                    "raw_output": json.dumps(
+                        decision.model_dump(exclude_none=True),
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                }
+            )
+        return decision
