@@ -73,12 +73,20 @@ class EnsureRemoteToolInput(BaseModel):
 
 
 class OpenTerminalInput(BaseModel):
-    argv: list[str] = Field(
-        default_factory=lambda: ["bash", "-l"],
-        min_length=1,
+    target: Literal["current", "local", "remote"] = Field(
+        default="current",
         description=(
-            "Program to start inside the configured runtime target. In SSH runtime mode, "
-            "do not run ssh here; the terminal is already opened on the remote host."
+            "Terminal target. current uses the configured default runtime target; local "
+            "opens on the user's machine; remote opens on the configured SSH host."
+        ),
+    )
+    argv: list[str] | None = Field(
+        default=None,
+        description=(
+            "Program to start inside the selected runtime target. Leave unset to use "
+            "the target's default interactive shell. In SSH runtime mode, do not run "
+            "ssh here when target is remote; the terminal is already opened on the "
+            "remote host."
         ),
     )
     cwd: str = "."

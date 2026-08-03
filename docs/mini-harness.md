@@ -32,6 +32,8 @@ The current version exposes:
 - `cancel_task`
 - `ensure_remote_tool`
 - `open_terminal`
+- `open_local_terminal`
+- `open_remote_terminal`
 - `observe_terminal`
 - `send_terminal_input`
 - `run_in_session`
@@ -185,13 +187,16 @@ Remote behavior:
 - File tools use SFTP and map relative paths under `remote_root`.
 - `run_command` uses SDK `commands.run` as a clean task. It does not inherit terminal state such as root shell, `cd`, exported env vars, activated venv, nested login, or tmux shell state.
 - `observe_task` uses cursor-based SDK observation.
-- Interactive work uses `open_terminal`, `observe_terminal`, `send_terminal_input`, and `close_terminal`.
+- Interactive work uses `open_terminal`, `open_local_terminal`, `open_remote_terminal`, `observe_terminal`, `send_terminal_input`, and `close_terminal`.
+- `open_terminal` uses the default command target. In local mode that target is local; in SSH mode that target is remote.
+- In SSH runtime mode, Mini Harness also prepares a local target so the model can use `open_local_terminal` for local packaging, local PowerShell work, or other machine-local interaction.
+- Terminal tool results and the work context expose the terminal target, OS, shell, and backend so the model can choose matching command syntax.
 - If a terminal session has important state, use `run_in_session` for dependent commands. For example, after opening a root shell with `sudo -i`, install commands should run with `run_in_session`, not `run_command`.
 - When a privileged or stateful terminal session is active, `run_command` returns a recoverable warning unless `force_clean=true` is explicitly set.
 - `observe_terminal` supports `wait_seconds` and `idle_seconds`; for a terminal command expected to run for 10 seconds, observe with a window such as `wait_seconds=12`.
 - `send_terminal_input.data` is the exact terminal input bytes. Use `""` or `"\n"` to press Enter, and include a trailing `"\n"` to submit a shell command.
 - `send_terminal_input.run_directly=true` appends Enter when `data` does not already end with one, so `{"data": "id", "run_directly": true}` executes `id` immediately.
-- In SSH runtime mode, `open_terminal` already starts the process on the configured remote host. Do not pass `ssh remote` as `argv`; use `["bash", "-l"]` for an interactive remote shell.
+- In SSH runtime mode, `open_remote_terminal` already starts the process on the configured remote host. Do not pass `ssh remote` as `argv`; leave `argv` unset or use `["bash", "-l"]` for an interactive remote shell.
 - SSH terminals default to `ssh_tmux`; if tmux startup fails and fallback is enabled, the SDK retries with `ssh_pty`.
 - If `open_terminal` falls back from `ssh_tmux` to `ssh_pty`, the result includes `fallback_from`, `fallback_error`, and a recommended action.
 - `ensure_remote_tool` can check for `tmux` and optionally attempt non-interactive installation with the remote package manager.
