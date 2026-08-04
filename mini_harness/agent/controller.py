@@ -14,10 +14,12 @@ from mini_harness.models.base import ModelProvider
 from mini_harness.models.fake import FakeModelProvider
 from mini_harness.models.openai_compatible import OpenAICompatibleModelProvider
 from mini_harness.models.schemas import FinalDecision, ToolDecision
+from mini_harness.permissions import PermissionsConfig
 from mini_harness.runtime.client import SDKRuntimeClient
 from mini_harness.runtime.work_context import WorkContext
 from mini_harness.tools.adapter import build_runtime_tools
 from mini_harness.tools.registry import ToolRegistry
+from mini_harness.workspace import SandboxConfig
 
 
 class FanoutEventSink:
@@ -41,11 +43,15 @@ class AgentController:
         config: AgentConfig | None = None,
         event_sink: AgentEventSink | None = None,
         runtime_config: RuntimeConfig | None = None,
+        sandbox_config: SandboxConfig | None = None,
+        permissions_config: PermissionsConfig | None = None,
     ) -> None:
         self.runtime_client = runtime_client
         self.model_provider = model_provider
         self.config = config or AgentConfig()
         self.runtime_config = runtime_config or RuntimeConfig()
+        self.sandbox_config = sandbox_config or SandboxConfig()
+        self.permissions_config = permissions_config or PermissionsConfig()
         self.event_sink = event_sink or InMemoryEventSink()
 
     async def run(
@@ -65,6 +71,7 @@ class AgentController:
                 project_root=project_path,
                 runtime_mode=self.runtime_config.mode,
                 remote_root=self.runtime_config.ssh.remote_root,
+                sandbox_config=self.sandbox_config,
             )
         elif self.runtime_config.mode == "ssh":
             local_bundle = self.runtime_client.ensure_local("mini-harness-local", project_path)
@@ -88,6 +95,7 @@ class AgentController:
                 local_target_id=str(local_bundle["target_id"]),
                 remote_os="linux",
                 remote_shell="bash",
+                sandbox_config=self.sandbox_config,
             )
         else:
             bundle = self.runtime_client.ensure_local("mini-harness-local", project_path)
@@ -96,9 +104,13 @@ class AgentController:
                 environment_id=str(bundle["environment"]["environment_id"]),
                 target_id=str(bundle["target_id"]),
                 project_root=project_path,
+                sandbox_config=self.sandbox_config,
             )
 
-        registry = ToolRegistry(self.config)
+        registry = ToolRegistry(
+            self.config,
+            permission_policy=self.permissions_config.build_policy(),
+        )
         for tool in build_runtime_tools(self.runtime_client):
             registry.register(tool)
         loop = AgentLoop(
@@ -117,6 +129,8 @@ def build_sdk_controller(
     address: BrokerAddress | None = None,
     settings: RuntimeSettings | None = None,
     runtime_config: RuntimeConfig | None = None,
+    sandbox_config: SandboxConfig | None = None,
+    permissions_config: PermissionsConfig | None = None,
 ) -> tuple[AgentController, AgentRuntimeClient]:
     runtime_config = runtime_config or RuntimeConfig()
     client = AgentRuntimeClient.from_broker(
@@ -135,6 +149,8 @@ def build_sdk_controller(
             config,
             event_sink,
             runtime_config,
+            sandbox_config,
+            permissions_config,
         ),
         client,
     )

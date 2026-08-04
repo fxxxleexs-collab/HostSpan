@@ -41,6 +41,63 @@ The current version exposes:
 
 Tool schemas hide endpoint, environment, target, broker, process, persistence, SSH, and tmux details from the model. `WorkContext` injects stable Runtime resource IDs and maps relative paths to either the local project root or the configured SSH `remote_root`.
 
+## Tool Permissions
+
+Tool execution goes through a capability preflight in `ToolRegistry.execute()` before the runtime operation is attempted. The first implementation defaults to an allow-all policy so existing local and SSH smoke flows keep working, but the authorization seam is now mandatory for registered runtime tools.
+
+Configure capability allow/deny patterns in TOML:
+
+```toml
+[permissions]
+allow = ["*"]
+deny = [
+  "file.write:*",
+  "terminal.open:remote",
+  "session.run:remote",
+]
+```
+
+Patterns can match exact capability keys such as `file.read:local`, target-wide keys such as `terminal.open:*`, or all capabilities with `*`. Deny rules win over allow rules.
+
+Covered permission request families:
+
+- File tools request `file.list`, `file.read`, or `file.write`.
+- Task tools request `task.run`, `task.observe`, or `task.cancel`.
+- Terminal tools request `terminal.open`, `terminal.observe`, `terminal.send_input`, or `terminal.close` with a local/remote target.
+- `run_in_session` requests `session.run` with the active terminal target.
+
+Policy denial returns a structured `PERMISSION_DENIED` tool result and does not call the underlying Runtime SDK.
+
+## Workspace Sandbox
+
+Mini Harness now has a local policy-only sandbox layer before adding process-level engines such as bubblewrap or containers. The sandbox is intentionally split into:
+
+- `WorkspacePolicy` for relative path, cwd, local root, remote root, allow patterns, and deny patterns.
+- Command guard checks for clearly destructive commands, system paths, root shell escalation, package installation, and disabled network tools.
+- `SandboxEngine` as a pluggable interface. The current engine is `policy-only`; future engines can wrap task and terminal argv/cwd for bubblewrap, containers, or gVisor without changing tool code.
+
+Example configuration:
+
+```toml
+[sandbox]
+profile = "workspace"   # off | workspace | strict
+engine = "policy-only"  # off | policy-only | auto | bubblewrap | container
+
+[sandbox.remote]
+root = "/srv/app"
+network = "inherit"     # inherit | disabled
+allow_root_shell = false
+allow_system_paths = false
+allow_package_install = false
+
+[sandbox.paths]
+allow = ["**"]
+deny = [".env", "**/*.pem", "**/id_*", "**/.ssh/**"]
+follow_symlinks = false
+```
+
+`profile = "off"` disables sandbox policy checks while keeping capability authorization. `profile = "strict"` keeps the same workspace boundary and additionally denies network tools by default.
+
 ## Running
 
 Start a broker in one terminal:

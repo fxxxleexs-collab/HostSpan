@@ -9,10 +9,12 @@ from mini_harness.agent.events import InMemoryEventSink
 from mini_harness.agent.state import AgentState
 from mini_harness.config import RuntimeConfig, SSHRuntimeConfig
 from mini_harness.models.fake import FakeModelProvider
-from mini_harness.models.schemas import FinalDecision
+from mini_harness.models.schemas import FinalDecision, ToolDecision
+from mini_harness.permissions import PermissionsConfig
 from mini_harness.runtime.work_context import WorkContext
 from mini_harness.tools.adapter import build_runtime_tools
 from mini_harness.tools.registry import ToolRegistry
+from mini_harness.workspace import SandboxConfig, SandboxTargetConfig
 
 
 def _context() -> WorkContext:
@@ -21,6 +23,9 @@ def _context() -> WorkContext:
         environment_id="env_1",
         target_id="target_1",
         project_root="/project",
+        sandbox_config=SandboxConfig(
+            local=SandboxTargetConfig(allow_root_shell=True, allow_package_install=True)
+        ),
     )
 
 
@@ -462,3 +467,30 @@ async def test_controller_configures_ssh_runtime_before_loop(fake_runtime) -> No
     assert fake_runtime.requests[2:3] == [
         ("ensure_dir", {"endpoint_id": "endpoint_ssh", "path": "/srv/app"}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_controller_applies_permissions_config(fake_runtime) -> None:
+    sink = InMemoryEventSink()
+    controller = AgentController(
+        fake_runtime,
+        FakeModelProvider(
+            [
+                ToolDecision(
+                    type="tool",
+                    tool_name="write_file",
+                    arguments={"path": "calculator.py", "content": "blocked\n"},
+                    reason_summary="Try to write a file.",
+                ),
+                FinalDecision(type="final", summary="done"),
+            ]
+        ),
+        event_sink=sink,
+        permissions_config=PermissionsConfig(deny=["file.write:*"]),
+    )
+
+    result = await controller.run("try a write", "/local/project")
+
+    assert result.final_state == AgentState.COMPLETED
+    assert result.tool_error_count == 1
+    assert "write_text" not in [name for name, _ in fake_runtime.requests]

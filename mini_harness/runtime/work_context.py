@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from mini_harness.errors import ErrorCode, MiniHarnessError
+from mini_harness.workspace import SandboxConfig, SandboxedCommand, WorkspacePolicy
 
 _IGNORED_DIRS = {
     ".git",
@@ -49,6 +50,8 @@ class WorkContext:
     local_shell: str = "unknown"
     remote_os: str = "unknown"
     remote_shell: str = "bash"
+    sandbox_config: SandboxConfig | None = None
+    workspace_policy: WorkspacePolicy | None = None
     cwd: str = "."
     active_task_id: str | None = None
     task_log_cursor: int = 0
@@ -75,29 +78,15 @@ class WorkContext:
             self.local_shell = default_local_shell()
         if self.runtime_mode == "ssh" and self.remote_shell == "unknown":
             self.remote_shell = "bash"
+        if self.workspace_policy is None:
+            self.workspace_policy = WorkspacePolicy(
+                local_root=self.project_root,
+                remote_root=self.remote_root,
+                config=self.sandbox_config,
+            )
 
     def normalize_path(self, path: str) -> str:
-        if not path:
-            path = "."
-        path = path.replace("\\", "/")
-        if path.startswith("/") or (len(path) > 1 and path[1] == ":"):
-            raise MiniHarnessError(
-                ErrorCode.PATH_OUTSIDE_PROJECT,
-                "absolute paths are not allowed",
-                recoverable=True,
-            )
-        parts: list[str] = []
-        for part in path.split("/"):
-            if part in {"", "."}:
-                continue
-            if part == "..":
-                raise MiniHarnessError(
-                    ErrorCode.PATH_OUTSIDE_PROJECT,
-                    "paths must stay inside the project root",
-                    recoverable=True,
-                )
-            parts.append(part)
-        return "/".join(parts) or "."
+        return self._workspace_policy().normalize_relative_path(path)
 
     def normalize_cwd(self, cwd: str | None) -> str:
         return self.normalize_path(cwd or self.cwd or ".")
@@ -109,7 +98,7 @@ class WorkContext:
         resolved_target = self.resolve_terminal_target(target)
         relative = self.normalize_cwd(cwd)
         if resolved_target == "remote":
-            return self.runtime_path(relative)
+            return self._workspace_policy().runtime_cwd(relative, target="remote").runtime_path
         root = Path(self.project_root).resolve()
         resolved = root if relative == "." else (root / relative).resolve()
         if not resolved.is_relative_to(root):
@@ -124,22 +113,30 @@ class WorkContext:
         relative = self.normalize_path(path)
         if self.runtime_mode != "ssh":
             return relative
-        root = self._normalized_remote_root()
-        if relative == ".":
-            return root
-        return f"{root.rstrip('/')}/{relative}"
+        return self._workspace_policy().runtime_path(relative, target="remote").runtime_path
+
+    def sandbox_task(self, argv: list[str], cwd: str) -> SandboxedCommand:
+        return self._workspace_policy().sandbox_task(
+            argv, cwd, target=self.default_terminal_target()
+        )
+
+    def sandbox_terminal(
+        self,
+        argv: list[str],
+        cwd: str,
+        target: TerminalTarget,
+    ) -> SandboxedCommand:
+        resolved_target = self.resolve_terminal_target(target)
+        return self._workspace_policy().sandbox_terminal(argv, cwd, target=resolved_target)
+
+    def authorize_session_command(self, command: str) -> None:
+        target = self.active_session_target or self.default_terminal_target()
+        self._workspace_policy().authorize_command([command], target=target)
 
     def display_path(self, runtime_path: str) -> str:
         if self.runtime_mode != "ssh":
             return runtime_path
-        root = self._normalized_remote_root().rstrip("/")
-        value = runtime_path.replace("\\", "/")
-        if value == root:
-            return "."
-        prefix = f"{root}/"
-        if value.startswith(prefix):
-            return value[len(prefix) :]
-        return value
+        return self._workspace_policy().display_path(runtime_path, target="remote")
 
     def should_ignore_entry(self, relative_path: str) -> bool:
         return any(part in _IGNORED_DIRS for part in relative_path.replace("\\", "/").split("/"))
@@ -185,6 +182,13 @@ class WorkContext:
         )
         lines.append(f"Default command target: {self.default_terminal_target()}")
         return "\n".join(lines)
+
+    def sandbox_summary(self) -> str:
+        policy = self._workspace_policy()
+        return (
+            f"Sandbox: profile={policy.config.profile}, engine={policy.config.engine}, "
+            f"local_root={policy.root_for('local')}, remote_root={policy.root_for('remote')}"
+        )
 
     def default_terminal_target(self) -> ResolvedTerminalTarget:
         return "remote" if self.runtime_mode == "ssh" else "local"
@@ -281,10 +285,19 @@ class WorkContext:
         self.last_terminal_input = None
 
     def _normalized_remote_root(self) -> str:
-        root = (self.remote_root or ".").replace("\\", "/").strip()
+        root = self._workspace_policy().root_for("remote").replace("\\", "/").strip()
         if not root:
             root = "."
         return root
+
+    def _workspace_policy(self) -> WorkspacePolicy:
+        if self.workspace_policy is None:
+            self.workspace_policy = WorkspacePolicy(
+                local_root=self.project_root,
+                remote_root=self.remote_root,
+                config=self.sandbox_config,
+            )
+        return self.workspace_policy
 
 
 def local_os_name() -> str:

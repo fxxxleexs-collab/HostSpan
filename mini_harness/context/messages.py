@@ -39,6 +39,8 @@ If open_terminal reports fallback_from=ssh_tmux, use ensure_remote_tool with
 tool=tmux when a durable remote terminal is needed.
 Do not claim tests passed unless a runtime task showed success.
 Use only relative paths inside the project root.
+Respect sandbox denials as runtime boundaries; do not try to bypass them with
+absolute paths, nested shells, or alternate tools.
 Return either a structured tool decision or a structured final decision."""
 
 
@@ -97,6 +99,7 @@ class AgentContext:
             f"Endpoint: {self.work_context.endpoint_id}\n"
             f"Runtime mode: {self.work_context.runtime_mode}\n"
             f"{self.work_context.target_summary()}\n"
+            f"{self.work_context.sandbox_summary()}\n"
             f"Project root: {self.work_context.project_root}\n"
             f"Remote root: {self.work_context.remote_root or 'n/a'}\n"
             f"Current directory: {self.work_context.cwd}\n"
