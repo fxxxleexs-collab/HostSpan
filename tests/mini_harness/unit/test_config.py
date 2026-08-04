@@ -102,6 +102,58 @@ prefer_tmux = true
     assert config.runtime.ssh.remote_root == "/srv/project"
 
 
+def test_load_config_supports_sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MINI_AGENT_RUNTIME_MODE", raising=False)
+    config_path = tmp_path / "mini-harness.toml"
+    config_path.write_text(
+        """
+[sandbox]
+profile = "strict"
+engine = "policy-only"
+
+[sandbox.remote]
+root = "/srv/app"
+require_engine = true
+network = "disabled"
+allow_root_shell = false
+allow_package_install = false
+
+[sandbox.paths]
+allow = ["src/**", "tests/**"]
+deny = [".env", "**/*.pem"]
+follow_symlinks = false
+""",
+        encoding="utf-8",
+    )
+
+    config = load_harness_config(config_path=str(config_path), project_root=str(tmp_path))
+
+    assert config.sandbox.profile == "strict"
+    assert config.sandbox.engine == "policy-only"
+    assert config.sandbox.remote.root == "/srv/app"
+    assert config.sandbox.remote.require_engine is True
+    assert config.sandbox.remote.network == "disabled"
+    assert config.sandbox.paths.allow == ["src/**", "tests/**"]
+    assert config.sandbox.paths.deny == [".env", "**/*.pem"]
+
+
+def test_load_config_supports_permissions(tmp_path: Path) -> None:
+    config_path = tmp_path / "mini-harness.toml"
+    config_path.write_text(
+        """
+[permissions]
+allow = ["file.read:local", "task.observe:*"]
+deny = ["file.write:*", "terminal.open:remote"]
+""",
+        encoding="utf-8",
+    )
+
+    config = load_harness_config(config_path=str(config_path), project_root=str(tmp_path))
+
+    assert config.permissions.allow == ["file.read:local", "task.observe:*"]
+    assert config.permissions.deny == ["file.write:*", "terminal.open:remote"]
+
+
 def test_ssh_runtime_env_and_cli_overrides(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

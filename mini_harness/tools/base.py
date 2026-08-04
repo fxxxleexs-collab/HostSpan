@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from mini_harness.permissions import PermissionRequest
 from mini_harness.runtime.work_context import WorkContext
 from mini_harness.tools.schemas import ToolDefinition, ToolResult
 
@@ -9,5 +10,11 @@ from mini_harness.tools.schemas import ToolDefinition, ToolResult
 class AgentTool(Protocol):
     @property
     def definition(self) -> ToolDefinition: ...
+
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]: ...
 
     async def execute(self, arguments: dict[str, Any], context: WorkContext) -> ToolResult: ...

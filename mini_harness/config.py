@@ -7,6 +7,9 @@ from typing import Literal, cast
 
 from pydantic import BaseModel, Field, field_validator
 
+from mini_harness.permissions import PermissionsConfig
+from mini_harness.workspace import SandboxConfig
+
 
 class AgentConfig(BaseModel):
     max_iterations: int = Field(default=30, ge=1)
@@ -86,6 +89,8 @@ class HarnessConfig(BaseModel):
     agent: AgentConfig = Field(default_factory=AgentConfig)
     model: ModelConfig = Field(default_factory=ModelConfig.from_env)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+    permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
 
 
 def load_harness_config(
@@ -141,7 +146,13 @@ def load_harness_config(
     agent = config.agent
     if max_iterations_override is not None:
         agent = agent.model_copy(update={"max_iterations": max_iterations_override})
-    return HarnessConfig(agent=agent, model=model, runtime=runtime)
+    return HarnessConfig(
+        agent=agent,
+        model=model,
+        runtime=runtime,
+        sandbox=config.sandbox,
+        permissions=config.permissions,
+    )
 
 
 def normalize_provider(value: str | None) -> ProviderName | None:

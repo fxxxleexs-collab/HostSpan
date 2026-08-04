@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ValidationError
 
 from mini_harness.errors import ErrorCode, MiniHarnessError
+from mini_harness.permissions import PermissionRequest
 from mini_harness.runtime.client import HarnessRuntimeClient
 from mini_harness.runtime.work_context import ResolvedTerminalTarget, TargetBinding, WorkContext
 from mini_harness.tools.base import AgentTool
@@ -53,6 +54,14 @@ class RuntimeTool(AgentTool):
     @property
     def definition(self) -> ToolDefinition:
         return self._definition
+
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]:
+        _ = arguments, context
+        return []
 
     async def execute(self, arguments: dict[str, Any], context: WorkContext) -> ToolResult:
         try:
@@ -100,6 +109,23 @@ class ListFilesTool(RuntimeTool):
             runtime, "list_files", "List project files through the runtime SDK.", ListFilesInput
         )
 
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]:
+        data = ListFilesInput.model_validate(arguments)
+        path = context.normalize_path(data.path)
+        return [
+            PermissionRequest.for_target(
+                tool_name=self.definition.name,
+                capability="file.list",
+                target=context.default_terminal_target(),
+                operation="list",
+                resource=path,
+            )
+        ]
+
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = (
             parsed if isinstance(parsed, ListFilesInput) else ListFilesInput.model_validate(parsed)
@@ -133,6 +159,23 @@ class ReadFileTool(RuntimeTool):
             runtime, "read_file", "Read a text file through the runtime SDK.", ReadFileInput
         )
         self.max_chars = max_chars
+
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]:
+        data = ReadFileInput.model_validate(arguments)
+        path = context.normalize_path(data.path)
+        return [
+            PermissionRequest.for_target(
+                tool_name=self.definition.name,
+                capability="file.read",
+                target=context.default_terminal_target(),
+                operation="read",
+                resource=path,
+            )
+        ]
 
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = parsed if isinstance(parsed, ReadFileInput) else ReadFileInput.model_validate(parsed)
@@ -174,6 +217,23 @@ class WriteFileTool(RuntimeTool):
             runtime, "write_file", "Overwrite a text file through the runtime SDK.", WriteFileInput
         )
 
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]:
+        data = WriteFileInput.model_validate(arguments)
+        path = context.normalize_path(data.path)
+        return [
+            PermissionRequest.for_target(
+                tool_name=self.definition.name,
+                capability="file.write",
+                target=context.default_terminal_target(),
+                operation="write",
+                resource=path,
+            )
+        ]
+
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = (
             parsed if isinstance(parsed, WriteFileInput) else WriteFileInput.model_validate(parsed)
@@ -207,6 +267,24 @@ class RunCommandTool(RuntimeTool):
             RunCommandInput,
         )
 
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]:
+        data = RunCommandInput.model_validate(arguments)
+        cwd = context.normalize_cwd(data.cwd)
+        return [
+            PermissionRequest.for_target(
+                tool_name=self.definition.name,
+                capability="task.run",
+                target=context.default_terminal_target(),
+                operation="run",
+                resource=cwd,
+                argv=data.argv,
+            )
+        ]
+
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = (
             parsed
@@ -217,12 +295,13 @@ class RunCommandTool(RuntimeTool):
         if guard is not None:
             return guard
         cwd = context.runtime_cwd(data.cwd)
+        sandboxed = context.sandbox_task(data.argv, cwd)
         task = await asyncio.to_thread(
             self.runtime.run_command,
             context.environment_id,
             context.target_id,
-            data.argv,
-            cwd,
+            sandboxed.argv,
+            sandboxed.cwd,
         )
         task_id = str(task["task_id"])
         context.active_task_id = task_id
@@ -234,7 +313,12 @@ class RunCommandTool(RuntimeTool):
             summary=f"started task:{task_id}",
             resource_ref=f"task:{task_id}",
             state=context.last_task_state,
-            metadata={"task_id": task_id, "argv": data.argv, "cwd": cwd},
+            metadata={
+                "task_id": task_id,
+                "argv": sandboxed.argv,
+                "cwd": sandboxed.cwd,
+                "sandbox_engine": sandboxed.engine,
+            },
         )
 
 
@@ -243,6 +327,22 @@ class ObserveTaskTool(RuntimeTool):
         super().__init__(
             runtime, "observe_task", "Observe task status and incremental logs.", ObserveTaskInput
         )
+
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]:
+        data = ObserveTaskInput.model_validate(arguments)
+        return [
+            PermissionRequest.for_target(
+                tool_name=self.definition.name,
+                capability="task.observe",
+                target=context.default_terminal_target(),
+                operation="observe",
+                resource=data.task_ref or context.task_ref(),
+            )
+        ]
 
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = (
@@ -301,6 +401,22 @@ class ObserveTaskTool(RuntimeTool):
 class CancelTaskTool(RuntimeTool):
     def __init__(self, runtime: HarnessRuntimeClient) -> None:
         super().__init__(runtime, "cancel_task", "Cancel the active runtime task.", CancelTaskInput)
+
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]:
+        data = CancelTaskInput.model_validate(arguments)
+        return [
+            PermissionRequest.for_target(
+                tool_name=self.definition.name,
+                capability="task.cancel",
+                target=context.default_terminal_target(),
+                operation="cancel",
+                resource=data.task_ref or context.task_ref(),
+            )
+        ]
 
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = (
@@ -421,6 +537,24 @@ class OpenTerminalTool(RuntimeTool):
         )
         self.fixed_target = fixed_target
 
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]:
+        data = OpenTerminalInput.model_validate(arguments)
+        target = self.fixed_target or context.resolve_terminal_target(data.target)
+        return [
+            PermissionRequest.for_target(
+                tool_name=self.definition.name,
+                capability="terminal.open",
+                target=target,
+                operation="open",
+                resource=context.normalize_cwd(data.cwd),
+                argv=data.argv or (),
+            )
+        ]
+
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = (
             parsed
@@ -453,12 +587,14 @@ class OpenTerminalTool(RuntimeTool):
                     "recommended_arguments": {"argv": ["bash", "-l"], "cwd": data.cwd},
                 },
             )
+        cwd = context.runtime_cwd_for(data.cwd, target.location)
+        sandboxed = context.sandbox_terminal(argv, cwd, target.location)
         opened = await asyncio.to_thread(
             self.runtime.open_terminal,
             target.environment_id,
             target.target_id,
-            argv,
-            context.runtime_cwd_for(data.cwd, target.location),
+            sandboxed.argv,
+            sandboxed.cwd,
             data.cols,
             data.rows,
         )
@@ -502,7 +638,9 @@ class OpenTerminalTool(RuntimeTool):
                 "fallback_from": fallback_from,
                 "fallback_error": opened.get("fallback_error"),
                 "recommended_action": recommended_action,
-                "argv": argv,
+                "argv": sandboxed.argv,
+                "cwd": sandboxed.cwd,
+                "sandbox_engine": sandboxed.engine,
             },
         )
 
@@ -515,6 +653,22 @@ class ObserveTerminalTool(RuntimeTool):
             "Observe incremental output from the active terminal session.",
             ObserveTerminalInput,
         )
+
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]:
+        data = ObserveTerminalInput.model_validate(arguments)
+        return [
+            PermissionRequest.for_target(
+                tool_name=self.definition.name,
+                capability="terminal.observe",
+                target=context.active_session_target or context.default_terminal_target(),
+                operation="observe",
+                resource=data.session_ref or context.session_ref(),
+            )
+        ]
 
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = (
@@ -612,6 +766,23 @@ class SendTerminalInputTool(RuntimeTool):
             SendTerminalInput,
         )
 
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]:
+        data = SendTerminalInput.model_validate(arguments)
+        return [
+            PermissionRequest.for_target(
+                tool_name=self.definition.name,
+                capability="terminal.send_input",
+                target=context.active_session_target or context.default_terminal_target(),
+                operation="send_input",
+                resource=data.session_ref or context.session_ref(),
+                metadata={"run_directly": data.run_directly},
+            )
+        ]
+
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = (
             parsed
@@ -620,6 +791,8 @@ class SendTerminalInputTool(RuntimeTool):
         )
         session_id = _resolve_session_id(data.session_ref, context)
         normalized = _normalize_terminal_input(data.data, data.run_directly)
+        if _should_authorize_terminal_input(normalized):
+            context.authorize_session_command(normalized)
         await asyncio.to_thread(self.runtime.write_terminal, session_id, normalized)
         context.last_terminal_input = normalized
         context.terminal_input_pending = "\n" in normalized or "\r" in normalized
@@ -650,6 +823,23 @@ class RunInSessionTool(RuntimeTool):
             RunInSessionInput,
         )
 
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]:
+        data = RunInSessionInput.model_validate(arguments)
+        return [
+            PermissionRequest.for_target(
+                tool_name=self.definition.name,
+                capability="session.run",
+                target=context.active_session_target or context.default_terminal_target(),
+                operation="run_in_session",
+                resource=data.session_ref or context.session_ref(),
+                argv=(data.command,),
+            )
+        ]
+
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = (
             parsed
@@ -658,6 +848,7 @@ class RunInSessionTool(RuntimeTool):
         )
         session_id = _resolve_session_id(data.session_ref, context)
         command = _normalize_terminal_input(data.command, run_directly=True)
+        context.authorize_session_command(command)
         await asyncio.to_thread(self.runtime.write_terminal, session_id, command)
         context.last_terminal_input = command
         context.terminal_input_pending = True
@@ -734,6 +925,22 @@ class CloseTerminalTool(RuntimeTool):
             "Close the active terminal session.",
             CloseTerminalInput,
         )
+
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]:
+        data = CloseTerminalInput.model_validate(arguments)
+        return [
+            PermissionRequest.for_target(
+                tool_name=self.definition.name,
+                capability="terminal.close",
+                target=context.active_session_target or context.default_terminal_target(),
+                operation="close",
+                resource=data.session_ref or context.session_ref(),
+            )
+        ]
 
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = (
@@ -938,6 +1145,11 @@ def _terminal_input_display(data: str) -> str:
         return "<CR>"
     value = data.replace("\r\n", "<ENTER>").replace("\n", "<ENTER>").replace("\r", "<CR>")
     return value if len(value) <= 120 else value[:117] + "..."
+
+
+def _should_authorize_terminal_input(data: str) -> bool:
+    stripped = _normalize_terminal_text(data)
+    return bool(stripped) and ("\n" in data or "\r" in data)
 
 
 def _normalize_terminal_input(data: str, run_directly: bool) -> str:

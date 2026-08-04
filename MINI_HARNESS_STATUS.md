@@ -26,6 +26,8 @@
 - Added `WorkContext` with endpoint/environment/target IDs, path validation, active task tracking, and incremental log cursor.
 - Added terminal session state tracking and a `run_command` guard so clean tasks do not accidentally discard root/session state.
 - Added explicit local/remote terminal target selection plus OS/shell/backend metadata in context and terminal results.
+- Added a capability-based tool permission preflight in `ToolRegistry.execute()` with TOML allow/deny configuration, file/task/terminal/session permission requests, and structured `PERMISSION_DENIED` results.
+- Added a policy-only workspace sandbox with path/cwd rules, command guard checks, TOML configuration, and a pluggable `SandboxEngine` interface for future bubblewrap/container/gVisor engines.
 - Added Rich event renderer for terminal status/tool/task/final output.
 - Added trace writer under `.mini-harness/runs/<run-id>/`.
 - Added `mini-harness` console script.
