@@ -98,6 +98,19 @@ follow_symlinks = false
 
 `profile = "off"` disables sandbox policy checks while keeping capability authorization. `profile = "strict"` keeps the same workspace boundary and additionally denies network tools by default.
 
+## Sync Module
+
+The `mini_harness.sync` package is initialized as an independent module for workspace mirror work. It currently includes:
+
+- `config.py`: `SyncConfig` and ignore configuration.
+- `ignore.py`: conservative default ignore rules and pattern matching.
+- `manifest.py`: local text-file scanner with sha256 manifests and skipped-file reporting.
+- `planner.py`: push-plan calculation from local and last-pushed manifests.
+- `state.py`: local JSON state storage under `.mini-harness/sync/`.
+- `engine.py`: push/status engine using the existing runtime file API.
+
+The module is not exposed as agent tools yet. The next step is to add `sync_status` and `sync_push` tools over this package.
+
 ## Running
 
 Start a broker in one terminal:

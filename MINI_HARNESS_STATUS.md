@@ -28,6 +28,7 @@
 - Added explicit local/remote terminal target selection plus OS/shell/backend metadata in context and terminal results.
 - Added a capability-based tool permission preflight in `ToolRegistry.execute()` with TOML allow/deny configuration, file/task/terminal/session permission requests, and structured `PERMISSION_DENIED` results.
 - Added a policy-only workspace sandbox with path/cwd rules, command guard checks, TOML configuration, and a pluggable `SandboxEngine` interface for future bubblewrap/container/gVisor engines.
+- Initialized `mini_harness.sync` with config, ignore matching, manifest scanning, push planning, local state storage, and a runtime-file-API push engine.
 - Added Rich event renderer for terminal status/tool/task/final output.
 - Added trace writer under `.mini-harness/runs/<run-id>/`.
 - Added `mini-harness` console script.
