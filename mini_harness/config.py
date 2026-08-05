@@ -8,6 +8,7 @@ from typing import Literal, cast
 from pydantic import BaseModel, Field, field_validator
 
 from mini_harness.permissions import PermissionsConfig
+from mini_harness.sync.config import SyncConfig
 from mini_harness.workspace import SandboxConfig
 
 
@@ -91,6 +92,7 @@ class HarnessConfig(BaseModel):
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
+    sync: SyncConfig = Field(default_factory=SyncConfig)
 
 
 def load_harness_config(
@@ -152,6 +154,7 @@ def load_harness_config(
         runtime=runtime,
         sandbox=config.sandbox,
         permissions=config.permissions,
+        sync=config.sync,
     )
 
 
