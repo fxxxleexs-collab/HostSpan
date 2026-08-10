@@ -72,6 +72,16 @@ class EnsureRemoteToolInput(BaseModel):
     max_output_chars: int = Field(default=12_000, ge=1, le=200_000)
 
 
+class SyncStatusInput(BaseModel):
+    workspace_id: str = Field(default="default", min_length=1, max_length=120)
+    max_paths: int = Field(default=50, ge=1, le=500)
+
+
+class SyncPushInput(BaseModel):
+    workspace_id: str = Field(default="default", min_length=1, max_length=120)
+    max_paths: int = Field(default=50, ge=1, le=500)
+
+
 class OpenTerminalInput(BaseModel):
     target: Literal["current", "local", "remote"] = Field(
         default="current",

@@ -31,7 +31,9 @@ def test_scan_local_manifest_hashes_text_files_and_skips_binary(tmp_path: Path) 
     result = scan_local_manifest(tmp_path)
 
     assert set(result.manifest.files) == {"src/app.py"}
-    assert result.manifest.files["src/app.py"].size == len((tmp_path / "src" / "app.py").read_bytes())
+    assert result.manifest.files["src/app.py"].size == len(
+        (tmp_path / "src" / "app.py").read_bytes()
+    )
     assert {item.path: item.reason for item in result.skipped} == {
         ".env": "ignored",
         "image.bin": "binary",

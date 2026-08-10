@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from mini_harness.errors import ErrorCode, MiniHarnessError
+from mini_harness.sync.config import SyncConfig
 from mini_harness.workspace import SandboxConfig, SandboxedCommand, WorkspacePolicy
 
 _IGNORED_DIRS = {
@@ -52,6 +53,7 @@ class WorkContext:
     remote_shell: str = "bash"
     sandbox_config: SandboxConfig | None = None
     workspace_policy: WorkspacePolicy | None = None
+    sync_config: SyncConfig | None = None
     cwd: str = "."
     active_task_id: str | None = None
     task_log_cursor: int = 0
@@ -188,6 +190,17 @@ class WorkContext:
         return (
             f"Sandbox: profile={policy.config.profile}, engine={policy.config.engine}, "
             f"local_root={policy.root_for('local')}, remote_root={policy.root_for('remote')}"
+        )
+
+    def sync_remote_root(self) -> str:
+        return self._normalized_remote_root()
+
+    def sync_summary(self) -> str:
+        config = self.sync_config or SyncConfig()
+        return (
+            f"Sync: enabled={config.enabled}, mode={config.mode}, "
+            f"local_state_dir={config.local_state_dir}, "
+            f"remote_manifest_path={config.remote_manifest_path}"
         )
 
     def default_terminal_target(self) -> ResolvedTerminalTarget:

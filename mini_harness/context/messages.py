@@ -25,6 +25,9 @@ you deliberately want a clean task without session state.
 In SSH runtime mode, open_remote_terminal already starts the process on the
 remote host. Do not run ssh inside open_remote_terminal; leave argv unset or use
 argv ["bash", "-l"] for a remote shell.
+When sync is enabled in SSH runtime mode, call sync_status before relying on the
+remote mirror and call sync_push before remote commands that need fresh local
+files. sync_status reports the local-to-remote manifest diff summary.
 Before sending terminal commands, check the active terminal target, OS, and shell
 in the work context and use the matching command syntax.
 If you opened root privileges or changed shell state inside a terminal, keep
@@ -100,6 +103,7 @@ class AgentContext:
             f"Runtime mode: {self.work_context.runtime_mode}\n"
             f"{self.work_context.target_summary()}\n"
             f"{self.work_context.sandbox_summary()}\n"
+            f"{self.work_context.sync_summary()}\n"
             f"Project root: {self.work_context.project_root}\n"
             f"Remote root: {self.work_context.remote_root or 'n/a'}\n"
             f"Current directory: {self.work_context.cwd}\n"

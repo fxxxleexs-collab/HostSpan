@@ -31,6 +31,8 @@ The current version exposes:
 - `observe_task`
 - `cancel_task`
 - `ensure_remote_tool`
+- `sync_status`
+- `sync_push`
 - `open_terminal`
 - `open_local_terminal`
 - `open_remote_terminal`
@@ -65,6 +67,7 @@ Covered permission request families:
 - Task tools request `task.run`, `task.observe`, or `task.cancel`.
 - Terminal tools request `terminal.open`, `terminal.observe`, `terminal.send_input`, or `terminal.close` with a local/remote target.
 - `run_in_session` requests `session.run` with the active terminal target.
+- Sync tools request `sync.status` or `sync.push` with the remote target.
 
 Policy denial returns a structured `PERMISSION_DENIED` tool result and does not call the underlying Runtime SDK.
 
@@ -109,7 +112,19 @@ The `mini_harness.sync` package is initialized as an independent module for work
 - `state.py`: local JSON state storage under `.mini-harness/sync/`.
 - `engine.py`: push/status engine using the existing runtime file API.
 
-The module is not exposed as agent tools yet. The next step is to add `sync_status` and `sync_push` tools over this package.
+The module is exposed through:
+
+- `sync_status`: scans the local workspace and returns a manifest diff summary without writing remote files.
+- `sync_push`: applies the local-to-remote push plan, writes the remote manifest, and updates local sync state.
+
+Enable the first push-mode implementation with:
+
+```toml
+[sync]
+enabled = true
+mode = "push"
+delete_remote = false
+```
 
 ## Running
 

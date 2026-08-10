@@ -17,6 +17,7 @@ from mini_harness.models.schemas import FinalDecision, ToolDecision
 from mini_harness.permissions import PermissionsConfig
 from mini_harness.runtime.client import SDKRuntimeClient
 from mini_harness.runtime.work_context import WorkContext
+from mini_harness.sync.config import SyncConfig
 from mini_harness.tools.adapter import build_runtime_tools
 from mini_harness.tools.registry import ToolRegistry
 from mini_harness.workspace import SandboxConfig
@@ -45,6 +46,7 @@ class AgentController:
         runtime_config: RuntimeConfig | None = None,
         sandbox_config: SandboxConfig | None = None,
         permissions_config: PermissionsConfig | None = None,
+        sync_config: SyncConfig | None = None,
     ) -> None:
         self.runtime_client = runtime_client
         self.model_provider = model_provider
@@ -52,6 +54,7 @@ class AgentController:
         self.runtime_config = runtime_config or RuntimeConfig()
         self.sandbox_config = sandbox_config or SandboxConfig()
         self.permissions_config = permissions_config or PermissionsConfig()
+        self.sync_config = sync_config or SyncConfig()
         self.event_sink = event_sink or InMemoryEventSink()
 
     async def run(
@@ -72,6 +75,7 @@ class AgentController:
                 runtime_mode=self.runtime_config.mode,
                 remote_root=self.runtime_config.ssh.remote_root,
                 sandbox_config=self.sandbox_config,
+                sync_config=self.sync_config,
             )
         elif self.runtime_config.mode == "ssh":
             local_bundle = self.runtime_client.ensure_local("mini-harness-local", project_path)
@@ -96,6 +100,7 @@ class AgentController:
                 remote_os="linux",
                 remote_shell="bash",
                 sandbox_config=self.sandbox_config,
+                sync_config=self.sync_config,
             )
         else:
             bundle = self.runtime_client.ensure_local("mini-harness-local", project_path)
@@ -105,6 +110,7 @@ class AgentController:
                 target_id=str(bundle["target_id"]),
                 project_root=project_path,
                 sandbox_config=self.sandbox_config,
+                sync_config=self.sync_config,
             )
 
         registry = ToolRegistry(
@@ -131,6 +137,7 @@ def build_sdk_controller(
     runtime_config: RuntimeConfig | None = None,
     sandbox_config: SandboxConfig | None = None,
     permissions_config: PermissionsConfig | None = None,
+    sync_config: SyncConfig | None = None,
 ) -> tuple[AgentController, AgentRuntimeClient]:
     runtime_config = runtime_config or RuntimeConfig()
     client = AgentRuntimeClient.from_broker(
@@ -151,6 +158,7 @@ def build_sdk_controller(
             runtime_config,
             sandbox_config,
             permissions_config,
+            sync_config,
         ),
         client,
     )

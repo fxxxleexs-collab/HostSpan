@@ -12,6 +12,7 @@ from mini_harness.models.fake import FakeModelProvider
 from mini_harness.models.schemas import FinalDecision, ToolDecision
 from mini_harness.permissions import PermissionsConfig
 from mini_harness.runtime.work_context import WorkContext
+from mini_harness.sync.config import SyncConfig
 from mini_harness.tools.adapter import build_runtime_tools
 from mini_harness.tools.registry import ToolRegistry
 from mini_harness.workspace import SandboxConfig, SandboxTargetConfig
@@ -398,6 +399,77 @@ async def test_ensure_remote_tool_reports_missing_and_can_install(fake_runtime) 
     assert installed.ok
     assert installed.metadata["installed"] is True
     assert "ENVRT_TOOL_INSTALLED tmux" in str(installed.content)
+
+
+@pytest.mark.asyncio
+async def test_sync_status_reports_manifest_diff_summary(fake_runtime, tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('hello')\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("SECRET=value\n", encoding="utf-8")
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root=str(tmp_path),
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+        sync_config=SyncConfig(enabled=True),
+    )
+
+    result = await registry.execute("sync_status", {"max_paths": 10}, context)
+
+    assert result.ok
+    assert result.state == "DIRTY"
+    assert result.metadata["diff"]["upload_count"] == 1
+    assert result.metadata["diff"]["skipped_count"] == 1
+    assert result.metadata["diff"]["uploads"] == ["src/app.py"]
+    assert "uploads=1" in str(result.content)
+    assert "src/app.py" in str(result.content)
+    assert ".env (ignored" in str(result.content)
+    assert fake_runtime.requests == []
+
+
+@pytest.mark.asyncio
+async def test_sync_push_uploads_remote_mirror_and_updates_state(
+    fake_runtime,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('hello')\n", encoding="utf-8")
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root=str(tmp_path),
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+        sync_config=SyncConfig(enabled=True),
+    )
+
+    pushed = await registry.execute("sync_push", {"max_paths": 10}, context)
+    status = await registry.execute("sync_status", {"max_paths": 10}, context)
+
+    assert pushed.ok
+    assert pushed.state == "CLEAN"
+    assert pushed.metadata["diff"]["upload_count"] == 1
+    assert pushed.metadata["uploaded"] == ["src/app.py"]
+    assert pushed.metadata["local_state_path"]
+    assert pushed.metadata["remote_manifest_path"] == "/srv/app/.mini-harness/sync-manifest.json"
+    write_paths = [
+        payload["path"] for name, payload in fake_runtime.requests if name == "write_text"
+    ]
+    assert "/srv/app/src/app.py" in write_paths
+    assert "/srv/app/.mini-harness/sync-manifest.json" in write_paths
+    assert status.ok
+    assert status.state == "CLEAN"
+    assert status.metadata["diff"]["upload_count"] == 0
+    assert status.metadata["diff"]["unchanged_count"] == 1
 
 
 @pytest.mark.asyncio
