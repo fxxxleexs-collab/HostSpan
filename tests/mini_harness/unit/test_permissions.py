@@ -4,6 +4,7 @@ import pytest
 
 from mini_harness.permissions import CapabilitySetPermissionPolicy
 from mini_harness.runtime.work_context import WorkContext
+from mini_harness.sync.config import SyncConfig
 from mini_harness.tools.adapter import build_runtime_tools
 from mini_harness.tools.registry import ToolRegistry
 
@@ -95,3 +96,31 @@ async def test_permission_policy_denies_run_in_session(fake_runtime) -> None:
     assert result.error_code == "PERMISSION_DENIED"
     assert result.metadata["missing_capabilities"] == ["session.run:local"]
     assert "write_terminal" not in [name for name, _ in fake_runtime.requests]
+
+
+@pytest.mark.asyncio
+async def test_permission_policy_denies_sync_push_before_runtime_call(
+    fake_runtime,
+    tmp_path,
+) -> None:
+    (tmp_path / "app.py").write_text("print('hello')\n", encoding="utf-8")
+    registry = _register_runtime_tools(
+        _registry(CapabilitySetPermissionPolicy(denied={"sync.push:*"})),
+        fake_runtime,
+    )
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root=str(tmp_path),
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+        sync_config=SyncConfig(enabled=True),
+    )
+
+    result = await registry.execute("sync_push", {}, context)
+
+    assert not result.ok
+    assert result.error_code == "PERMISSION_DENIED"
+    assert result.metadata["missing_capabilities"] == ["sync.push:remote"]
+    assert "write_text" not in [name for name, _ in fake_runtime.requests]

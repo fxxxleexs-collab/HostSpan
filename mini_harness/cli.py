@@ -198,6 +198,7 @@ async def _run_async(
         runtime_config=harness_config.runtime,
         sandbox_config=harness_config.sandbox,
         permissions_config=harness_config.permissions,
+        sync_config=harness_config.sync,
     )
     try:
         result = await controller.run(

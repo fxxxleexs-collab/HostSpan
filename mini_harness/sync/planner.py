@@ -38,6 +38,35 @@ class SyncPlan(BaseModel):
     def ok(self) -> bool:
         return not self.conflicts
 
+    def diff_summary(self, max_paths: int = 50) -> dict[str, object]:
+        return {
+            "ok": self.ok,
+            "mode": self.mode,
+            "has_changes": self.has_changes,
+            "upload_count": len(self.uploads),
+            "delete_count": len(self.deletes),
+            "unchanged_count": len(self.unchanged),
+            "skipped_count": len(self.skipped),
+            "conflict_count": len(self.conflicts),
+            "uploads": [action.path for action in self.uploads[:max_paths]],
+            "deletes": [action.path for action in self.deletes[:max_paths]],
+            "unchanged": self.unchanged[:max_paths],
+            "skipped": [
+                {"path": item.path, "reason": item.reason, "detail": item.detail}
+                for item in self.skipped[:max_paths]
+            ],
+            "conflicts": [
+                {"path": item.path, "reason": item.reason} for item in self.conflicts[:max_paths]
+            ],
+            "truncated": {
+                "uploads": len(self.uploads) > max_paths,
+                "deletes": len(self.deletes) > max_paths,
+                "unchanged": len(self.unchanged) > max_paths,
+                "skipped": len(self.skipped) > max_paths,
+                "conflicts": len(self.conflicts) > max_paths,
+            },
+        }
+
 
 def plan_push(
     *,
