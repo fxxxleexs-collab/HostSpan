@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -73,6 +74,16 @@ async def test_runtime_tools_map_to_runtime_client(fake_runtime) -> None:
     assert "calculator.py" in str(listed.content)
     assert read.ok
     assert "return a - b" in str(read.content)
+    calculator_bytes = b"def add(a: int, b: int) -> int:\n    return a - b\n"
+    expected_hash = hashlib.sha256(calculator_bytes).hexdigest()
+    assert read.metadata["sha256"] == expected_hash
+    assert read.metadata["size"] == len(calculator_bytes)
+    assert read.metadata["line_count"] == 2
+    assert read.metadata["selected_line_count"] == 2
+    assert read.metadata["newline"] == "lf"
+    assert read.metadata["encoding"] == "utf-8"
+    assert context.file_snapshot("calculator.py") is not None
+    assert context.file_snapshot("calculator.py").sha256 == expected_hash
     assert write.ok
     assert run.resource_ref == "task:task_1"
     assert observed.ok
@@ -126,6 +137,29 @@ async def test_runtime_tools_map_remote_paths_and_terminal_tools(fake_runtime) -
     assert fake_runtime.requests[0][1]["path"] == "/srv/app"
     assert fake_runtime.requests[1][1]["path"] == "/srv/app/calculator.py"
     assert fake_runtime.requests[2][1]["cwd"] == "/srv/app"
+
+
+@pytest.mark.asyncio
+async def test_read_file_metadata_keeps_full_snapshot_for_line_window(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+
+    result = await registry.execute(
+        "read_file",
+        {"path": "test_calculator.py", "start_line": 4, "end_line": 5},
+        context,
+    )
+
+    assert result.ok
+    assert "4 | def test_add()" in str(result.content)
+    assert result.metadata["line_count"] == 5
+    assert result.metadata["selected_line_count"] == 2
+    snapshot = context.file_snapshot("test_calculator.py")
+    assert snapshot is not None
+    assert snapshot.line_count == 5
+    assert snapshot.sha256 == result.metadata["sha256"]
 
 
 @pytest.mark.asyncio
