@@ -8,6 +8,7 @@ import pytest
 from mini_harness.agent.controller import AgentController
 from mini_harness.agent.events import InMemoryEventSink
 from mini_harness.agent.state import AgentState
+from mini_harness.approvals import ToolApprovalRequest
 from mini_harness.config import RuntimeConfig, SSHRuntimeConfig
 from mini_harness.models.fake import FakeModelProvider
 from mini_harness.models.schemas import FinalDecision, ToolDecision
@@ -29,6 +30,22 @@ def _context() -> WorkContext:
             local=SandboxTargetConfig(allow_root_shell=True, allow_package_install=True)
         ),
     )
+
+
+class FakeInteractiveApprovalHandler:
+    def __init__(self, *, approved: bool = True, secret: str | None = "test-password") -> None:
+        self.approved = approved
+        self.secret = secret
+        self.requests: list[ToolApprovalRequest] = []
+        self.secret_prompts: list[str] = []
+
+    async def approve(self, request: ToolApprovalRequest) -> bool:
+        self.requests.append(request)
+        return self.approved
+
+    async def prompt_secret(self, prompt: str) -> str | None:
+        self.secret_prompts.append(prompt)
+        return self.secret
 
 
 @pytest.mark.asyncio
@@ -522,6 +539,32 @@ async def test_run_command_force_clean_overrides_active_session_guard(fake_runti
 
 
 @pytest.mark.asyncio
+async def test_run_command_denies_package_download_by_default(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root="/local/project",
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+    )
+
+    result = await registry.execute(
+        "run_command",
+        {"argv": ["apt-get", "download", "tmux"], "cwd": "."},
+        context,
+    )
+
+    assert not result.ok
+    assert result.error_code == "SANDBOX_DENIED"
+    assert "package installation" in result.summary
+    assert "run_command" not in [name for name, _ in fake_runtime.requests]
+
+
+@pytest.mark.asyncio
 async def test_run_in_session_uses_active_terminal_state(fake_runtime) -> None:
     registry = ToolRegistry()
     for tool in build_runtime_tools(fake_runtime):
@@ -603,6 +646,109 @@ async def test_ensure_remote_tool_reports_missing_and_can_install(fake_runtime) 
     assert installed.ok
     assert installed.metadata["installed"] is True
     assert "ENVRT_TOOL_INSTALLED tmux" in str(installed.content)
+
+
+@pytest.mark.asyncio
+async def test_ensure_remote_tool_manual_tmux_install_prompts_for_password(fake_runtime) -> None:
+    approval = FakeInteractiveApprovalHandler(secret="sudo-secret")
+    registry = ToolRegistry(approval_handler=approval)
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root="/local/project",
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+        approval_handler=approval,
+    )
+    fake_runtime.tmux_install_requires_password = True
+
+    installed = await registry.execute(
+        "ensure_remote_tool",
+        {"tool": "tmux", "install": True},
+        context,
+    )
+
+    assert installed.ok
+    assert installed.metadata["phase"] == "manual_elevation"
+    assert installed.metadata["manual_elevation"] is True
+    assert installed.metadata["approved_by_user"] is True
+    assert installed.metadata["password_requested"] is True
+    assert installed.metadata["password_prompted"] is True
+    assert installed.metadata["sudo_password_accepted"] is True
+    assert installed.metadata["sudo_password_rejected"] is False
+    assert installed.metadata["password_attempts"] == 1
+    assert approval.requests
+    assert approval.secret_prompts == ["Remote sudo password for installing tmux"]
+    assert "sudo-secret" not in str(installed.content)
+    assert "close_terminal" in [name for name, _ in fake_runtime.requests]
+
+
+@pytest.mark.asyncio
+async def test_ensure_remote_tool_manual_tmux_install_retries_rejected_password(
+    fake_runtime,
+) -> None:
+    approval = FakeInteractiveApprovalHandler(secret="sudo-secret")
+    registry = ToolRegistry(approval_handler=approval)
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root="/local/project",
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+        approval_handler=approval,
+    )
+    fake_runtime.tmux_install_requires_password = True
+    fake_runtime.tmux_manual_password_failures = 1
+
+    installed = await registry.execute(
+        "ensure_remote_tool",
+        {"tool": "tmux", "install": True},
+        context,
+    )
+
+    assert installed.ok
+    assert installed.metadata["sudo_password_accepted"] is True
+    assert installed.metadata["sudo_password_rejected"] is True
+    assert installed.metadata["password_attempts"] == 2
+    assert approval.secret_prompts == [
+        "Remote sudo password for installing tmux",
+        "Remote sudo password was rejected; try again",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ensure_remote_tool_manual_tmux_install_can_be_denied(fake_runtime) -> None:
+    approval = FakeInteractiveApprovalHandler(approved=False)
+    registry = ToolRegistry(approval_handler=approval)
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root="/local/project",
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+        approval_handler=approval,
+    )
+    fake_runtime.tmux_install_requires_password = True
+
+    installed = await registry.execute(
+        "ensure_remote_tool",
+        {"tool": "tmux", "install": True},
+        context,
+    )
+
+    assert not installed.ok
+    assert installed.metadata["phase"] == "manual_elevation"
+    assert installed.metadata["approved_by_user"] is False
+    assert "open_terminal" not in [name for name, _ in fake_runtime.requests]
 
 
 @pytest.mark.asyncio

@@ -68,7 +68,7 @@ class CancelTaskInput(BaseModel):
 class EnsureRemoteToolInput(BaseModel):
     tool: Literal["tmux"] = "tmux"
     install: bool = False
-    wait_seconds: float = Field(default=30.0, ge=1, le=300)
+    wait_seconds: float = Field(default=180.0, ge=1, le=900)
     max_output_chars: int = Field(default=12_000, ge=1, le=200_000)
 
 

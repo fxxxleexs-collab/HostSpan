@@ -349,12 +349,18 @@ def _opens_root_shell(command: str) -> bool:
 def _installs_packages(command: str) -> bool:
     lowered = command.lower()
     patterns = [
-        r"\bapt(-get)?\s+install\b",
-        r"\byum\s+install\b",
-        r"\bdnf\s+install\b",
-        r"\bapk\s+add\b",
-        r"\bpacman\s+-s\b",
-        r"\bbrew\s+install\b",
+        r"\bapt(-get)?\s+(install|reinstall|download|source|build-dep|update|upgrade|dist-upgrade|full-upgrade)\b",
+        r"\bdpkg\s+(-i|--install|--unpack)\b",
+        r"\byum\s+(install|reinstall|update|upgrade|download|downloader)\b",
+        r"\bdnf\s+(install|reinstall|update|upgrade|download|repoquery)\b",
+        r"\bapk\s+(add|fetch|update|upgrade)\b",
+        r"\bpacman\s+(-s|-sy|-syu|-sw|-u)\b",
+        r"\bbrew\s+(install|reinstall|upgrade|fetch)\b",
+        r"\bpip(x)?\s+(install|download|wheel)\b",
+        r"\bpython\s+-m\s+pip\s+(install|download|wheel)\b",
+        r"\bnpm\s+(install|i|ci|pack)\b",
+        r"\bpnpm\s+(install|i|add|pack)\b",
+        r"\byarn\s+(install|add|pack)\b",
     ]
     return any(re.search(pattern, lowered) for pattern in patterns)
 

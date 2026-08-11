@@ -36,6 +36,8 @@ class FakeHarnessRuntime:
         self.task_exit_code = 0
         self.logs = [{"chunk": ".\n1 passed\n"}]
         self.tmux_present = False
+        self.tmux_install_requires_password = False
+        self.tmux_manual_password_failures = 0
         self.terminal_fallback = False
         self.sessions: dict[str, dict[str, Any]] = {}
         self.session_created_at = datetime(2026, 8, 11, 8, 0, tzinfo=UTC)
@@ -134,12 +136,28 @@ class FakeHarnessRuntime:
                 self.task_exit_code = 0
                 self.logs = [{"chunk": "ENVRT_TOOL_PRESENT tmux\ntmux 3.4\n"}]
             elif "apt-get" in command_text:
-                self.tmux_present = True
-                self.task_state = "SUCCEEDED"
-                self.task_exit_code = 0
-                self.logs = [
-                    {"chunk": "ENVRT_TOOL_MISSING tmux\nENVRT_TOOL_INSTALLED tmux\ntmux 3.4\n"}
-                ]
+                if self.tmux_install_requires_password:
+                    self.task_state = "FAILED"
+                    self.task_exit_code = 8
+                    self.logs = [
+                        {
+                            "chunk": (
+                                "ENVRT_TOOL_MISSING tmux\n"
+                                "ENVRT_TOOL_INSTALL_FAILED tmux: sudo password or elevated privileges are required\n"
+                            )
+                        }
+                    ]
+                else:
+                    self.tmux_present = True
+                    self.task_state = "SUCCEEDED"
+                    self.task_exit_code = 0
+                    self.logs = [
+                        {
+                            "chunk": (
+                                "ENVRT_TOOL_MISSING tmux\nENVRT_TOOL_INSTALLED tmux\ntmux 3.4\n"
+                            )
+                        }
+                    ]
             else:
                 self.task_state = "FAILED"
                 self.task_exit_code = 7
@@ -202,6 +220,8 @@ class FakeHarnessRuntime:
             )
         )
         is_remote = target_id.endswith("_ssh")
+        command_text = " ".join(argv)
+        manual_tmux_install = "ENVRT_SUDO_PASSWORD_PROMPT" in command_text
         if self.terminal_fallback and is_remote:
             session = {
                 "session_id": "session_1",
@@ -219,6 +239,8 @@ class FakeHarnessRuntime:
                 "target_provider": "ssh_process",
                 "created_at": self.session_created_at.isoformat(),
                 "updated_at": (self.session_created_at + timedelta(minutes=1)).isoformat(),
+                "manual_tmux_install": manual_tmux_install,
+                "password_sent": False,
             }
             self.sessions["session_1"] = dict(session)
             return session
@@ -241,6 +263,8 @@ class FakeHarnessRuntime:
             "target_provider": "ssh_process" if is_remote else "local_process",
             "created_at": self.session_created_at.isoformat(),
             "updated_at": (self.session_created_at + timedelta(minutes=1)).isoformat(),
+            "manual_tmux_install": manual_tmux_install,
+            "password_sent": False,
         }
         self.sessions["session_1"] = dict(session)
         return session
@@ -280,11 +304,28 @@ class FakeHarnessRuntime:
                 {"session_id": session_id, "after_seq": after_seq, "limit_chars": limit_chars},
             )
         )
-        frames = (
-            []
-            if after_seq is not None and after_seq >= 1
-            else [{"seq": 1, "data": "TERMINAL_READY\n"}]
-        )
+        session = self.sessions.get(session_id, {})
+        if session.get("manual_tmux_install"):
+            failures_left = int(session.get("password_failures_left", 0))
+            if session.get("password_sent") and failures_left > 0:
+                session["password_failures_left"] = failures_left - 1
+                session["password_sent"] = False
+                text = "Sorry, try again.\nENVRT_SUDO_PASSWORD_PROMPT\n"
+                seq = 2
+            elif session.get("password_sent"):
+                text = "ENVRT_SUDO_AUTH_OK\nENVRT_TOOL_INSTALLED tmux\ntmux 3.4\n"
+                seq = 3
+            else:
+                text = "ENVRT_TOOL_MISSING tmux\nENVRT_SUDO_PASSWORD_PROMPT\n"
+                seq = 1
+            frames = [] if after_seq is not None and after_seq >= seq else [{"seq": seq, "data": text}]
+            return {
+                "session_id": session_id,
+                "frames": frames,
+                "text": text,
+                "cursor": seq,
+            }
+        frames = [] if after_seq is not None and after_seq >= 1 else [{"seq": 1, "data": "TERMINAL_READY\n"}]
         return {
             "session_id": session_id,
             "frames": frames,
@@ -294,6 +335,12 @@ class FakeHarnessRuntime:
 
     def write_terminal(self, session_id: str, data: str) -> dict[str, Any]:
         self.requests.append(("write_terminal", {"session_id": session_id, "data": data}))
+        if session_id in self.sessions and self.sessions[session_id].get("manual_tmux_install"):
+            self.sessions[session_id]["password_sent"] = True
+            self.sessions[session_id].setdefault(
+                "password_failures_left", self.tmux_manual_password_failures
+            )
+            self.tmux_present = True
         return {"session_id": session_id}
 
     def close_terminal(self, session_id: str) -> dict[str, Any]:

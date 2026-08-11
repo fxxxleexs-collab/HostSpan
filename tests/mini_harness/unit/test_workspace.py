@@ -63,6 +63,26 @@ def test_command_guard_denies_root_shell_by_default() -> None:
     assert "root shell" in str(exc_info.value)
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["apt-get", "download", "tmux"],
+        ["bash", "-lc", "apt-get download tmux"],
+        ["apt", "source", "tmux"],
+        ["python", "-m", "pip", "download", "requests"],
+        ["npm", "pack", "left-pad"],
+    ],
+)
+def test_command_guard_denies_package_downloads_by_default(argv: list[str]) -> None:
+    policy = WorkspacePolicy(local_root="/project", remote_root="/srv/app")
+
+    with pytest.raises(MiniHarnessError) as exc_info:
+        policy.authorize_command(argv, target="remote")
+
+    assert exc_info.value.code.value == "SANDBOX_DENIED"
+    assert "package installation" in str(exc_info.value)
+
+
 def test_command_guard_allows_root_shell_when_configured() -> None:
     policy = WorkspacePolicy(
         local_root="/project",
