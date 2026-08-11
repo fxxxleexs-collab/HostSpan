@@ -36,6 +36,12 @@ class ConsoleApprovalHandler:
             lambda: typer.confirm("Allow this operation?", default=False)
         )
 
+    async def prompt_secret(self, prompt: str) -> str | None:
+        value = await asyncio.to_thread(
+            lambda: typer.prompt(prompt, hide_input=True, default="", show_default=False)
+        )
+        return str(value) if value else None
+
 
 @app.callback()
 def _main_callback(ctx: typer.Context) -> None:

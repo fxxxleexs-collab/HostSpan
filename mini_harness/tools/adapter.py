@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as dt
 import re
+import shlex
 import time
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
+from mini_harness.approvals import ToolApprovalRequest
 from mini_harness.errors import ErrorCode, MiniHarnessError
-from mini_harness.permissions import PermissionRequest
+from mini_harness.permissions import PermissionDecision, PermissionRequest
 from mini_harness.runtime.client import HarnessRuntimeClient
 from mini_harness.runtime.work_context import ResolvedTerminalTarget, TargetBinding, WorkContext
 from mini_harness.sync.engine import SyncEngine, SyncPushResult
@@ -480,6 +483,42 @@ class EnsureRemoteToolTool(RuntimeTool):
             )
 
         command = _remote_tool_command(data.tool, install=data.install)
+        automatic = await self._run_remote_tool_command(
+            command,
+            context=context,
+            max_output_chars=data.max_output_chars,
+            wait_seconds=data.wait_seconds,
+        )
+        result = _remote_tool_result(
+            data,
+            automatic,
+            phase="automatic",
+        )
+        if (
+            result.ok
+            or not data.install
+            or not _tmux_install_needs_manual_elevation(str(result.content or ""))
+        ):
+            return result
+        manual = await self._manual_tmux_install(
+            context=context,
+            max_output_chars=data.max_output_chars,
+            wait_seconds=data.wait_seconds,
+        )
+        if manual is None:
+            result.metadata["manual_elevation_available"] = True
+            result.metadata["recommended_action"] = "approve_temporary_tmux_install_elevation"
+            return result
+        return _remote_tool_result(data, manual, phase="manual_elevation")
+
+    async def _run_remote_tool_command(
+        self,
+        command: str,
+        *,
+        context: WorkContext,
+        max_output_chars: int,
+        wait_seconds: float,
+    ) -> dict[str, Any]:
         task = await asyncio.to_thread(
             self.runtime.run_command,
             context.environment_id,
@@ -492,48 +531,155 @@ class EnsureRemoteToolTool(RuntimeTool):
             self.runtime.observe_task,
             task_id,
             0,
-            data.max_output_chars,
-            data.wait_seconds,
+            max_output_chars,
+            wait_seconds,
         )
-        output = str(observation.get("text", ""))
-        state = str(observation.get("state") or observation.get("task", {}).get("state", "UNKNOWN"))
-        exit_code = observation.get("exit_code")
-        present = "ENVRT_TOOL_PRESENT tmux" in output
-        installed = "ENVRT_TOOL_INSTALLED tmux" in output
-        missing = "ENVRT_TOOL_MISSING tmux" in output
-        failed = (
-            "ENVRT_TOOL_INSTALL_FAILED tmux" in output
-            or state in TERMINAL_TASK_STATES
-            and exit_code not in {0, None}
+        return {
+            "task_id": task_id,
+            "state": str(
+                observation.get("state") or observation.get("task", {}).get("state", "UNKNOWN")
+            ),
+            "exit_code": observation.get("exit_code"),
+            "output": str(observation.get("text", "")),
+            "resource_ref": f"task:{task_id}",
+        }
+
+    async def _manual_tmux_install(
+        self,
+        *,
+        context: WorkContext,
+        max_output_chars: int,
+        wait_seconds: float,
+    ) -> dict[str, Any] | None:
+        handler = context.approval_handler
+        approve = getattr(handler, "approve", None)
+        prompt_secret = getattr(handler, "prompt_secret", None)
+        if approve is None:
+            return None
+        request = _tmux_elevation_approval_request()
+        if not await approve(request):
+            return {
+                "task_id": None,
+                "state": "DENIED",
+                "exit_code": None,
+                "output": "ENVRT_TOOL_INSTALL_FAILED tmux: user denied temporary elevation\n",
+                "resource_ref": None,
+                "approved_by_user": False,
+            }
+        target = context.terminal_target("remote")
+        command = _tmux_interactive_install_command()
+        session = await asyncio.to_thread(
+            self.runtime.open_terminal,
+            target.environment_id,
+            target.target_id,
+            ["bash", "-lc", command],
+            context.runtime_cwd_for(".", "remote"),
+            120,
+            30,
         )
-        ok = present or installed
-        if ok:
-            summary = f"{data.tool} is available"
-        elif data.install:
-            summary = f"{data.tool} could not be installed automatically"
-        elif missing:
-            summary = f"{data.tool} is missing; rerun ensure_remote_tool with install=true"
-        else:
-            summary = f"{data.tool} availability is unknown"
-        return ToolResult(
-            ok=ok,
-            summary=summary,
-            content=output or None,
-            resource_ref=f"task:{task_id}",
-            state=state,
-            recoverable=not ok,
-            metadata={
-                "tool": data.tool,
-                "install_requested": data.install,
-                "present": present,
-                "installed": installed,
-                "missing": missing,
-                "failed": failed,
-                "task_id": task_id,
-                "exit_code": exit_code,
-                "recommended_action": None if ok else "install_tmux_or_enable_ssh_pty_fallback",
-            },
-        )
+        session_id = str(session["session_id"])
+        chunks: list[str] = []
+        cursor: int | None = None
+        password_requested = False
+        password_prompted = False
+        sudo_password_accepted = False
+        sudo_password_rejected = False
+        timeout_reason: str | None = None
+        password_attempts = 0
+        max_password_attempts = 2
+        deadline = time.monotonic() + max(wait_seconds, 180.0)
+        try:
+            while True:
+                observation = await asyncio.to_thread(
+                    self.runtime.observe_terminal,
+                    session_id,
+                    cursor,
+                    max_output_chars,
+                )
+                cursor = (
+                    observation.get("cursor")
+                    if isinstance(observation.get("cursor"), int)
+                    else cursor
+                )
+                text = _terminal_observation_text(observation)
+                if text:
+                    chunks.append(text)
+                output = "".join(chunks)
+                if "ENVRT_SUDO_AUTH_OK" in output:
+                    sudo_password_accepted = True
+                if _tmux_sudo_password_rejected(text):
+                    sudo_password_rejected = True
+                if (
+                    "ENVRT_SUDO_PASSWORD_PROMPT" in text
+                    and not sudo_password_accepted
+                    and password_attempts < max_password_attempts
+                ):
+                    password_requested = True
+                    if prompt_secret is None:
+                        chunks.append(
+                            "\nENVRT_TOOL_INSTALL_FAILED tmux: sudo password is required but no password prompt is available\n"
+                        )
+                        break
+                    prompt = (
+                        "Remote sudo password for installing tmux"
+                        if password_attempts == 0
+                        else "Remote sudo password was rejected; try again"
+                    )
+                    password = await prompt_secret(prompt)
+                    password_prompted = True
+                    password_attempts += 1
+                    await asyncio.to_thread(
+                        self.runtime.write_terminal,
+                        session_id,
+                        f"{password or ''}\n",
+                    )
+                elif (
+                    "ENVRT_SUDO_PASSWORD_PROMPT" in text
+                    and not sudo_password_accepted
+                    and password_attempts >= max_password_attempts
+                ):
+                    chunks.append(
+                        "\nENVRT_TOOL_INSTALL_FAILED tmux: sudo password was rejected\n"
+                    )
+                    break
+                if _tmux_install_output_terminal(output):
+                    break
+                if time.monotonic() >= deadline:
+                    timeout_reason = (
+                        "sudo_auth"
+                        if password_requested and not sudo_password_accepted
+                        else "package_install"
+                    )
+                    chunks.append(
+                        "\nENVRT_TOOL_INSTALL_FAILED tmux: timed out during "
+                        f"{timeout_reason.replace('_', ' ')}\n"
+                    )
+                    break
+                await asyncio.sleep(0.2)
+        finally:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(self.runtime.close_terminal, session_id)
+        return {
+            "task_id": session_id,
+            "state": "SUCCEEDED"
+            if "ENVRT_TOOL_INSTALLED tmux" in "".join(chunks)
+            or "ENVRT_TOOL_PRESENT tmux" in "".join(chunks)
+            else "FAILED",
+            "exit_code": 0
+            if "ENVRT_TOOL_INSTALLED tmux" in "".join(chunks)
+            or "ENVRT_TOOL_PRESENT tmux" in "".join(chunks)
+            else 1,
+            "output": "".join(chunks),
+            "resource_ref": f"session:{session_id}",
+            "manual_elevation": True,
+            "approved_by_user": True,
+            "password_requested": password_requested,
+            "password_prompted": password_prompted,
+            "password_attempts": password_attempts,
+            "sudo_password_accepted": sudo_password_accepted,
+            "sudo_password_rejected": sudo_password_rejected,
+            "timeout_reason": timeout_reason,
+        }
 
 
 class SyncStatusTool(RuntimeTool):
@@ -2426,7 +2572,9 @@ def _remote_tool_command(tool: str, install: bool) -> str:
             "echo ENVRT_TOOL_PRESENT tmux; tmux -V; "
             "else echo ENVRT_TOOL_MISSING tmux; exit 7; fi"
         )
-    return r"""
+    install_body = _tmux_install_body()
+    elevated_install_body = _tmux_elevated_install_body()
+    return f"""
 set -u
 if command -v tmux >/dev/null 2>&1; then
   echo ENVRT_TOOL_PRESENT tmux
@@ -2434,25 +2582,34 @@ if command -v tmux >/dev/null 2>&1; then
   exit 0
 fi
 echo ENVRT_TOOL_MISSING tmux
-SUDO=""
 if [ "$(id -u)" != "0" ]; then
   if command -v sudo >/dev/null 2>&1; then
-    SUDO="sudo -n"
+    sudo -n true >/dev/null 2>&1 || {{
+      echo "ENVRT_TOOL_INSTALL_FAILED tmux: sudo password or elevated privileges are required"
+      exit 8
+    }}
+    exec sudo -n sh -c {shlex.quote(elevated_install_body)}
   else
-    echo "ENVRT_TOOL_INSTALL_FAILED tmux: root or passwordless sudo is required"
+    echo "ENVRT_TOOL_INSTALL_FAILED tmux: root or sudo is required"
     exit 8
   fi
 fi
+{install_body}
+""".strip()
+
+
+def _tmux_install_body() -> str:
+    return r"""
 if command -v apt-get >/dev/null 2>&1; then
-  $SUDO apt-get update && $SUDO apt-get install -y tmux
+  apt-get update && apt-get install -y tmux
 elif command -v dnf >/dev/null 2>&1; then
-  $SUDO dnf install -y tmux
+  dnf install -y tmux
 elif command -v yum >/dev/null 2>&1; then
-  $SUDO yum install -y tmux
+  yum install -y tmux
 elif command -v apk >/dev/null 2>&1; then
-  $SUDO apk add --no-cache tmux
+  apk add --no-cache tmux
 elif command -v pacman >/dev/null 2>&1; then
-  $SUDO pacman -Sy --noconfirm tmux
+  pacman -Sy --noconfirm tmux
 else
   echo "ENVRT_TOOL_INSTALL_FAILED tmux: unsupported package manager"
   exit 9
@@ -2465,6 +2622,175 @@ else
   exit 10
 fi
 """.strip()
+
+
+def _tmux_elevated_install_body() -> str:
+    return "echo ENVRT_SUDO_AUTH_OK\n" + _tmux_install_body()
+
+
+def _tmux_interactive_install_command() -> str:
+    install_body = _tmux_install_body()
+    elevated_install_body = _tmux_elevated_install_body()
+    return f"""
+set -u
+if command -v tmux >/dev/null 2>&1; then
+  echo ENVRT_TOOL_PRESENT tmux
+  tmux -V
+  exit 0
+fi
+echo ENVRT_TOOL_MISSING tmux
+if [ "$(id -u)" = "0" ]; then
+  echo ENVRT_SUDO_AUTH_OK
+  {install_body}
+  exit $?
+fi
+if ! command -v sudo >/dev/null 2>&1; then
+  echo "ENVRT_TOOL_INSTALL_FAILED tmux: root or sudo is required"
+  exit 8
+fi
+if sudo -n true >/dev/null 2>&1; then
+  exec sudo -n sh -c {shlex.quote(elevated_install_body)}
+fi
+exec sudo -S -k -p 'ENVRT_SUDO_PASSWORD_PROMPT\n' sh -c {shlex.quote(elevated_install_body)}
+""".strip()
+
+
+def _remote_tool_result(
+    data: EnsureRemoteToolInput,
+    execution: Mapping[str, Any],
+    *,
+    phase: str,
+) -> ToolResult:
+    output = str(execution.get("output") or "")
+    state = str(execution.get("state") or "UNKNOWN")
+    exit_code = execution.get("exit_code")
+    present = "ENVRT_TOOL_PRESENT tmux" in output
+    installed = "ENVRT_TOOL_INSTALLED tmux" in output
+    missing = "ENVRT_TOOL_MISSING tmux" in output
+    failed = (
+        "ENVRT_TOOL_INSTALL_FAILED tmux" in output
+        or state in TERMINAL_TASK_STATES
+        and exit_code not in {0, None}
+    )
+    ok = present or installed
+    if ok:
+        summary = f"{data.tool} is available"
+    elif data.install and phase == "manual_elevation":
+        summary = f"{data.tool} could not be installed with temporary elevation"
+    elif data.install:
+        summary = f"{data.tool} could not be installed automatically"
+    elif missing:
+        summary = f"{data.tool} is missing; rerun ensure_remote_tool with install=true"
+    else:
+        summary = f"{data.tool} availability is unknown"
+    metadata = {
+        "tool": data.tool,
+        "install_requested": data.install,
+        "present": present,
+        "installed": installed,
+        "missing": missing,
+        "failed": failed,
+        "phase": phase,
+        "task_id": execution.get("task_id"),
+        "exit_code": exit_code,
+        "recommended_action": None if ok else "install_tmux_or_enable_ssh_pty_fallback",
+    }
+    for key in (
+        "manual_elevation",
+        "approved_by_user",
+        "password_requested",
+        "password_prompted",
+        "password_attempts",
+        "sudo_password_accepted",
+        "sudo_password_rejected",
+        "timeout_reason",
+    ):
+        if key in execution:
+            metadata[key] = execution[key]
+    return ToolResult(
+        ok=ok,
+        summary=summary,
+        content=output or None,
+        resource_ref=execution.get("resource_ref"),
+        state=state,
+        recoverable=not ok,
+        metadata=metadata,
+    )
+
+
+def _tmux_install_needs_manual_elevation(output: str) -> bool:
+    return any(
+        marker in output
+        for marker in (
+            "sudo password or elevated privileges are required",
+            "root or sudo is required",
+            "a password is required",
+            "Permission denied",
+        )
+    )
+
+
+def _tmux_install_output_terminal(output: str) -> bool:
+    return any(
+        marker in output
+        for marker in (
+            "ENVRT_TOOL_PRESENT tmux",
+            "ENVRT_TOOL_INSTALLED tmux",
+            "ENVRT_TOOL_INSTALL_FAILED tmux",
+            "sudo: 3 incorrect password attempts",
+        )
+    )
+
+
+def _tmux_sudo_password_rejected(output: str) -> bool:
+    lowered = output.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "sorry, try again",
+            "incorrect password",
+            "authentication failure",
+        )
+    )
+
+
+def _terminal_observation_text(observation: Mapping[str, Any]) -> str:
+    frames = observation.get("frames")
+    if isinstance(frames, list) and frames:
+        return "".join(str(frame.get("data", "")) for frame in frames)
+    return str(observation.get("text") or "")
+
+
+def _tmux_elevation_approval_request() -> ToolApprovalRequest:
+    return ToolApprovalRequest(
+        tool_name="ensure_remote_tool",
+        arguments={"tool": "tmux", "install": True, "elevation": "temporary"},
+        decision=PermissionDecision.deny(
+            "tmux installation requires temporary remote privilege elevation",
+            missing_capabilities=("remote_tool.install.elevated:remote",),
+            metadata={
+                "warning": (
+                    "This will run a single sudo/root package-manager command on the "
+                    "configured remote host. The elevation is limited to installing tmux "
+                    "and no root shell is kept open."
+                ),
+                "risks": [
+                    "The remote package manager may change system package state.",
+                    "A sudo password may be requested and used only for this install attempt.",
+                ],
+            },
+        ),
+        permission_requests=[
+            PermissionRequest.for_target(
+                tool_name="ensure_remote_tool",
+                capability="remote_tool.install.elevated",
+                target="remote",
+                operation="install",
+                resource="tmux",
+                argv=("tmux",),
+            )
+        ],
+    )
 
 
 def _task_summary(task_id: str, state: str, exit_code: int | None) -> str:

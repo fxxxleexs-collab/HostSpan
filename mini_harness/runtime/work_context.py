@@ -92,6 +92,7 @@ class WorkContext:
     sandbox_config: SandboxConfig | None = None
     workspace_policy: WorkspacePolicy | None = None
     sync_config: SyncConfig | None = None
+    approval_handler: object | None = None
     cwd: str = "."
     active_task_id: str | None = None
     task_log_cursor: int = 0

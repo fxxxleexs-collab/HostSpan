@@ -110,6 +110,7 @@ class AgentController:
                 remote_root=self.runtime_config.ssh.remote_root,
                 sandbox_config=self.sandbox_config,
                 sync_config=self.sync_config,
+                approval_handler=self.approval_handler,
             )
         if self.runtime_config.mode == "ssh":
             local_bundle = self.runtime_client.ensure_local("mini-harness-local", project_path)
@@ -135,6 +136,7 @@ class AgentController:
                 remote_shell="bash",
                 sandbox_config=self.sandbox_config,
                 sync_config=self.sync_config,
+                approval_handler=self.approval_handler,
             )
         bundle = self.runtime_client.ensure_local("mini-harness-local", project_path)
         return WorkContext(
@@ -144,6 +146,7 @@ class AgentController:
             project_root=project_path,
             sandbox_config=self.sandbox_config,
             sync_config=self.sync_config,
+            approval_handler=self.approval_handler,
         )
 
     def build_tool_registry(self) -> ToolRegistry:
