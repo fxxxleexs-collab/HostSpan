@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 
 from environment_runtime.core.errors import NotFoundError, ValidationError
 from environment_runtime.core.events import RuntimeEvent
@@ -70,6 +71,7 @@ class SessionService:
         )
         session.state = SessionState.ACTIVE
         session.interaction_state = InteractionState.AUTOMATION_CONTROLLED
+        _touch_session(session)
         session.backend_ref = handle.backend_ref()
         await self.context.sessions.upsert(session)
         self.context.active.session_handles[session.session_id] = handle
@@ -145,6 +147,8 @@ class SessionService:
         if handle is None:
             raise NotFoundError(f"session {session_id} is not active")
         await handle.write(data)
+        _touch_session(session)
+        await self.context.sessions.upsert(session)
         await self.context.terminal_frames.append(
             session.session_id,
             TerminalFrameKind.REDACTED,
@@ -169,6 +173,7 @@ class SessionService:
         )
         session.terminal_cols = cols
         session.terminal_rows = rows
+        _touch_session(session)
         await self.context.sessions.upsert(session)
         await self._emit(
             "session.resized",
@@ -185,6 +190,7 @@ class SessionService:
             self.context.active.session_handles.pop(session_id, None)
         session.state = SessionState.TERMINATED
         session.interaction_state = InteractionState.NONE
+        _touch_session(session)
         await self.context.sessions.upsert(session)
         await self._emit("session.terminated", session, {"state": session.state})
         return session
@@ -205,6 +211,7 @@ class SessionService:
                 session.exit_code = status.exit_code
                 session.state = SessionState.TERMINATED
                 session.interaction_state = InteractionState.NONE
+                _touch_session(session)
                 await self.context.sessions.upsert(session)
                 await self._emit(
                     "session.recovered",
@@ -223,6 +230,7 @@ class SessionService:
         session.state = SessionState.ACTIVE
         session.interaction_state = InteractionState.AUTOMATION_CONTROLLED
         session.backend_ref = handle.backend_ref()
+        _touch_session(session)
         await self.context.sessions.upsert(session)
         self.context.active.session_handles[session.session_id] = handle
         watcher = asyncio.create_task(self._watch_session(session.session_id))
@@ -244,6 +252,7 @@ class SessionService:
         session.exit_code = exit_code
         session.state = SessionState.TERMINATED
         session.interaction_state = InteractionState.NONE
+        _touch_session(session)
         await self.context.sessions.upsert(session)
         self.context.active.session_handles.pop(session_id, None)
         await self._emit("session.terminated", session, {"returncode": exit_code})
@@ -274,3 +283,7 @@ class SessionService:
         )
         await self.context.event_store.append(event)
         await self.context.event_bus.publish(event)
+
+
+def _touch_session(session: Session) -> None:
+    session.updated_at = datetime.now(UTC)

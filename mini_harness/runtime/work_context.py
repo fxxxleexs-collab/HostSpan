@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -39,6 +41,40 @@ class TargetBinding:
 
 
 @dataclass
+class SessionBrief:
+    session_id: str
+    target: str = "unknown"
+    backend: str = "unknown"
+    runtime_state: str = "unknown"
+    brief: str = "terminal session"
+    last_command: str | None = None
+    cwd_hint: str | None = None
+    privilege: Literal["unknown", "user", "root"] = "unknown"
+    pending: bool = False
+    history_only: bool = False
+    updated_by: str = "unknown"
+    touched_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    touch_index: int = 0
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "target": self.target,
+            "backend": self.backend,
+            "runtime_state": self.runtime_state,
+            "brief": self.brief,
+            "last_command": self.last_command,
+            "cwd_hint": self.cwd_hint,
+            "privilege": self.privilege,
+            "pending": self.pending,
+            "history_only": self.history_only,
+            "updated_by": self.updated_by,
+            "touched_at": self.touched_at,
+            "touch_index": self.touch_index,
+        }
+
+
+@dataclass
 class WorkContext:
     endpoint_id: str
     environment_id: str
@@ -64,6 +100,7 @@ class WorkContext:
     active_session_os: str = "unknown"
     active_session_shell: str = "unknown"
     active_session_kind: Literal["pty", "tmux", "unknown"] | None = None
+    active_session_runtime_state: str = "unknown"
     active_session_privilege: Literal["unknown", "user", "root"] = "unknown"
     active_session_stateful: bool = False
     active_session_reason: str | None = None
@@ -74,6 +111,8 @@ class WorkContext:
     last_tool_name: str | None = None
     last_task_state: str | None = None
     last_command_exit_code: int | None = None
+    session_briefs: dict[str, SessionBrief] = field(default_factory=dict)
+    _session_touch_counter: int = 0
     _sandbox_approval_depth: int = 0
 
     def __post_init__(self) -> None:
@@ -188,6 +227,7 @@ class WorkContext:
             f"os={self.active_session_os}",
             f"shell={self.active_session_shell}",
             f"kind={self.active_session_kind or 'unknown'}",
+            f"runtime_state={self.active_session_runtime_state}",
             f"privilege={self.active_session_privilege}",
         ]
         if self.active_session_stateful:
@@ -195,6 +235,51 @@ class WorkContext:
         if self.active_session_reason:
             details.append(f"reason={self.active_session_reason}")
         return ", ".join(details)
+
+    def record_session_interaction(
+        self,
+        session_id: str,
+        *,
+        target: str | None = None,
+        backend: str | None = None,
+        runtime_state: str | None = None,
+        brief: str | None = None,
+        last_command: str | None = None,
+        cwd_hint: str | None = None,
+        privilege: Literal["unknown", "user", "root"] | None = None,
+        pending: bool | None = None,
+        history_only: bool | None = None,
+        updated_by: str,
+    ) -> SessionBrief:
+        self._session_touch_counter += 1
+        existing = self.session_briefs.get(session_id)
+        item = existing or SessionBrief(session_id=session_id)
+        if target is not None:
+            item.target = target
+        if backend is not None:
+            item.backend = backend
+        if runtime_state is not None:
+            item.runtime_state = runtime_state
+        if brief is not None:
+            item.brief = _compact_session_text(brief, limit=240)
+        if last_command is not None:
+            item.last_command = _compact_session_text(last_command, limit=240)
+        if cwd_hint is not None:
+            item.cwd_hint = _compact_session_text(cwd_hint, limit=180)
+        if privilege is not None:
+            item.privilege = privilege
+        if pending is not None:
+            item.pending = pending
+        if history_only is not None:
+            item.history_only = history_only
+        item.updated_by = updated_by
+        item.touched_at = datetime.now(UTC).isoformat()
+        item.touch_index = self._session_touch_counter
+        self.session_briefs[session_id] = item
+        return item
+
+    def session_brief(self, session_id: str) -> SessionBrief | None:
+        return self.session_briefs.get(session_id)
 
     def target_summary(self) -> str:
         local = self.local_target()
@@ -295,6 +380,7 @@ class WorkContext:
         os_name: str | None = None,
         shell: str | None = None,
         kind: Literal["pty", "tmux", "unknown"] | None = None,
+        runtime_state: str | None = None,
         privilege: Literal["unknown", "user", "root"] | None = None,
         stateful: bool | None = None,
         reason: str | None = None,
@@ -307,6 +393,8 @@ class WorkContext:
             self.active_session_shell = shell
         if kind is not None:
             self.active_session_kind = kind
+        if runtime_state is not None:
+            self.active_session_runtime_state = runtime_state
         if privilege is not None:
             self.active_session_privilege = privilege
         if stateful is not None:
@@ -320,6 +408,7 @@ class WorkContext:
         self.active_session_os = "unknown"
         self.active_session_shell = "unknown"
         self.active_session_kind = None
+        self.active_session_runtime_state = "unknown"
         self.active_session_privilege = "unknown"
         self.active_session_stateful = False
         self.active_session_reason = None
@@ -384,6 +473,22 @@ def default_local_shell() -> str:
         shell = os.environ.get("PSMODULEPATH")
         return "powershell" if shell else "cmd"
     return Path(os.environ.get("SHELL", "")).name or "sh"
+
+
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b(password|passwd|token|api[_-]?key|secret|authorization)\s*[:=]\s*([^\s;&|]+)"
+)
+_LONG_SECRET_RE = re.compile(r"\b[A-Za-z0-9_./+=-]{32,}\b")
+
+
+def _compact_session_text(text: str, *, limit: int) -> str:
+    value = text.replace("\r", "\n")
+    value = _SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}=[REDACTED]", value)
+    value = _LONG_SECRET_RE.sub("[REDACTED]", value)
+    value = " ".join(value.split())
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 14)].rstrip() + " ...[truncated]"
 
 
 def _normalize_approved_workspace_path(path: str | None) -> str:

@@ -43,6 +43,9 @@ The current version exposes:
 - `open_terminal`
 - `open_local_terminal`
 - `open_remote_terminal`
+- `list_terminal_sessions`
+- `inspect_terminal_session`
+- `activate_terminal_session`
 - `observe_terminal`
 - `send_terminal_input`
 - `send_terminal_control`
@@ -76,6 +79,7 @@ Covered permission request families:
 - File tools request `file.list`, `file.read`, or `file.write`.
 - Task tools request `task.run`, `task.observe`, or `task.cancel`.
 - Terminal tools request `terminal.open`, `terminal.observe`, `terminal.send_input`, or `terminal.close` with a local/remote target.
+- Session discovery tools request `terminal.list`, `terminal.inspect`, or `terminal.activate`. Use these to discover Runtime-managed sessions; do not rely on `tmux ls` from a separate shell because tmux visibility depends on user/socket context.
 - `run_in_session` requests `session.run` with the active terminal target.
 - Shell commands which look like they create or overwrite files, such as `>`, `>>`, `tee`, `touch`, `mkdir`, `cp`, or `mv`, also request `file.write` for the target.
 - Sync tools request `sync.status` or `sync.push` with the remote target.
@@ -171,7 +175,9 @@ Start a multi-turn chat session:
 .\.venv\Scripts\mini-harness.exe chat --embedded-broker --project .
 ```
 
-Use `/exit` or `/quit` to end the session.
+Use `/compact` to summarize older turns and tool results manually. Mini Harness also compacts automatically when the chat exceeds `auto_compact_turns` user turns or `auto_compact_tool_turns` retained tool results. Use `/exit` or `/quit` to end the session.
+
+Terminal session state is reported from Runtime's session registry. `ssh_tmux` sessions can be reattached when their remote tmux session is still alive. `ssh_pty` sessions are tied to the active Runtime process and cannot be reattached after a Runtime restart; historical terminal output may still be readable, but `DISCONNECTED`, `TERMINATED`, and `LOST` sessions cannot accept new input.
 
 For a real model:
 
@@ -211,6 +217,9 @@ OpenAI or OpenAI-compatible example:
 max_iterations = 30
 max_consecutive_tool_errors = 3
 max_context_chars = 120000
+recent_tool_turns = 12
+auto_compact_turns = 8
+auto_compact_tool_turns = 24
 
 [model]
 provider = "openai"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -150,6 +151,189 @@ async def test_open_local_terminal_is_available_in_ssh_runtime(fake_runtime) -> 
             "rows": 30,
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_list_terminal_sessions_uses_runtime_session_registry(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root="/local/project",
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+    )
+
+    await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
+    result = await registry.execute("list_terminal_sessions", {}, context)
+
+    assert result.ok
+    assert result.state == "ACTIVE"
+    assert result.metadata["active_count"] == 1
+    assert result.metadata["sessions"][0]["session_id"] == "session_1"
+    assert result.metadata["sessions"][0]["backend"] == "ssh_tmux"
+    assert "tmux ls" in result.metadata["note"]
+
+
+@pytest.mark.asyncio
+async def test_list_terminal_sessions_defaults_to_recent_ten(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+    base = datetime(2026, 8, 11, 8, 0, tzinfo=UTC)
+    for index in range(12):
+        fake_runtime.sessions[f"session_{index}"] = {
+            "session_id": f"session_{index}",
+            "state": "ACTIVE" if index % 2 == 0 else "TERMINATED",
+            "backend": "local_pty",
+            "environment_id": "env_1",
+            "target_id": "target_1",
+            "command": ["bash", "-l"],
+            "default_cwd": "/project",
+            "interaction_state": "AUTOMATION_CONTROLLED",
+            "backend_ref": {"backend": "local_pty", "endpoint_id": "endpoint_1"},
+            "created_at": (base + timedelta(minutes=index)).isoformat(),
+            "updated_at": (base + timedelta(minutes=index)).isoformat(),
+        }
+
+    result = await registry.execute("list_terminal_sessions", {}, context)
+
+    assert result.ok
+    assert result.metadata["session_count"] == 10
+    assert result.metadata["sessions"][0]["session_id"] == "session_11"
+    assert result.metadata["sessions"][-1]["session_id"] == "session_2"
+    assert {session["state"] for session in result.metadata["sessions"]} == {
+        "ACTIVE",
+        "TERMINATED",
+    }
+
+
+@pytest.mark.asyncio
+async def test_list_terminal_sessions_filters_state_and_date(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+    base = datetime(2026, 8, 10, 23, 0, tzinfo=UTC)
+    for index, state in enumerate(["ACTIVE", "TERMINATED", "ACTIVE"]):
+        fake_runtime.sessions[f"session_{index}"] = {
+            "session_id": f"session_{index}",
+            "state": state,
+            "backend": "local_pty",
+            "environment_id": "env_1",
+            "target_id": "target_1",
+            "command": ["bash", "-l"],
+            "default_cwd": "/project",
+            "interaction_state": "AUTOMATION_CONTROLLED",
+            "backend_ref": {"backend": "local_pty", "endpoint_id": "endpoint_1"},
+            "created_at": (base + timedelta(hours=index)).isoformat(),
+            "updated_at": (base + timedelta(hours=index)).isoformat(),
+        }
+
+    result = await registry.execute(
+        "list_terminal_sessions",
+        {"state_filter": "active", "created_after": "2026-08-11"},
+        context,
+    )
+
+    assert result.ok
+    assert [session["session_id"] for session in result.metadata["sessions"]] == ["session_2"]
+
+
+@pytest.mark.asyncio
+async def test_list_terminal_sessions_conversation_scope_includes_brief(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+
+    opened = await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
+    assert opened.ok
+    ran = await registry.execute("run_in_session", {"command": "id -u"}, context)
+    assert ran.ok
+    fake_runtime.sessions["session_other"] = {
+        "session_id": "session_other",
+        "state": "ACTIVE",
+        "backend": "local_pty",
+        "environment_id": "env_1",
+        "target_id": "target_1",
+        "command": ["bash", "-l"],
+        "default_cwd": "/project",
+        "interaction_state": "AUTOMATION_CONTROLLED",
+        "backend_ref": {"backend": "local_pty", "endpoint_id": "endpoint_1"},
+        "created_at": "2026-08-11T09:00:00+00:00",
+        "updated_at": "2026-08-11T09:00:00+00:00",
+    }
+
+    result = await registry.execute(
+        "list_terminal_sessions",
+        {"scope": "conversation", "state_filter": "all"},
+        context,
+    )
+
+    assert result.ok
+    assert result.metadata["session_count"] == 1
+    session = result.metadata["sessions"][0]
+    assert session["session_id"] == "session_1"
+    assert session["last_command"] == "id -u"
+    assert "Latest terminal output" in str(session["brief"])
+
+
+@pytest.mark.asyncio
+async def test_inspect_disconnected_ssh_pty_reports_history_only(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root="/local/project",
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+    )
+    fake_runtime.sessions["session_old"] = {
+        "session_id": "session_old",
+        "state": "DISCONNECTED",
+        "backend": "ssh_pty",
+        "environment_id": "env_ssh",
+        "target_id": "target_ssh",
+        "command": ["bash", "-l"],
+        "default_cwd": "/srv/app",
+        "interaction_state": "NONE",
+        "backend_ref": {"backend": "ssh_pty", "endpoint_id": "endpoint_ssh"},
+    }
+
+    inspected = await registry.execute(
+        "inspect_terminal_session",
+        {"session_ref": "session:session_old"},
+        context,
+    )
+    activated = await registry.execute(
+        "activate_terminal_session",
+        {"session_ref": "session:session_old"},
+        context,
+    )
+    ran = await registry.execute(
+        "run_in_session",
+        {"session_ref": "session:session_old", "command": "id", "wait_seconds": 0},
+        context,
+    )
+
+    assert inspected.ok
+    assert inspected.state == "DISCONNECTED"
+    assert inspected.metadata["history_only"] is True
+    assert "historical output may be readable" in inspected.summary
+    assert "TERMINAL_READY" in str(inspected.content)
+    assert not activated.ok
+    assert activated.state == "DISCONNECTED"
+    assert not ran.ok
+    assert ran.metadata["history_only"] is True
+    assert "write_terminal" not in [name for name, _ in fake_runtime.requests]
 
 
 @pytest.mark.asyncio

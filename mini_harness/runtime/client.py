@@ -60,6 +60,10 @@ class HarnessRuntimeClient(Protocol):
         rows: int,
     ) -> dict[str, Any]: ...
 
+    def list_sessions(self) -> list[dict[str, Any]]: ...
+
+    def get_session(self, session_id: str) -> dict[str, Any]: ...
+
     def observe_terminal(
         self,
         session_id: str,
@@ -172,6 +176,12 @@ class SDKRuntimeClient:
             cols=cols,
             rows=rows,
         )
+
+    def list_sessions(self) -> list[dict[str, Any]]:
+        return self.client.sessions.list()
+
+    def get_session(self, session_id: str) -> dict[str, Any]:
+        return self.client.sessions.get(session_id)
 
     def observe_terminal(
         self,

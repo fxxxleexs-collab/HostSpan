@@ -10,7 +10,7 @@ from mini_harness.agent.events import AgentEventSink, InMemoryEventSink
 from mini_harness.agent.loop import AgentLoop, AgentRunResult
 from mini_harness.approvals import ApprovalHandler
 from mini_harness.config import AgentConfig, ModelConfig, RuntimeConfig
-from mini_harness.context.messages import AgentContext
+from mini_harness.context.messages import AgentContext, ContextCompactResult
 from mini_harness.models.anthropic import AnthropicModelProvider
 from mini_harness.models.base import ModelProvider
 from mini_harness.models.fake import FakeModelProvider
@@ -174,6 +174,9 @@ class AgentSession:
             event_sink=self.controller.event_sink,
         )
         return await loop.run_with_context(task, self.work_context, self.context)
+
+    def compact_context(self) -> ContextCompactResult:
+        return self.context.compact(reason="manual")
 
 
 def build_sdk_controller(

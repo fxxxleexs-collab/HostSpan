@@ -216,3 +216,50 @@ def test_agent_context_compacts_older_turns_and_tool_results() -> None:
     assert "old task" in rendered
     assert "old answer" in rendered
     assert "new task" in rendered
+
+
+def test_agent_context_auto_compacts_when_turn_threshold_is_exceeded() -> None:
+    config = AgentConfig(max_context_chars=100_000, auto_compact_turns=2, recent_tool_turns=4)
+    context = AgentContext(config, _context())
+    context.add_user_task("first task")
+    context.add_final_decision(FinalDecision(type="final", summary="first answer"))
+    context.add_user_task("second task")
+    context.add_final_decision(FinalDecision(type="final", summary="second answer"))
+    context.add_user_task("third task")
+
+    messages = context.build_messages([])
+
+    assert context.compacted
+    assert context.last_compact_result is not None
+    assert context.last_compact_result.reason == "auto:user-turns"
+    assert context.user_tasks == ["third task"]
+    rendered = "\n".join(message.content for message in messages)
+    assert "Compacted conversation context" in rendered
+    assert "first task" in rendered
+    assert "second answer" in rendered
+    assert "third task" in rendered
+
+
+def test_agent_context_manual_compact_returns_stats() -> None:
+    config = AgentConfig(max_context_chars=100_000, recent_tool_turns=4)
+    context = AgentContext(config, _context())
+    context.add_user_task("old task")
+    context.add_final_decision(FinalDecision(type="final", summary="old answer"))
+    context.add_user_task("current task")
+    for index in range(5):
+        context.add_tool_result(
+            "read_file",
+            {"path": f"file_{index}.py"},
+            ToolResult(ok=True, summary=f"read file {index}", content="content"),
+        )
+
+    result = context.compact()
+
+    assert result.compacted
+    assert result.reason == "manual"
+    assert result.user_turns_before == 2
+    assert result.user_turns_after == 1
+    assert result.tool_turns_before == 5
+    assert result.tool_turns_after == 2
+    assert "old task" in str(context.compacted_summary)
+    assert "Context compacted" in result.summary
