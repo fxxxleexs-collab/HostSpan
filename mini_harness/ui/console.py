@@ -76,6 +76,9 @@ class RichEventRenderer:
                 f"({message_count if message_count is not None else '?'} messages)"
             )
             return
+        if event.event_type == AgentEventType.CONTEXT_TRUNCATED:
+            self.console.print(f"[yellow][CONTEXT][/yellow] {event.summary}")
+            return
         if event.event_type == AgentEventType.MODEL_REQUEST_COMPLETED:
             self._render_model_decision(event)
             return

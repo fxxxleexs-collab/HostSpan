@@ -6,6 +6,7 @@ import os
 import shutil
 import threading
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -36,6 +37,8 @@ class FakeHarnessRuntime:
         self.logs = [{"chunk": ".\n1 passed\n"}]
         self.tmux_present = False
         self.terminal_fallback = False
+        self.sessions: dict[str, dict[str, Any]] = {}
+        self.session_created_at = datetime(2026, 8, 11, 8, 0, tzinfo=UTC)
 
     def ensure_local(self, name: str, root: str) -> dict[str, Any]:
         self.requests.append(("ensure_local", {"name": name, "root": root}))
@@ -200,20 +203,70 @@ class FakeHarnessRuntime:
         )
         is_remote = target_id.endswith("_ssh")
         if self.terminal_fallback and is_remote:
-            return {
+            session = {
                 "session_id": "session_1",
                 "backend": "ssh_pty",
+                "state": "ACTIVE",
+                "environment_id": environment_id,
+                "target_id": target_id,
+                "command": argv,
+                "default_cwd": cwd,
+                "interaction_state": "AUTOMATION_CONTROLLED",
+                "backend_ref": {"backend": "ssh_pty", "endpoint_id": "endpoint_ssh"},
                 "fallback_from": "ssh_tmux",
                 "fallback_error": "tmux: command not found",
                 "lease": {"lease_id": "lease_1"},
                 "target_provider": "ssh_process",
+                "created_at": self.session_created_at.isoformat(),
+                "updated_at": (self.session_created_at + timedelta(minutes=1)).isoformat(),
             }
-        return {
+            self.sessions["session_1"] = dict(session)
+            return session
+        session = {
             "session_id": "session_1",
             "backend": "ssh_tmux" if is_remote else "local_pty",
+            "state": "ACTIVE",
+            "environment_id": environment_id,
+            "target_id": target_id,
+            "command": argv,
+            "default_cwd": cwd,
+            "interaction_state": "AUTOMATION_CONTROLLED",
+            "backend_ref": {
+                "backend": "ssh_tmux" if is_remote else "local_pty",
+                "endpoint_id": "endpoint_ssh" if is_remote else "endpoint_1",
+                "tmux_session": "envrt_session_1" if is_remote else None,
+                "tmux_target": "envrt_session_1:0.0" if is_remote else None,
+            },
             "lease": {"lease_id": "lease_1"},
             "target_provider": "ssh_process" if is_remote else "local_process",
+            "created_at": self.session_created_at.isoformat(),
+            "updated_at": (self.session_created_at + timedelta(minutes=1)).isoformat(),
         }
+        self.sessions["session_1"] = dict(session)
+        return session
+
+    def list_sessions(self) -> list[dict[str, Any]]:
+        self.requests.append(("list_sessions", {}))
+        return list(self.sessions.values())
+
+    def get_session(self, session_id: str) -> dict[str, Any]:
+        self.requests.append(("get_session", {"session_id": session_id}))
+        return self.sessions.get(
+            session_id,
+            {
+                "session_id": session_id,
+                "state": "ACTIVE",
+                "backend": "local_pty",
+                "environment_id": "env_1",
+                "target_id": "target_1",
+                "command": ["bash", "-l"],
+                "default_cwd": "/project",
+                "interaction_state": "AUTOMATION_CONTROLLED",
+                "backend_ref": {"backend": "local_pty", "endpoint_id": "endpoint_1"},
+                "created_at": self.session_created_at.isoformat(),
+                "updated_at": self.session_created_at.isoformat(),
+            },
+        )
 
     def observe_terminal(
         self,
@@ -245,6 +298,12 @@ class FakeHarnessRuntime:
 
     def close_terminal(self, session_id: str) -> dict[str, Any]:
         self.requests.append(("close_terminal", {"session_id": session_id}))
+        if session_id in self.sessions:
+            self.sessions[session_id]["state"] = "TERMINATED"
+            self.sessions[session_id]["interaction_state"] = "NONE"
+            self.sessions[session_id]["updated_at"] = (
+                self.session_created_at + timedelta(minutes=2)
+            ).isoformat()
         return {"session_id": session_id, "state": "TERMINATED"}
 
 

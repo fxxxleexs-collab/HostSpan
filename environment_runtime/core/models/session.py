@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from pydantic import BaseModel, Field
@@ -41,3 +42,5 @@ class Session(BaseModel):
     state: SessionState = SessionState.CREATING
     interaction_state: InteractionState = InteractionState.NONE
     exit_code: int | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

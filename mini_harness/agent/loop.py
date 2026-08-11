@@ -73,7 +73,12 @@ class AgentLoop:
                 definitions = self.tools.definitions()
                 messages = context.build_messages(definitions)
                 if context.compacted:
-                    self._emit(AgentEventType.CONTEXT_TRUNCATED, "Context was compacted")
+                    compacted = context.last_compact_result
+                    self._emit(
+                        AgentEventType.CONTEXT_TRUNCATED,
+                        compacted.summary if compacted else "Context was compacted",
+                        compacted.__dict__ if compacted else None,
+                    )
                     context.compacted = False
                 if context.truncated:
                     self._emit(AgentEventType.CONTEXT_TRUNCATED, "Context was truncated")

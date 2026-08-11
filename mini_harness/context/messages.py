@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from mini_harness.config import AgentConfig
 from mini_harness.models.schemas import FinalDecision, ModelMessage
 from mini_harness.runtime.work_context import WorkContext
@@ -42,12 +44,44 @@ To interrupt a running foreground terminal process, use send_terminal_control
 with control="ctrl_c"; do not send literal "\\x03" text.
 If open_terminal reports fallback_from=ssh_tmux, use ensure_remote_tool with
 tool=tmux when a durable remote terminal is needed.
+When asked whether terminal sessions are still open, use list_terminal_sessions
+and inspect_terminal_session. Do not open another shell and run tmux commands to
+discover sessions; Runtime session state is the authoritative source.
+list_terminal_sessions defaults to the 10 most recent sessions and includes
+short conversation-local session briefs when available. Narrow it with
+scope="conversation", state_filter="active", max_sessions, or date filters when
+many sessions exist. If a session is DISCONNECTED, TERMINATED, or LOST,
+historical output may still be readable but the session cannot accept
+interactive input. Use activate_terminal_session only for an ACTIVE Runtime
+session.
 Do not claim tests passed unless a runtime task showed success.
 Use only relative paths inside the project root.
 Respect sandbox denials as runtime boundaries; do not try to bypass them with
 absolute paths, nested shells, or alternate tools.
 Return tool decisions through the available tool-call format. For final answers,
 plain text is accepted; structured final JSON is also supported."""
+
+
+@dataclass(frozen=True)
+class ContextCompactResult:
+    compacted: bool
+    reason: str
+    user_turns_before: int
+    user_turns_after: int
+    tool_turns_before: int
+    tool_turns_after: int
+    summary_chars: int
+
+    @property
+    def summary(self) -> str:
+        if not self.compacted:
+            return "Context compact skipped; there was no older history to summarize."
+        return (
+            "Context compacted: "
+            f"user turns {self.user_turns_before}->{self.user_turns_after}, "
+            f"tool turns {self.tool_turns_before}->{self.tool_turns_after}, "
+            f"summary chars={self.summary_chars}."
+        )
 
 
 class AgentContext:
@@ -65,6 +99,7 @@ class AgentContext:
         self.compacted_summary: str | None = None
         self.truncated = False
         self.compacted = False
+        self.last_compact_result: ContextCompactResult | None = None
         if user_task:
             self.add_user_task(user_task)
 
@@ -93,12 +128,13 @@ class AgentContext:
 
     def build_messages(self, tools: list[ToolDefinition]) -> list[ModelMessage]:
         self.compacted = False
+        self.maybe_auto_compact()
         messages = self._build_messages(tools, recent_tool_turns=self.config.recent_tool_turns)
         rendered_len = sum(len(message.content) for message in messages)
         if rendered_len <= self.config.max_context_chars:
             return messages
 
-        self._compact_history()
+        self.compact(reason="size")
         messages = self._build_messages(tools, recent_tool_turns=self.config.recent_tool_turns)
         rendered_len = sum(len(message.content) for message in messages)
         if rendered_len <= self.config.max_context_chars:
@@ -108,6 +144,30 @@ class AgentContext:
         self.truncated = True
         keep_tool_turns = max(1, self.config.recent_tool_turns // 2)
         return self._build_messages(tools, recent_tool_turns=keep_tool_turns)
+
+    def maybe_auto_compact(self) -> ContextCompactResult:
+        if len(self.user_tasks) > self.config.auto_compact_turns:
+            return self.compact(reason="auto:user-turns")
+        if len(self.tool_turns) > self.config.auto_compact_tool_turns:
+            return self.compact(reason="auto:tool-turns")
+        return self._compact_result(False, "auto")
+
+    def compact(self, reason: str = "manual") -> ContextCompactResult:
+        before_users = len(self.user_tasks)
+        before_tools = len(self.tool_turns)
+        self.compacted = False
+        self._compact_history()
+        result = ContextCompactResult(
+            compacted=self.compacted,
+            reason=reason,
+            user_turns_before=before_users,
+            user_turns_after=len(self.user_tasks),
+            tool_turns_before=before_tools,
+            tool_turns_after=len(self.tool_turns),
+            summary_chars=len(self.compacted_summary or ""),
+        )
+        self.last_compact_result = result
+        return result
 
     def _build_messages(
         self,
@@ -190,6 +250,17 @@ class AgentContext:
         if compact_tools:
             self.tool_turns = self.tool_turns[-keep_tool_count:]
         self.compacted = True
+
+    def _compact_result(self, compacted: bool, reason: str) -> ContextCompactResult:
+        return ContextCompactResult(
+            compacted=compacted,
+            reason=reason,
+            user_turns_before=len(self.user_tasks),
+            user_turns_after=len(self.user_tasks),
+            tool_turns_before=len(self.tool_turns),
+            tool_turns_after=len(self.tool_turns),
+            summary_chars=len(self.compacted_summary or ""),
+        )
 
     def _work_context_summary(self, tools: list[ToolDefinition]) -> str:
         active = self.work_context.task_ref() or "none"

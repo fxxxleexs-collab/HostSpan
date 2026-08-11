@@ -362,7 +362,10 @@ async def _chat_async(
         max_iterations=max_iterations,
         transport="BrokerTransport",
     )
-    renderer.console.print("Enter a task or follow-up. Use /exit or /quit to end the session.")
+    renderer.console.print(
+        "Enter a task or follow-up. Use /compact to summarize older context, "
+        "or /exit to end the session."
+    )
     sink = FanoutEventSink([trace, renderer])
     controller, client = build_sdk_controller(
         model_provider,
@@ -394,6 +397,10 @@ async def _chat_async(
                 continue
             if task.lower() in {"/exit", "/quit", "exit", "quit"}:
                 break
+            if task.lower() == "/compact":
+                compacted = session.compact_context()
+                renderer.console.print(f"[cyan]{compacted.summary}[/cyan]")
+                continue
             result = await session.run_turn(task)
             trace.write_summary(
                 final_state=result.final_state.value,

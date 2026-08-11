@@ -104,6 +104,55 @@ class OpenTerminalInput(BaseModel):
     rows: int = Field(default=30, ge=5, le=120)
 
 
+class ListTerminalSessionsInput(BaseModel):
+    target: Literal["current", "local", "remote", "any"] = Field(
+        default="current",
+        description=(
+            "Filter sessions by terminal target. current uses the configured default target; "
+            "any includes every target visible to the Runtime session registry."
+        ),
+    )
+    scope: Literal["all", "conversation"] = Field(
+        default="all",
+        description=(
+            "all lists Runtime registry sessions; conversation lists only sessions touched "
+            "during the current Mini Harness conversation."
+        ),
+    )
+    state_filter: Literal["all", "active", "inactive"] = Field(
+        default="all",
+        description="Filter by Runtime session state.",
+    )
+    max_sessions: int = Field(default=10, ge=1, le=500)
+    created_after: str | None = Field(
+        default=None,
+        description=(
+            "Optional ISO date or datetime lower bound, for example 2026-08-11 or "
+            "2026-08-11T10:00:00Z. Sessions without timestamps are excluded when set."
+        ),
+    )
+    created_before: str | None = Field(
+        default=None,
+        description=(
+            "Optional ISO date or datetime upper bound, for example 2026-08-11 or "
+            "2026-08-11T18:00:00Z. Sessions without timestamps are excluded when set."
+        ),
+    )
+    include_inactive: bool | None = Field(
+        default=None,
+        description="Deprecated compatibility flag. Prefer state_filter.",
+    )
+
+
+class InspectTerminalSessionInput(BaseModel):
+    session_ref: str
+    tail_chars: int = Field(default=4000, ge=0, le=100_000)
+
+
+class ActivateTerminalSessionInput(BaseModel):
+    session_ref: str
+
+
 class ObserveTerminalInput(BaseModel):
     session_ref: str | None = None
     wait_seconds: float | None = Field(

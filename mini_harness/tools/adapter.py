@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import re
 import time
 from collections.abc import Mapping, Sequence
@@ -16,10 +17,13 @@ from mini_harness.sync.engine import SyncEngine, SyncPushResult
 from mini_harness.sync.errors import SyncConflictError
 from mini_harness.tools.base import AgentTool
 from mini_harness.tools.schemas import (
+    ActivateTerminalSessionInput,
     CancelTaskInput,
     CloseTerminalInput,
     EnsureRemoteToolInput,
+    InspectTerminalSessionInput,
     ListFilesInput,
+    ListTerminalSessionsInput,
     ObserveTaskInput,
     ObserveTerminalInput,
     OpenTerminalInput,
@@ -725,7 +729,19 @@ class OpenTerminalTool(RuntimeTool):
             os_name=target.os_name,
             shell=target.shell,
             kind=_session_kind(str(backend)),
+            runtime_state=str(opened.get("state") or "ACTIVE"),
             privilege="user",
+        )
+        _record_session_brief_from_record(
+            opened,
+            context,
+            updated_by=self.definition.name,
+            brief=(
+                f"Opened {target.location} {target.os_name}/{target.shell} terminal "
+                f"via {backend}; cwd={sandboxed.cwd}"
+            ),
+            pending=False,
+            history_only=False,
         )
         summary = (
             f"opened {target.location} session:{session_id} "
@@ -757,6 +773,246 @@ class OpenTerminalTool(RuntimeTool):
                 "argv": sandboxed.argv,
                 "cwd": sandboxed.cwd,
                 "sandbox_engine": sandboxed.engine,
+            },
+        )
+
+
+class ListTerminalSessionsTool(RuntimeTool):
+    def __init__(self, runtime: HarnessRuntimeClient) -> None:
+        super().__init__(
+            runtime,
+            "list_terminal_sessions",
+            (
+                "List Runtime-managed terminal sessions. Use this to discover open or "
+                "disconnected terminals instead of opening a shell and running tmux commands."
+            ),
+            ListTerminalSessionsInput,
+        )
+
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]:
+        data = ListTerminalSessionsInput.model_validate(arguments)
+        target = "any" if data.target == "any" else context.resolve_terminal_target(data.target)
+        return [
+            PermissionRequest.for_target(
+                tool_name=self.definition.name,
+                capability="terminal.list",
+                target=target,
+                operation="list",
+            )
+        ]
+
+    async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
+        data = (
+            parsed
+            if isinstance(parsed, ListTerminalSessionsInput)
+            else ListTerminalSessionsInput.model_validate(parsed)
+        )
+        target = None if data.target == "any" else context.resolve_terminal_target(data.target)
+        state_filter = _list_state_filter(data)
+        created_after = _parse_session_boundary(data.created_after, end_of_day=False)
+        created_before = _parse_session_boundary(data.created_before, end_of_day=True)
+        sessions = await asyncio.to_thread(self.runtime.list_sessions)
+        filtered: list[dict[str, Any]] = []
+        for index, session in enumerate(sessions):
+            session_id = str(session.get("session_id") or "")
+            item = _session_summary_item(session, context)
+            item["_source_index"] = index
+            if target is not None and not _session_matches_context(session, context, target):
+                continue
+            if data.scope == "conversation" and session_id not in context.session_briefs:
+                continue
+            if not _session_matches_state_filter(item, state_filter):
+                continue
+            if not _session_matches_created_range(item, created_after, created_before):
+                continue
+            filtered.append(item)
+        filtered.sort(key=_session_sort_key, reverse=True)
+        filtered = filtered[: data.max_sessions]
+        for item in filtered:
+            item.pop("_source_index", None)
+        content = _render_session_list(filtered)
+        active_count = sum(1 for session in filtered if session.get("state") == "ACTIVE")
+        return ToolResult(
+            ok=True,
+            summary=(
+                f"found {len(filtered)} Runtime terminal session(s), "
+                f"{active_count} active for target={data.target}, scope={data.scope}, "
+                f"state_filter={state_filter}"
+            ),
+            content=content or "No matching Runtime terminal sessions.",
+            state="ACTIVE" if active_count else "NONE",
+            recoverable=True,
+            metadata={
+                "target": data.target,
+                "scope": data.scope,
+                "state_filter": state_filter,
+                "max_sessions": data.max_sessions,
+                "created_after": data.created_after,
+                "created_before": data.created_before,
+                "session_count": len(filtered),
+                "active_count": active_count,
+                "sessions": filtered,
+                "note": (
+                    "Runtime session state is authoritative for the agent; tmux ls from "
+                    "another shell can miss sessions because it depends on user/socket context."
+                ),
+            },
+        )
+
+
+class InspectTerminalSessionTool(RuntimeTool):
+    def __init__(self, runtime: HarnessRuntimeClient) -> None:
+        super().__init__(
+            runtime,
+            "inspect_terminal_session",
+            (
+                "Inspect a Runtime-managed terminal session by id and report whether it is "
+                "interactive or only historical output remains."
+            ),
+            InspectTerminalSessionInput,
+        )
+
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]:
+        data = InspectTerminalSessionInput.model_validate(arguments)
+        return [
+            PermissionRequest.for_target(
+                tool_name=self.definition.name,
+                capability="terminal.inspect",
+                target=context.active_session_target or context.default_terminal_target(),
+                operation="inspect",
+                resource=data.session_ref,
+            )
+        ]
+
+    async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
+        data = (
+            parsed
+            if isinstance(parsed, InspectTerminalSessionInput)
+            else InspectTerminalSessionInput.model_validate(parsed)
+        )
+        session_id = _session_id_from_ref(data.session_ref)
+        session = await asyncio.to_thread(self.runtime.get_session, session_id)
+        tail = (
+            await asyncio.to_thread(self.runtime.observe_terminal, session_id, None, data.tail_chars)
+            if data.tail_chars > 0
+            else {"text": "", "cursor": None}
+        )
+        item = _session_summary_item(session, context)
+        _apply_session_record_to_context(session, context, activate=False)
+        state = str(session.get("state") or "UNKNOWN")
+        interactive = _is_interactive_session(session)
+        _record_session_brief_from_record(
+            session,
+            context,
+            updated_by=self.definition.name,
+            brief=_session_output_brief(
+                str(tail.get("text") or ""),
+                default="Inspected terminal session state and historical output",
+            ),
+            pending=False if not interactive else None,
+            history_only=not interactive,
+        )
+        item = _session_summary_item(session, context)
+        content = _render_session_inspection(item, str(tail.get("text") or ""))
+        return ToolResult(
+            ok=True,
+            summary=_session_inspection_summary(session_id, state, interactive),
+            content=content,
+            resource_ref=f"session:{session_id}",
+            state=state,
+            cursor=tail.get("cursor") if isinstance(tail.get("cursor"), int) else None,
+            recoverable=True,
+            metadata={
+                "session": item,
+                "interactive": interactive,
+                "history_only": not interactive,
+                "tail_chars": data.tail_chars,
+                "cursor": tail.get("cursor"),
+            },
+        )
+
+
+class ActivateTerminalSessionTool(RuntimeTool):
+    def __init__(self, runtime: HarnessRuntimeClient) -> None:
+        super().__init__(
+            runtime,
+            "activate_terminal_session",
+            (
+                "Make an existing ACTIVE Runtime terminal session the current session for "
+                "observe_terminal, send_terminal_input, and run_in_session."
+            ),
+            ActivateTerminalSessionInput,
+        )
+
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]:
+        data = ActivateTerminalSessionInput.model_validate(arguments)
+        return [
+            PermissionRequest.for_target(
+                tool_name=self.definition.name,
+                capability="terminal.activate",
+                target=context.active_session_target or context.default_terminal_target(),
+                operation="activate",
+                resource=data.session_ref,
+            )
+        ]
+
+    async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
+        data = (
+            parsed
+            if isinstance(parsed, ActivateTerminalSessionInput)
+            else ActivateTerminalSessionInput.model_validate(parsed)
+        )
+        session_id = _session_id_from_ref(data.session_ref)
+        session = await asyncio.to_thread(self.runtime.get_session, session_id)
+        state = str(session.get("state") or "UNKNOWN")
+        if not _is_interactive_session(session):
+            _record_session_brief_from_record(
+                session,
+                context,
+                updated_by=self.definition.name,
+                brief=f"Session is {state}; historical output only",
+                pending=False,
+                history_only=True,
+            )
+            return ToolResult(
+                ok=False,
+                summary=(
+                    f"session:{session_id} is {state}; it can be inspected for historical "
+                    "output but cannot be activated for interactive input"
+                ),
+                resource_ref=f"session:{session_id}",
+                state=state,
+                error_code=ErrorCode.RUNTIME_OPERATION_FAILED.value,
+                recoverable=True,
+                metadata={
+                    "session": _session_summary_item(session, context),
+                    "interactive": False,
+                    "history_only": True,
+                    "recommended_tool": "inspect_terminal_session",
+                },
+            )
+        _apply_session_record_to_context(session, context, activate=True)
+        return ToolResult(
+            ok=True,
+            summary=f"activated session:{session_id}",
+            resource_ref=f"session:{session_id}",
+            state=state,
+            recoverable=True,
+            metadata={
+                "session": _session_summary_item(session, context),
+                "interactive": True,
             },
         )
 
@@ -793,10 +1049,18 @@ class ObserveTerminalTool(RuntimeTool):
             else ObserveTerminalInput.model_validate(parsed)
         )
         session_id = _resolve_session_id(data.session_ref, context)
+        session = await asyncio.to_thread(self.runtime.get_session, session_id)
+        session_state = str(session.get("state") or "UNKNOWN")
+        interactive = _is_interactive_session(session)
+        _apply_session_record_to_context(
+            session,
+            context,
+            activate=bool(data.session_ref and interactive and context.active_session_id != session_id),
+        )
         wait_seconds = (
             data.wait_seconds
             if data.wait_seconds is not None
-            else (12.0 if context.terminal_input_pending else 1.0)
+            else (0.0 if not interactive else (12.0 if context.terminal_input_pending else 1.0))
         )
         deadline = time.monotonic() + wait_seconds
         chunks: list[str] = []
@@ -851,20 +1115,43 @@ class ObserveTerminalTool(RuntimeTool):
         if meaningful_output_seen:
             context.terminal_input_pending = False
             _update_session_state_from_output(content, context)
+        _record_session_brief_from_record(
+            session,
+            context,
+            updated_by=self.definition.name,
+            brief=_session_output_brief(
+                content,
+                default=(
+                    "Observed terminal output"
+                    if meaningful_output_seen
+                    else "No new terminal output observed"
+                ),
+            ),
+            pending=context.terminal_input_pending,
+            history_only=not interactive,
+        )
         truncated = len(content) > data.max_output_chars
         if truncated:
             content = content[-data.max_output_chars :]
         return ToolResult(
             ok=True,
-            summary=f"observed session:{session_id}",
+            summary=(
+                f"observed session:{session_id}"
+                if interactive
+                else f"observed historical output for session:{session_id}; state={session_state}"
+            ),
             content=content or None,
             resource_ref=f"session:{session_id}",
-            state="ACTIVE",
+            state=session_state,
             cursor=context.terminal_cursor,
             truncated=truncated,
             recoverable=True,
             metadata={
                 "session_id": session_id,
+                "session_state": session_state,
+                "interactive": interactive,
+                "history_only": not interactive,
+                "backend": session.get("backend"),
                 "frame_count": frame_count,
                 "wait_seconds": wait_seconds,
                 "idle_seconds": data.idle_seconds,
@@ -918,6 +1205,19 @@ class SendTerminalInputTool(RuntimeTool):
             else SendTerminalInput.model_validate(parsed)
         )
         session_id = _resolve_session_id(data.session_ref, context)
+        session = await asyncio.to_thread(self.runtime.get_session, session_id)
+        if not _is_interactive_session(session):
+            return _inactive_session_result(
+                session,
+                context,
+                attempted_tool=self.definition.name,
+                recommended_tool="inspect_terminal_session",
+            )
+        _apply_session_record_to_context(
+            session,
+            context,
+            activate=bool(data.session_ref and context.active_session_id != session_id),
+        )
         normalized = _normalize_terminal_input(data.data, data.run_directly)
         if _should_authorize_terminal_input(normalized):
             context.authorize_session_command(normalized)
@@ -925,6 +1225,19 @@ class SendTerminalInputTool(RuntimeTool):
         context.last_terminal_input = normalized
         context.terminal_input_pending = "\n" in normalized or "\r" in normalized
         _update_session_state_from_input(normalized, context)
+        _record_session_brief_from_record(
+            session,
+            context,
+            updated_by=self.definition.name,
+            brief=(
+                "Command/input sent; output is pending"
+                if context.terminal_input_pending
+                else "Terminal input sent without executing a command"
+            ),
+            last_command=normalized if context.terminal_input_pending else None,
+            pending=context.terminal_input_pending,
+            history_only=False,
+        )
         display = _terminal_input_display(normalized)
         return ToolResult(
             ok=True,
@@ -978,6 +1291,19 @@ class SendTerminalControlTool(RuntimeTool):
             else SendTerminalControlInput.model_validate(parsed)
         )
         session_id = _resolve_session_id(data.session_ref, context)
+        session = await asyncio.to_thread(self.runtime.get_session, session_id)
+        if not _is_interactive_session(session):
+            return _inactive_session_result(
+                session,
+                context,
+                attempted_tool=self.definition.name,
+                recommended_tool="inspect_terminal_session",
+            )
+        _apply_session_record_to_context(
+            session,
+            context,
+            activate=bool(data.session_ref and context.active_session_id != session_id),
+        )
         control_bytes = _terminal_control_bytes(data.control)
         await asyncio.to_thread(self.runtime.write_terminal, session_id, control_bytes)
         context.last_terminal_input = control_bytes
@@ -996,6 +1322,14 @@ class SendTerminalControlTool(RuntimeTool):
                 stateful=True,
                 reason="terminal EOF may have exited root shell; verify with id -u",
             )
+        _record_session_brief_from_record(
+            session,
+            context,
+            updated_by=self.definition.name,
+            brief=f"Sent terminal control {data.control}; session state may need observation",
+            pending=context.terminal_input_pending,
+            history_only=False,
+        )
         return ToolResult(
             ok=True,
             summary=f"sent {data.control} to session:{session_id}",
@@ -1055,12 +1389,34 @@ class RunInSessionTool(RuntimeTool):
             else RunInSessionInput.model_validate(parsed)
         )
         session_id = _resolve_session_id(data.session_ref, context)
+        session = await asyncio.to_thread(self.runtime.get_session, session_id)
+        if not _is_interactive_session(session):
+            return _inactive_session_result(
+                session,
+                context,
+                attempted_tool=self.definition.name,
+                recommended_tool="inspect_terminal_session",
+            )
+        _apply_session_record_to_context(
+            session,
+            context,
+            activate=bool(data.session_ref and context.active_session_id != session_id),
+        )
         command = _normalize_terminal_input(data.command, run_directly=True)
         context.authorize_session_command(command)
         await asyncio.to_thread(self.runtime.write_terminal, session_id, command)
         context.last_terminal_input = command
         context.terminal_input_pending = True
         _update_session_state_from_input(command, context)
+        _record_session_brief_from_record(
+            session,
+            context,
+            updated_by=self.definition.name,
+            brief="Command running in terminal session; waiting for output",
+            last_command=command,
+            pending=True,
+            history_only=False,
+        )
 
         deadline = time.monotonic() + data.wait_seconds
         chunks: list[str] = []
@@ -1101,6 +1457,15 @@ class RunInSessionTool(RuntimeTool):
         if meaningful_output_seen:
             context.terminal_input_pending = False
             _update_session_state_from_output(output, context)
+        _record_session_brief_from_record(
+            session,
+            context,
+            updated_by=self.definition.name,
+            brief=_session_output_brief(output, default="Ran command in terminal session"),
+            last_command=command,
+            pending=context.terminal_input_pending,
+            history_only=False,
+        )
         truncated = len(output) > data.max_output_chars
         if truncated:
             output = output[-data.max_output_chars :]
@@ -1158,6 +1523,14 @@ class CloseTerminalTool(RuntimeTool):
         )
         session_id = _resolve_session_id(data.session_ref, context)
         session = await asyncio.to_thread(self.runtime.close_terminal, session_id)
+        _record_session_brief_from_record(
+            session,
+            context,
+            updated_by=self.definition.name,
+            brief="Closed terminal session",
+            pending=False,
+            history_only=True,
+        )
         context.clear_session_state()
         return ToolResult(
             ok=True,
@@ -1182,6 +1555,9 @@ def build_runtime_tools(runtime: HarnessRuntimeClient) -> list[AgentTool]:
         OpenTerminalTool(runtime),
         OpenTerminalTool(runtime, "open_local_terminal", fixed_target="local"),
         OpenTerminalTool(runtime, "open_remote_terminal", fixed_target="remote"),
+        ListTerminalSessionsTool(runtime),
+        InspectTerminalSessionTool(runtime),
+        ActivateTerminalSessionTool(runtime),
         ObserveTerminalTool(runtime),
         SendTerminalInputTool(runtime),
         SendTerminalControlTool(runtime),
@@ -1367,13 +1743,354 @@ def _resolve_task_id(task_ref: str | None, context: WorkContext) -> str:
 
 def _resolve_session_id(session_ref: str | None, context: WorkContext) -> str:
     if session_ref:
-        return session_ref.removeprefix("session:")
+        return _session_id_from_ref(session_ref)
     if context.active_session_id:
         return context.active_session_id
     raise MiniHarnessError(
         ErrorCode.RUNTIME_OPERATION_FAILED,
         "no active terminal session is available",
         recoverable=True,
+    )
+
+
+def _session_id_from_ref(session_ref: str) -> str:
+    return session_ref.removeprefix("session:")
+
+
+def _is_active_session_state(state: object) -> bool:
+    return str(state or "").upper() == "ACTIVE"
+
+
+def _is_interactive_session(session: Mapping[str, Any]) -> bool:
+    return _is_active_session_state(session.get("state"))
+
+
+def _list_state_filter(
+    data: ListTerminalSessionsInput,
+) -> Literal["all", "active", "inactive"]:
+    if "include_inactive" in data.model_fields_set and "state_filter" not in data.model_fields_set:
+        return "all" if data.include_inactive else "active"
+    return data.state_filter
+
+
+def _session_matches_context(
+    session: Mapping[str, Any],
+    context: WorkContext,
+    target: ResolvedTerminalTarget,
+) -> bool:
+    location = _session_location(session, context)
+    return location == target
+
+
+def _session_location(
+    session: Mapping[str, Any],
+    context: WorkContext,
+) -> ResolvedTerminalTarget | None:
+    target_id = str(session.get("target_id") or "")
+    local = context.local_target()
+    if local is not None and target_id == local.target_id:
+        return "local"
+    remote = context.remote_target()
+    if remote is not None and target_id == remote.target_id:
+        return "remote"
+    if context.runtime_mode == "local" and target_id == context.target_id:
+        return "local"
+    if context.runtime_mode == "ssh" and target_id == context.target_id:
+        return "remote"
+    return None
+
+
+def _session_binding(
+    session: Mapping[str, Any],
+    context: WorkContext,
+) -> TargetBinding | None:
+    location = _session_location(session, context)
+    if location == "local":
+        return context.local_target()
+    if location == "remote":
+        return context.remote_target()
+    return None
+
+
+def _apply_session_record_to_context(
+    session: Mapping[str, Any],
+    context: WorkContext,
+    *,
+    activate: bool,
+) -> None:
+    session_id = str(session.get("session_id") or "")
+    if not session_id:
+        return
+    binding = _session_binding(session, context)
+    if activate:
+        context.active_session_id = session_id
+        context.terminal_cursor = None
+        context.terminal_input_pending = False
+    elif context.active_session_id != session_id:
+        return
+    context.mark_session_state(
+        target=binding.location if binding is not None else None,
+        os_name=binding.os_name if binding is not None else None,
+        shell=binding.shell if binding is not None else None,
+        kind=_session_kind(str(session.get("backend") or "")),
+        runtime_state=str(session.get("state") or "UNKNOWN"),
+        privilege=context.active_session_privilege if context.active_session_id == session_id else "unknown",
+    )
+    _record_session_brief_from_record(session, context, updated_by="inspect" if not activate else "activate")
+
+
+def _session_summary_item(
+    session: Mapping[str, Any],
+    context: WorkContext,
+) -> dict[str, Any]:
+    backend_ref = session.get("backend_ref")
+    if not isinstance(backend_ref, Mapping):
+        backend_ref = {}
+    command = session.get("command")
+    session_id = str(session.get("session_id") or "")
+    brief = context.session_brief(session_id)
+    created_at = _session_timestamp_text(session, "created_at")
+    updated_at = _session_timestamp_text(session, "updated_at")
+    return {
+        "session_id": session_id or session.get("session_id"),
+        "state": session.get("state"),
+        "interaction_state": session.get("interaction_state"),
+        "backend": session.get("backend"),
+        "target": _session_location(session, context) or "unknown",
+        "environment_id": session.get("environment_id"),
+        "target_id": session.get("target_id"),
+        "default_cwd": session.get("default_cwd"),
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "command": command if isinstance(command, list) else [],
+        "exit_code": session.get("exit_code"),
+        "interactive": _is_interactive_session(session),
+        "history_only": not _is_interactive_session(session),
+        "brief": brief.brief if brief else None,
+        "last_command": brief.last_command if brief else None,
+        "cwd_hint": brief.cwd_hint if brief else None,
+        "privilege": brief.privilege if brief else "unknown",
+        "pending": brief.pending if brief else False,
+        "touched_at": brief.touched_at if brief else None,
+        "touch_index": brief.touch_index if brief else 0,
+        "tmux_session": backend_ref.get("tmux_session"),
+        "tmux_target": backend_ref.get("tmux_target"),
+    }
+
+
+def _render_session_list(sessions: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for session in sessions:
+        parts = [
+            f"- session:{session.get('session_id')}",
+            f"state={session.get('state')}",
+            f"backend={session.get('backend')}",
+            f"target={session.get('target')}",
+            f"cwd={session.get('cwd_hint') or session.get('default_cwd') or 'n/a'}",
+        ]
+        if session.get("privilege") not in {None, "unknown"}:
+            parts.append(f"privilege={session.get('privilege')}")
+        if session.get("pending"):
+            parts.append("pending=true")
+        if session.get("brief"):
+            parts.append(f"brief={session.get('brief')}")
+        if session.get("last_command"):
+            parts.append(f"last={session.get('last_command')}")
+        lines.append(" ".join(parts))
+    return "\n".join(lines)
+
+
+def _session_matches_state_filter(
+    session: Mapping[str, Any],
+    state_filter: Literal["all", "active", "inactive"],
+) -> bool:
+    if state_filter == "all":
+        return True
+    active = _is_active_session_state(session.get("state"))
+    return active if state_filter == "active" else not active
+
+
+def _session_matches_created_range(
+    session: Mapping[str, Any],
+    created_after: dt.datetime | None,
+    created_before: dt.datetime | None,
+) -> bool:
+    if created_after is None and created_before is None:
+        return True
+    created_at = _parse_session_timestamp(
+        session.get("created_at") or session.get("touched_at") or session.get("updated_at")
+    )
+    if created_at is None:
+        return False
+    if created_after is not None and created_at < created_after:
+        return False
+    return not (created_before is not None and created_at > created_before)
+
+
+def _session_sort_key(session: Mapping[str, Any]) -> tuple[float, int, int]:
+    timestamp = _parse_session_timestamp(
+        session.get("updated_at") or session.get("touched_at") or session.get("created_at")
+    )
+    timestamp_value = timestamp.timestamp() if timestamp is not None else 0.0
+    touch_index = int(session.get("touch_index") or 0)
+    source_index = int(session.get("_source_index") or 0)
+    return (timestamp_value, touch_index, source_index)
+
+
+def _parse_session_boundary(value: str | None, *, end_of_day: bool) -> dt.datetime | None:
+    if not value:
+        return None
+    normalized = value.strip()
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalized):
+            day = dt.date.fromisoformat(normalized)
+            boundary_time = dt.time.max if end_of_day else dt.time.min
+            return dt.datetime.combine(day, boundary_time, tzinfo=dt.UTC)
+        return _parse_session_timestamp(normalized)
+    except ValueError as exc:
+        raise MiniHarnessError(
+            ErrorCode.TOOL_ARGUMENT_INVALID,
+            f"invalid ISO date/datetime for session list filter: {value}",
+            recoverable=True,
+        ) from exc
+
+
+def _parse_session_timestamp(value: object) -> dt.datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, dt.datetime):
+        parsed = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        parsed = dt.datetime.fromisoformat(text)
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=dt.UTC)
+    return parsed.astimezone(dt.UTC)
+
+
+def _session_timestamp_text(session: Mapping[str, Any], key: str) -> str | None:
+    timestamp = _parse_session_timestamp(session.get(key))
+    if timestamp is None:
+        value = session.get(key)
+        return str(value) if value else None
+    return timestamp.isoformat()
+
+
+def _record_session_brief_from_record(
+    session: Mapping[str, Any],
+    context: WorkContext,
+    *,
+    updated_by: str,
+    brief: str | None = None,
+    last_command: str | None = None,
+    pending: bool | None = None,
+    history_only: bool | None = None,
+) -> None:
+    session_id = str(session.get("session_id") or "")
+    if not session_id:
+        return
+    context.record_session_interaction(
+        session_id,
+        target=_session_location(session, context) or "unknown",
+        backend=str(session.get("backend") or "unknown"),
+        runtime_state=str(session.get("state") or "UNKNOWN"),
+        brief=brief or _default_session_brief(session, context),
+        last_command=last_command,
+        cwd_hint=str(session.get("default_cwd") or "") or None,
+        privilege=context.active_session_privilege if context.active_session_id == session_id else None,
+        pending=pending,
+        history_only=history_only if history_only is not None else not _is_interactive_session(session),
+        updated_by=updated_by,
+    )
+
+
+def _default_session_brief(session: Mapping[str, Any], context: WorkContext) -> str:
+    location = _session_location(session, context) or "unknown target"
+    state = str(session.get("state") or "UNKNOWN")
+    backend = str(session.get("backend") or "unknown backend")
+    cwd = str(session.get("default_cwd") or "unknown cwd")
+    return f"{state} {location} terminal via {backend}; cwd={cwd}"
+
+
+def _session_output_brief(output: str, *, default: str) -> str:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return default
+    tail = " | ".join(lines[-3:])
+    return f"Latest terminal output: {tail}"
+
+
+def _render_session_inspection(session: dict[str, Any], tail: str) -> str:
+    lines = [
+        f"session: {session.get('session_id')}",
+        f"state: {session.get('state')}",
+        f"backend: {session.get('backend')}",
+        f"target: {session.get('target')}",
+        f"interactive: {session.get('interactive')}",
+        f"history_only: {session.get('history_only')}",
+        f"cwd: {session.get('default_cwd') or 'n/a'}",
+    ]
+    if session.get("tmux_session"):
+        lines.append(f"tmux_session: {session.get('tmux_session')}")
+    command = session.get("command")
+    if isinstance(command, list) and command:
+        lines.append("command: " + " ".join(str(item) for item in command))
+    if tail:
+        lines.append("")
+        lines.append("tail:")
+        lines.append(tail)
+    return "\n".join(lines)
+
+
+def _session_inspection_summary(session_id: str, state: str, interactive: bool) -> str:
+    if interactive:
+        return f"session:{session_id} is {state} and can accept terminal input"
+    return (
+        f"session:{session_id} is {state}; historical output may be readable but "
+        "interactive input is not available"
+    )
+
+
+def _inactive_session_result(
+    session: Mapping[str, Any],
+    context: WorkContext,
+    *,
+    attempted_tool: str,
+    recommended_tool: str,
+) -> ToolResult:
+    session_id = str(session.get("session_id") or "")
+    state = str(session.get("state") or "UNKNOWN")
+    _apply_session_record_to_context(session, context, activate=False)
+    _record_session_brief_from_record(
+        session,
+        context,
+        updated_by=attempted_tool,
+        brief=f"Session is {state}; {attempted_tool} could not send input",
+        pending=False,
+        history_only=True,
+    )
+    return ToolResult(
+        ok=False,
+        summary=(
+            f"session:{session_id} is {state}; {attempted_tool} cannot send input to it. "
+            "Use inspect_terminal_session to read historical output or open_terminal to start a new session."
+        ),
+        resource_ref=f"session:{session_id}" if session_id else None,
+        state=state,
+        error_code=ErrorCode.RUNTIME_OPERATION_FAILED.value,
+        recoverable=True,
+        metadata={
+            "session": _session_summary_item(session, context),
+            "interactive": False,
+            "history_only": True,
+            "recommended_tool": recommended_tool,
+        },
     )
 
 
