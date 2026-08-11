@@ -1,8 +1,0 @@
-{"sequence": 1, "timestamp": "2026-07-29T15:36:45.129281Z", "event_type": "agent.started", "state": "created", "summary": "Agent started", "payload": {}}
-{"sequence": 2, "timestamp": "2026-07-29T15:36:45.130794Z", "event_type": "agent.state_changed", "state": "initializing", "summary": "created -> initializing", "payload": {"from": "created", "to": "initializing"}}
-{"sequence": 3, "timestamp": "2026-07-29T15:36:45.136315Z", "event_type": "agent.state_changed", "state": "ready", "summary": "initializing -> ready", "payload": {"from": "initializing", "to": "ready"}}
-{"sequence": 4, "timestamp": "2026-07-29T15:36:45.138860Z", "event_type": "agent.state_changed", "state": "planning", "summary": "ready -> planning", "payload": {"from": "ready", "to": "planning"}}
-{"sequence": 5, "timestamp": "2026-07-29T15:36:45.140212Z", "event_type": "agent.state_changed", "state": "waiting_for_model", "summary": "planning -> waiting_for_model", "payload": {"from": "planning", "to": "waiting_for_model"}}
-{"sequence": 6, "timestamp": "2026-07-29T15:36:45.144650Z", "event_type": "model.request.started", "state": "waiting_for_model", "summary": "Model request started", "payload": {"message_count": 3, "tools": ["list_files", "read_file", "write_file", "run_command", "observe_task", "cancel_task"]}}
-{"sequence": 7, "timestamp": "2026-07-29T15:36:45.145681Z", "event_type": "agent.state_changed", "state": "failed", "summary": "waiting_for_model -> failed", "payload": {"from": "waiting_for_model", "to": "failed"}}
-{"sequence": 8, "timestamp": "2026-07-29T15:36:45.148345Z", "event_type": "agent.failed", "state": "failed", "summary": "MINI_AGENT_API_KEY is required for OpenAI-compatible providers", "payload": {"error_code": "MODEL_INVALID_RESPONSE", "recoverable": false}}
