@@ -49,18 +49,32 @@ class AgentLoop:
         self._iterations = 0
 
     async def run(self, user_task: str, work_context: WorkContext) -> AgentRunResult:
+        context = AgentContext(self.config, work_context, user_task)
+        return await self.run_with_context(user_task, work_context, context)
+
+    async def run_with_context(
+        self,
+        user_task: str,
+        work_context: WorkContext,
+        context: AgentContext,
+    ) -> AgentRunResult:
         started = time.monotonic()
-        context = AgentContext(user_task, self.config, work_context)
+        self._reset_run_state()
+        if context.user_task != user_task:
+            context.add_user_task(user_task)
         self._emit(AgentEventType.AGENT_STARTED, "Agent started")
         try:
             self._transition(AgentState.INITIALIZING)
             self._transition(AgentState.READY)
-            while work_context.iteration < self.config.max_iterations:
+            while self._iterations < self.config.max_iterations:
                 work_context.iteration += 1
-                self._iterations = work_context.iteration
+                self._iterations += 1
                 self._transition(AgentState.PLANNING)
                 definitions = self.tools.definitions()
                 messages = context.build_messages(definitions)
+                if context.compacted:
+                    self._emit(AgentEventType.CONTEXT_TRUNCATED, "Context was compacted")
+                    context.compacted = False
                 if context.truncated:
                     self._emit(AgentEventType.CONTEXT_TRUNCATED, "Context was truncated")
                     context.truncated = False
@@ -92,6 +106,7 @@ class AgentLoop:
                             guard.model_dump(exclude_none=True),
                         )
                         continue
+                    context.add_final_decision(decision)
                     self._transition(AgentState.COMPLETED)
                     self._emit(AgentEventType.AGENT_COMPLETED, decision.summary)
                     return self._result(
@@ -126,6 +141,14 @@ class AgentLoop:
                 None,
                 ErrorCode.RUNTIME_OPERATION_FAILED.value,
             )
+
+    def _reset_run_state(self) -> None:
+        self.machine = StateMachine()
+        self.tool_call_count = 0
+        self.tool_error_count = 0
+        self._consecutive_tool_errors = 0
+        self._recent_fingerprints = []
+        self._iterations = 0
 
     async def _execute_decision(
         self,

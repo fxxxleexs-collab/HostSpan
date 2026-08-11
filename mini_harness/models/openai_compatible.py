@@ -10,7 +10,7 @@ from pydantic import TypeAdapter, ValidationError
 from mini_harness.config import ModelConfig
 from mini_harness.errors import ErrorCode, MiniHarnessError
 from mini_harness.models.http_errors import format_http_status_error, should_retry_status
-from mini_harness.models.schemas import AgentDecision, ModelMessage, ToolDecision
+from mini_harness.models.schemas import AgentDecision, FinalDecision, ModelMessage, ToolDecision
 from mini_harness.tools.schemas import ToolDefinition
 
 _DECISION_ADAPTER: TypeAdapter[AgentDecision] = TypeAdapter(AgentDecision)
@@ -76,6 +76,8 @@ class OpenAICompatibleModelProvider:
                         format_http_status_error("OpenAI-compatible", exc),
                         recoverable=True,
                     ) from exc
+            except MiniHarnessError:
+                raise
             except Exception as exc:
                 last_error = exc
                 if attempt >= self.config.max_retries:
@@ -141,15 +143,40 @@ def _convert_response(payload: dict[str, Any]) -> AgentDecision:
 
 
 def parse_final_decision(content: str) -> AgentDecision:
+    if not content.strip():
+        raise MiniHarnessError(
+            ErrorCode.MODEL_INVALID_RESPONSE,
+            "model final response was empty",
+            recoverable=True,
+        )
     try:
         decision = _DECISION_ADAPTER.validate_json(content)
         return decision.model_copy(update={"raw_output": content})
     except ValidationError as exc:
-        raise MiniHarnessError(
-            ErrorCode.MODEL_INVALID_RESPONSE,
-            "model final response was not a structured decision",
-            recoverable=True,
-        ) from exc
+        _ = exc
+        return FinalDecision(
+            type="final",
+            summary=_plain_text_summary(content),
+            details=_plain_text_details(content),
+            raw_output=content,
+        )
+
+
+def _plain_text_summary(content: str) -> str:
+    for line in content.splitlines():
+        normalized = line.strip()
+        if normalized:
+            return normalized if len(normalized) <= 300 else normalized[:297] + "..."
+    return "Model returned a final response."
+
+
+def _plain_text_details(content: str) -> str | None:
+    lines = content.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip():
+            rest = "\n".join(lines[index + 1 :]).strip()
+            return rest or None
+    return None
 
 
 def _tool_reason(content: Any) -> str:

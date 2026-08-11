@@ -266,6 +266,26 @@ async def test_send_terminal_input_run_directly_keeps_existing_enter(fake_runtim
 
 
 @pytest.mark.asyncio
+async def test_send_terminal_control_sends_real_ctrl_c_byte(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+
+    await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
+    result = await registry.execute("send_terminal_control", {"control": "ctrl_c"}, context)
+
+    assert result.ok
+    assert result.summary == "sent ctrl_c to session:session_1"
+    assert result.metadata["display"] == "<CTRL+C>"
+    assert result.metadata["terminal_input_pending"] is True
+    assert fake_runtime.requests[-1] == (
+        "write_terminal",
+        {"session_id": "session_1", "data": "\x03"},
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_command_warns_when_root_session_is_active(fake_runtime) -> None:
     registry = ToolRegistry()
     for tool in build_runtime_tools(fake_runtime):
@@ -539,6 +559,34 @@ async def test_controller_configures_ssh_runtime_before_loop(fake_runtime) -> No
     assert fake_runtime.requests[2:3] == [
         ("ensure_dir", {"endpoint_id": "endpoint_ssh", "path": "/srv/app"}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_controller_session_reuses_runtime_context_across_turns(fake_runtime) -> None:
+    sink = InMemoryEventSink()
+    project_root = str(Path("/local/project").resolve())
+    controller = AgentController(
+        fake_runtime,
+        FakeModelProvider(
+            [
+                FinalDecision(type="final", summary="first done"),
+                FinalDecision(type="final", summary="second done"),
+            ]
+        ),
+        event_sink=sink,
+    )
+    session = controller.start_session("/local/project")
+
+    first = await session.run_turn("first task")
+    second = await session.run_turn("follow-up task")
+
+    assert first.final_state == AgentState.COMPLETED
+    assert second.final_state == AgentState.COMPLETED
+    assert session.work_context.iteration == 2
+    assert fake_runtime.requests == [
+        ("ensure_local", {"name": "mini-harness-local", "root": project_root})
+    ]
+    assert session.context.user_tasks == ["first task", "follow-up task"]
 
 
 @pytest.mark.asyncio

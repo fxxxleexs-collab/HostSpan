@@ -20,6 +20,13 @@ CLI
 
 The package lives at `mini_harness/` so it remains independent from Runtime services/providers while still being tested in the same repository as the SDK it validates.
 
+## Interaction Modes
+
+- `run`: execute one user task and exit.
+- `chat`: keep one runtime session open for multiple user turns, preserving the active task/session state and compacted conversation context.
+
+Long chat histories are compacted deterministically inside `AgentContext`: older user/final turns and older tool results are summarized, while recent tool results remain available within the configured context budget.
+
 ## Tools
 
 The current version exposes:
@@ -38,6 +45,7 @@ The current version exposes:
 - `open_remote_terminal`
 - `observe_terminal`
 - `send_terminal_input`
+- `send_terminal_control`
 - `run_in_session`
 - `close_terminal`
 
@@ -57,6 +65,8 @@ deny = [
   "terminal.open:remote",
   "session.run:remote",
 ]
+approve_sandbox_denials = true
+approve_terminal_open = true
 ```
 
 Patterns can match exact capability keys such as `file.read:local`, target-wide keys such as `terminal.open:*`, or all capabilities with `*`. Deny rules win over allow rules.
@@ -67,9 +77,12 @@ Covered permission request families:
 - Task tools request `task.run`, `task.observe`, or `task.cancel`.
 - Terminal tools request `terminal.open`, `terminal.observe`, `terminal.send_input`, or `terminal.close` with a local/remote target.
 - `run_in_session` requests `session.run` with the active terminal target.
+- Shell commands which look like they create or overwrite files, such as `>`, `>>`, `tee`, `touch`, `mkdir`, `cp`, or `mv`, also request `file.write` for the target.
 - Sync tools request `sync.status` or `sync.push` with the remote target.
 
-Policy denial returns a structured `PERMISSION_DENIED` tool result and does not call the underlying Runtime SDK.
+In CLI `run` and `chat` sessions, a policy denial prompts the user for a one-shot `y/n` approval before the Runtime SDK call is attempted. If `approve_sandbox_denials` is enabled, recoverable sandbox denials such as absolute paths or blocked command patterns can also be approved once and retried with a sandbox override. If `approve_terminal_open` is enabled, opening a local or remote interactive terminal always asks for confirmation because later input can run arbitrary shell commands and may inherit session state such as cwd, env vars, login state, or root privileges.
+
+If the user rejects the operation, or no approval handler is installed, Mini Harness returns a structured denial result and does not call the underlying Runtime SDK.
 
 ## Workspace Sandbox
 
@@ -151,6 +164,14 @@ For a self-contained local smoke run, use the embedded broker:
 ```powershell
 .\.venv\Scripts\mini-harness.exe run --embedded-broker --fake-model --project tests\mini_harness\sample_project "Fix the failing tests and verify they pass."
 ```
+
+Start a multi-turn chat session:
+
+```powershell
+.\.venv\Scripts\mini-harness.exe chat --embedded-broker --project .
+```
+
+Use `/exit` or `/quit` to end the session.
 
 For a real model:
 

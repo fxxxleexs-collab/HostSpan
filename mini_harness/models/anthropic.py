@@ -79,6 +79,8 @@ class AnthropicModelProvider:
                         format_http_status_error("Anthropic", exc),
                         recoverable=True,
                     ) from exc
+            except MiniHarnessError:
+                raise
             except Exception as exc:
                 last_error = exc
                 if attempt >= self.config.max_retries:

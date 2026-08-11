@@ -6,11 +6,13 @@ from mini_harness.agent.events import InMemoryEventSink
 from mini_harness.agent.loop import AgentLoop
 from mini_harness.agent.state import AgentState
 from mini_harness.config import AgentConfig
+from mini_harness.context.messages import AgentContext
 from mini_harness.models.fake import FakeModelProvider
 from mini_harness.models.schemas import FinalDecision, ToolDecision
 from mini_harness.runtime.work_context import WorkContext
 from mini_harness.tools.adapter import build_runtime_tools
 from mini_harness.tools.registry import ToolRegistry
+from mini_harness.tools.schemas import ToolResult
 
 
 def _context() -> WorkContext:
@@ -155,3 +157,62 @@ async def test_agent_loop_repeated_action_warning_uses_legal_state_path(fake_run
 
     assert result.final_state == AgentState.COMPLETED
     assert result.tool_error_count == 1
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_can_continue_with_existing_context(fake_runtime) -> None:
+    work_context = _context()
+    config = AgentConfig()
+    agent_context = AgentContext(config, work_context)
+    first_model = FakeModelProvider([FinalDecision(type="final", summary="first done")])
+    second_model = FakeModelProvider([FinalDecision(type="final", summary="second done")])
+
+    first = await AgentLoop(first_model, _registry(fake_runtime), config=config).run_with_context(
+        "first task",
+        work_context,
+        agent_context,
+    )
+    second = await AgentLoop(second_model, _registry(fake_runtime), config=config).run_with_context(
+        "follow-up task",
+        work_context,
+        agent_context,
+    )
+
+    assert first.final_state == AgentState.COMPLETED
+    assert second.final_state == AgentState.COMPLETED
+    assert work_context.iteration == 2
+    request_messages = second_model.requests[0][0]
+    rendered = "\n".join(message.content for message in request_messages)
+    assert "first task" in rendered
+    assert "first done" in rendered
+    assert "follow-up task" in rendered
+
+
+def test_agent_context_compacts_older_turns_and_tool_results() -> None:
+    config = AgentConfig(max_context_chars=1_000, recent_tool_turns=4, max_tool_result_chars=1_000)
+    context = AgentContext(config, _context())
+    context.add_user_task("old task")
+    context.add_final_decision(FinalDecision(type="final", summary="old answer"))
+    context.add_user_task("new task")
+    for index in range(8):
+        context.add_tool_result(
+            "read_file",
+            {"path": f"file_{index}.py"},
+            ToolResult(
+                ok=True,
+                summary=f"read file {index}",
+                content="x" * 900,
+                resource_ref=f"file:file_{index}.py",
+            ),
+        )
+
+    messages = context.build_messages([])
+
+    assert context.truncated
+    assert context.compacted_summary is not None
+    assert len(context.tool_turns) == 2
+    rendered = "\n".join(message.content for message in messages)
+    assert "Compacted conversation context" in rendered
+    assert "old task" in rendered
+    assert "old answer" in rendered
+    assert "new task" in rendered

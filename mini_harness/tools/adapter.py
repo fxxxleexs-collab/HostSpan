@@ -26,6 +26,7 @@ from mini_harness.tools.schemas import (
     ReadFileInput,
     RunCommandInput,
     RunInSessionInput,
+    SendTerminalControlInput,
     SendTerminalInput,
     SyncPushInput,
     SyncStatusInput,
@@ -278,16 +279,26 @@ class RunCommandTool(RuntimeTool):
     ) -> list[PermissionRequest]:
         data = RunCommandInput.model_validate(arguments)
         cwd = context.normalize_cwd(data.cwd)
-        return [
+        target = context.default_terminal_target()
+        requests = [
             PermissionRequest.for_target(
                 tool_name=self.definition.name,
                 capability="task.run",
-                target=context.default_terminal_target(),
+                target=target,
                 operation="run",
                 resource=cwd,
                 argv=data.argv,
             )
         ]
+        requests.extend(
+            _command_write_permission_requests(
+                tool_name=self.definition.name,
+                target=target,
+                command=" ".join(data.argv),
+                resource=cwd,
+            )
+        )
+        return requests
 
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = (
@@ -877,16 +888,28 @@ class SendTerminalInputTool(RuntimeTool):
         context: WorkContext,
     ) -> list[PermissionRequest]:
         data = SendTerminalInput.model_validate(arguments)
-        return [
+        target = context.active_session_target or context.default_terminal_target()
+        requests = [
             PermissionRequest.for_target(
                 tool_name=self.definition.name,
                 capability="terminal.send_input",
-                target=context.active_session_target or context.default_terminal_target(),
+                target=target,
                 operation="send_input",
                 resource=data.session_ref or context.session_ref(),
                 metadata={"run_directly": data.run_directly},
             )
         ]
+        normalized = _normalize_terminal_input(data.data, data.run_directly)
+        if _should_authorize_terminal_input(normalized):
+            requests.extend(
+                _command_write_permission_requests(
+                    tool_name=self.definition.name,
+                    target=target,
+                    command=normalized,
+                    resource=data.session_ref or context.session_ref(),
+                )
+            )
+        return requests
 
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = (
@@ -919,6 +942,76 @@ class SendTerminalInputTool(RuntimeTool):
         )
 
 
+class SendTerminalControlTool(RuntimeTool):
+    def __init__(self, runtime: HarnessRuntimeClient) -> None:
+        super().__init__(
+            runtime,
+            "send_terminal_control",
+            (
+                "Send a real terminal control key such as Ctrl+C or Ctrl+D to the "
+                "active terminal session."
+            ),
+            SendTerminalControlInput,
+        )
+
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]:
+        data = SendTerminalControlInput.model_validate(arguments)
+        return [
+            PermissionRequest.for_target(
+                tool_name=self.definition.name,
+                capability="terminal.send_input",
+                target=context.active_session_target or context.default_terminal_target(),
+                operation=f"control:{data.control}",
+                resource=data.session_ref or context.session_ref(),
+                metadata={"control": data.control},
+            )
+        ]
+
+    async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
+        data = (
+            parsed
+            if isinstance(parsed, SendTerminalControlInput)
+            else SendTerminalControlInput.model_validate(parsed)
+        )
+        session_id = _resolve_session_id(data.session_ref, context)
+        control_bytes = _terminal_control_bytes(data.control)
+        await asyncio.to_thread(self.runtime.write_terminal, session_id, control_bytes)
+        context.last_terminal_input = control_bytes
+        context.terminal_input_pending = data.control in {"ctrl_c", "ctrl_d", "enter"}
+        if data.control == "ctrl_c":
+            context.mark_session_state(
+                privilege="unknown"
+                if context.active_session_privilege == "root"
+                else context.active_session_privilege,
+                stateful=True,
+                reason="terminal foreground process interrupted with Ctrl+C",
+            )
+        if data.control == "ctrl_d" and context.active_session_privilege == "root":
+            context.mark_session_state(
+                privilege="unknown",
+                stateful=True,
+                reason="terminal EOF may have exited root shell; verify with id -u",
+            )
+        return ToolResult(
+            ok=True,
+            summary=f"sent {data.control} to session:{session_id}",
+            resource_ref=f"session:{session_id}",
+            state="ACTIVE",
+            recoverable=True,
+            metadata={
+                "session_id": session_id,
+                "control": data.control,
+                "bytes": len(control_bytes.encode("utf-8")),
+                "display": _terminal_control_display(data.control),
+                "terminal_input_pending": context.terminal_input_pending,
+            },
+        )
+
+
 class RunInSessionTool(RuntimeTool):
     def __init__(self, runtime: HarnessRuntimeClient) -> None:
         super().__init__(
@@ -934,16 +1027,26 @@ class RunInSessionTool(RuntimeTool):
         context: WorkContext,
     ) -> list[PermissionRequest]:
         data = RunInSessionInput.model_validate(arguments)
-        return [
+        target = context.active_session_target or context.default_terminal_target()
+        requests = [
             PermissionRequest.for_target(
                 tool_name=self.definition.name,
                 capability="session.run",
-                target=context.active_session_target or context.default_terminal_target(),
+                target=target,
                 operation="run_in_session",
                 resource=data.session_ref or context.session_ref(),
                 argv=(data.command,),
             )
         ]
+        requests.extend(
+            _command_write_permission_requests(
+                tool_name=self.definition.name,
+                target=target,
+                command=data.command,
+                resource=data.session_ref or context.session_ref(),
+            )
+        )
+        return requests
 
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = (
@@ -1081,6 +1184,7 @@ def build_runtime_tools(runtime: HarnessRuntimeClient) -> list[AgentTool]:
         OpenTerminalTool(runtime, "open_remote_terminal", fixed_target="remote"),
         ObserveTerminalTool(runtime),
         SendTerminalInputTool(runtime),
+        SendTerminalControlTool(runtime),
         RunInSessionTool(runtime),
         CloseTerminalTool(runtime),
     ]
@@ -1336,6 +1440,110 @@ def _clean_task_session_guard(
     )
 
 
+def _command_write_permission_requests(
+    *,
+    tool_name: str,
+    target: ResolvedTerminalTarget,
+    command: str,
+    resource: str | None,
+) -> list[PermissionRequest]:
+    write_targets = _likely_written_paths(command)
+    if not write_targets:
+        return []
+    return [
+        PermissionRequest.for_target(
+            tool_name=tool_name,
+            capability="file.write",
+            target=target,
+            operation="shell_write",
+            resource=", ".join(write_targets[:10]) or resource,
+            argv=(command,),
+            metadata={
+                "detected_shell_write": True,
+                "detected_paths": write_targets[:10],
+                "path_count": len(write_targets),
+            },
+        )
+    ]
+
+
+def _likely_written_paths(command: str) -> list[str]:
+    normalized = _normalize_terminal_text(command)
+    if not normalized:
+        return []
+    paths: list[str] = []
+    paths.extend(_redirection_write_paths(normalized))
+    paths.extend(_simple_command_write_paths(normalized))
+    return _unique_paths(paths)
+
+
+def _redirection_write_paths(command: str) -> list[str]:
+    paths: list[str] = []
+    for match in re.finditer(r"(?<![<])(?:^|[\s;|&])(?:\d*)>>?\s*(?P<path>[^\s;&|]+)", command):
+        path = _clean_shell_path(match.group("path"))
+        if path:
+            paths.append(path)
+    return paths
+
+
+def _simple_command_write_paths(command: str) -> list[str]:
+    paths: list[str] = []
+    statements = re.split(r"[;\n]", command)
+    for statement in statements:
+        tokens = _shell_words(statement)
+        if not tokens:
+            continue
+        command_name = tokens[0]
+        if command_name == "sudo" and len(tokens) > 1:
+            tokens = tokens[1:]
+            command_name = tokens[0]
+        if command_name in {"tee", "touch", "mkdir"}:
+            paths.extend(_non_option_tokens(tokens[1:]))
+        elif command_name in {"cp", "mv"}:
+            candidates = _non_option_tokens(tokens[1:])
+            if candidates:
+                paths.append(candidates[-1])
+    return paths
+
+
+def _shell_words(statement: str) -> list[str]:
+    return [
+        _clean_shell_path(token)
+        for token in re.findall(r"""(?:"[^"]*"|'[^']*'|[^\s]+)""", statement)
+        if _clean_shell_path(token)
+    ]
+
+
+def _non_option_tokens(tokens: list[str]) -> list[str]:
+    return [
+        token
+        for token in tokens
+        if not token.startswith("-") and token not in {"|", ">", ">>", "2>", "2>>"}
+    ]
+
+
+def _clean_shell_path(value: str) -> str:
+    token = value.strip().strip("'\"")
+    if not token:
+        return ""
+    if token.startswith(("&", "$", "`", "<", "(")):
+        return ""
+    if token in {"-", "/dev/null"}:
+        return ""
+    return token
+
+
+def _unique_paths(paths: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        unique.append(path)
+    return unique
+
+
 def _session_kind(backend: str) -> Literal["pty", "tmux", "unknown"]:
     if "tmux" in backend:
         return "tmux"
@@ -1417,6 +1625,37 @@ def _terminal_input_display(data: str) -> str:
         return "<CR>"
     value = data.replace("\r\n", "<ENTER>").replace("\n", "<ENTER>").replace("\r", "<CR>")
     return value if len(value) <= 120 else value[:117] + "..."
+
+
+def _terminal_control_bytes(control: str) -> str:
+    controls = {
+        "ctrl_c": "\x03",
+        "ctrl_d": "\x04",
+        "enter": "\n",
+        "escape": "\x1b",
+        "tab": "\t",
+        "backspace": "\x7f",
+    }
+    try:
+        return controls[control]
+    except KeyError as exc:
+        raise MiniHarnessError(
+            ErrorCode.TOOL_ARGUMENT_INVALID,
+            f"unsupported terminal control: {control}",
+            recoverable=True,
+        ) from exc
+
+
+def _terminal_control_display(control: str) -> str:
+    displays = {
+        "ctrl_c": "<CTRL+C>",
+        "ctrl_d": "<CTRL+D>",
+        "enter": "<ENTER>",
+        "escape": "<ESC>",
+        "tab": "<TAB>",
+        "backspace": "<BACKSPACE>",
+    }
+    return displays.get(control, control)
 
 
 def _should_authorize_terminal_input(data: str) -> bool:

@@ -4,6 +4,7 @@
 
 - Added `mini_harness` as a separate top-level SDK consumer package in this repository.
 - Added explicit agent states, legal transition validation, and event emission.
+- Added multi-turn `chat` sessions with reused runtime context and deterministic context compaction.
 - Added structured model decisions: `ToolDecision` and `FinalDecision`.
 - Added `FakeModelProvider` for deterministic tests and an OpenAI-compatible provider for manual smoke runs.
 - Added TOML config loading with OpenAI-compatible and Anthropic model provider support.
@@ -80,5 +81,3 @@ Note: refreshing the editable install with `pip install -e .` was attempted, but
 - `write_file` performs full overwrite only; patch application is intentionally not implemented.
 - `observe_task` implements an in-harness cursor over the current SDK `task.logs` result because the SDK currently returns complete task logs.
 - Runtime task `cwd` is currently interpreted by Runtime execution providers as a process cwd, not automatically as an endpoint-root-relative path. Mini Harness accepts only relative cwd from the model and projects it into the local `project_root` before calling the SDK.
-- OpenAI-compatible final responses must be structured JSON when no native tool call is returned.
-- Anthropic final responses must also be structured JSON when no native tool call is returned.

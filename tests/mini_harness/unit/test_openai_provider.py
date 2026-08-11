@@ -79,6 +79,58 @@ async def test_openai_provider_keeps_raw_final_output() -> None:
 
 
 @pytest.mark.asyncio
+async def test_openai_provider_accepts_plain_text_final_output() -> None:
+    raw = "Done.\n\nI checked the project and no changes were needed."
+    provider = OpenAICompatibleModelProvider(
+        ModelConfig(
+            provider="openai",
+            model="test-model",
+            api_key="test-key",
+            base_url="https://api.openai.test/v1",
+        ),
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": raw}}]},
+            )
+        ),
+    )
+
+    decision = await provider.decide([ModelMessage(role="user", content="finish")], [])
+
+    assert isinstance(decision, FinalDecision)
+    assert decision.summary == "Done."
+    assert decision.details == "I checked the project and no changes were needed."
+    assert decision.raw_output == raw
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_preserves_internal_model_errors() -> None:
+    provider = OpenAICompatibleModelProvider(
+        ModelConfig(
+            provider="openai",
+            model="test-model",
+            api_key="test-key",
+            base_url="https://api.openai.test/v1",
+            max_retries=0,
+        ),
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": ""}}]},
+            )
+        ),
+    )
+
+    with pytest.raises(MiniHarnessError) as exc_info:
+        await provider.decide([ModelMessage(role="user", content="finish")], [])
+
+    message = str(exc_info.value)
+    assert "model final response was empty" in message
+    assert "MiniHarnessError" not in message
+
+
+@pytest.mark.asyncio
 async def test_openai_provider_reports_http_error_body() -> None:
     calls = {"count": 0}
 
