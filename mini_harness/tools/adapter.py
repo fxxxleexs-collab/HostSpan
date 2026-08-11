@@ -12,6 +12,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ValidationError
 
 from mini_harness.approvals import ToolApprovalRequest
+from mini_harness.diffing import snapshot_text
 from mini_harness.errors import ErrorCode, MiniHarnessError
 from mini_harness.permissions import PermissionDecision, PermissionRequest
 from mini_harness.runtime.client import HarnessRuntimeClient
@@ -203,6 +204,8 @@ class ReadFileTool(RuntimeTool):
             context.endpoint_id,
             context.runtime_path(path),
         )
+        snapshot = snapshot_text(path, text)
+        snapshot_summary = context.record_file_snapshot(snapshot)
         lines = text.splitlines()
         start_index = (data.start_line - 1) if data.start_line else 0
         end_index = data.end_line if data.end_line else len(lines)
@@ -219,7 +222,16 @@ class ReadFileTool(RuntimeTool):
             content=rendered,
             resource_ref=f"file:{path}",
             truncated=truncated,
-            metadata={"path": path, "line_count": len(selected)},
+            metadata={
+                "path": path,
+                "sha256": snapshot.sha256,
+                "size": snapshot.size,
+                "line_count": snapshot.line_count,
+                "selected_line_count": len(selected),
+                "newline": snapshot.newline,
+                "encoding": snapshot.encoding,
+                "snapshot": snapshot_summary.as_dict(),
+            },
         )
 
 

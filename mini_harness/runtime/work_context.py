@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+from mini_harness.diffing import TextSnapshot
 from mini_harness.errors import ErrorCode, MiniHarnessError
 from mini_harness.sync.config import SyncConfig
 from mini_harness.workspace import SandboxConfig, SandboxedCommand, WorkspacePolicy
@@ -75,6 +76,28 @@ class SessionBrief:
 
 
 @dataclass
+class FileSnapshotSummary:
+    path: str
+    sha256: str
+    size: int
+    line_count: int
+    newline: str
+    encoding: str
+    read_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "path": self.path,
+            "sha256": self.sha256,
+            "size": self.size,
+            "line_count": self.line_count,
+            "newline": self.newline,
+            "encoding": self.encoding,
+            "read_at": self.read_at,
+        }
+
+
+@dataclass
 class WorkContext:
     endpoint_id: str
     environment_id: str
@@ -112,6 +135,7 @@ class WorkContext:
     last_tool_name: str | None = None
     last_task_state: str | None = None
     last_command_exit_code: int | None = None
+    file_snapshots: dict[str, FileSnapshotSummary] = field(default_factory=dict)
     session_briefs: dict[str, SessionBrief] = field(default_factory=dict)
     _session_touch_counter: int = 0
     _sandbox_approval_depth: int = 0
@@ -281,6 +305,21 @@ class WorkContext:
 
     def session_brief(self, session_id: str) -> SessionBrief | None:
         return self.session_briefs.get(session_id)
+
+    def record_file_snapshot(self, snapshot: TextSnapshot) -> FileSnapshotSummary:
+        summary = FileSnapshotSummary(
+            path=snapshot.path,
+            sha256=snapshot.sha256,
+            size=snapshot.size,
+            line_count=snapshot.line_count,
+            newline=snapshot.newline,
+            encoding=snapshot.encoding,
+        )
+        self.file_snapshots[snapshot.path] = summary
+        return summary
+
+    def file_snapshot(self, path: str) -> FileSnapshotSummary | None:
+        return self.file_snapshots.get(path)
 
     def target_summary(self) -> str:
         local = self.local_target()
