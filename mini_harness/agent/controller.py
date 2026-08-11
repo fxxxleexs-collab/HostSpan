@@ -8,7 +8,9 @@ from environment_runtime.config import RuntimeSettings
 from environment_runtime.sdk import AgentRuntimeClient, RuntimePolicy
 from mini_harness.agent.events import AgentEventSink, InMemoryEventSink
 from mini_harness.agent.loop import AgentLoop, AgentRunResult
+from mini_harness.approvals import ApprovalHandler
 from mini_harness.config import AgentConfig, ModelConfig, RuntimeConfig
+from mini_harness.context.messages import AgentContext
 from mini_harness.models.anthropic import AnthropicModelProvider
 from mini_harness.models.base import ModelProvider
 from mini_harness.models.fake import FakeModelProvider
@@ -47,6 +49,7 @@ class AgentController:
         sandbox_config: SandboxConfig | None = None,
         permissions_config: PermissionsConfig | None = None,
         sync_config: SyncConfig | None = None,
+        approval_handler: ApprovalHandler | None = None,
     ) -> None:
         self.runtime_client = runtime_client
         self.model_provider = model_provider
@@ -55,6 +58,7 @@ class AgentController:
         self.sandbox_config = sandbox_config or SandboxConfig()
         self.permissions_config = permissions_config or PermissionsConfig()
         self.sync_config = sync_config or SyncConfig()
+        self.approval_handler = approval_handler
         self.event_sink = event_sink or InMemoryEventSink()
 
     async def run(
@@ -65,9 +69,39 @@ class AgentController:
         environment_id: str | None = None,
         target_id: str | None = None,
     ) -> AgentRunResult:
+        session = self.start_session(
+            project,
+            endpoint_id=endpoint_id,
+            environment_id=environment_id,
+            target_id=target_id,
+        )
+        return await session.run_turn(task)
+
+    def start_session(
+        self,
+        project: str,
+        endpoint_id: str | None = None,
+        environment_id: str | None = None,
+        target_id: str | None = None,
+    ) -> AgentSession:
+        work_context = self._build_work_context(
+            project,
+            endpoint_id=endpoint_id,
+            environment_id=environment_id,
+            target_id=target_id,
+        )
+        return AgentSession(self, work_context)
+
+    def _build_work_context(
+        self,
+        project: str,
+        endpoint_id: str | None = None,
+        environment_id: str | None = None,
+        target_id: str | None = None,
+    ) -> WorkContext:
         project_path = str(Path(project).resolve())
         if endpoint_id and environment_id and target_id:
-            work_context = WorkContext(
+            return WorkContext(
                 endpoint_id=endpoint_id,
                 environment_id=environment_id,
                 target_id=target_id,
@@ -77,7 +111,7 @@ class AgentController:
                 sandbox_config=self.sandbox_config,
                 sync_config=self.sync_config,
             )
-        elif self.runtime_config.mode == "ssh":
+        if self.runtime_config.mode == "ssh":
             local_bundle = self.runtime_client.ensure_local("mini-harness-local", project_path)
             bundle = self.runtime_client.ensure_ssh(
                 self.runtime_config.name,
@@ -87,7 +121,7 @@ class AgentController:
             environment = bundle["environment"]
             remote_root = self.runtime_config.ssh.remote_root
             self.runtime_client.ensure_dir(str(endpoint["endpoint_id"]), remote_root)
-            work_context = WorkContext(
+            return WorkContext(
                 endpoint_id=str(endpoint["endpoint_id"]),
                 environment_id=str(environment["environment_id"]),
                 target_id=str(bundle["target_id"]),
@@ -102,30 +136,44 @@ class AgentController:
                 sandbox_config=self.sandbox_config,
                 sync_config=self.sync_config,
             )
-        else:
-            bundle = self.runtime_client.ensure_local("mini-harness-local", project_path)
-            work_context = WorkContext(
-                endpoint_id=str(bundle["endpoint"]["endpoint_id"]),
-                environment_id=str(bundle["environment"]["environment_id"]),
-                target_id=str(bundle["target_id"]),
-                project_root=project_path,
-                sandbox_config=self.sandbox_config,
-                sync_config=self.sync_config,
-            )
+        bundle = self.runtime_client.ensure_local("mini-harness-local", project_path)
+        return WorkContext(
+            endpoint_id=str(bundle["endpoint"]["endpoint_id"]),
+            environment_id=str(bundle["environment"]["environment_id"]),
+            target_id=str(bundle["target_id"]),
+            project_root=project_path,
+            sandbox_config=self.sandbox_config,
+            sync_config=self.sync_config,
+        )
 
+    def build_tool_registry(self) -> ToolRegistry:
         registry = ToolRegistry(
             self.config,
             permission_policy=self.permissions_config.build_policy(),
+            approval_handler=self.approval_handler,
+            approve_sandbox_denials=self.permissions_config.approve_sandbox_denials,
+            approve_terminal_open=self.permissions_config.approve_terminal_open,
         )
         for tool in build_runtime_tools(self.runtime_client):
             registry.register(tool)
+        return registry
+
+
+class AgentSession:
+    def __init__(self, controller: AgentController, work_context: WorkContext) -> None:
+        self.controller = controller
+        self.work_context = work_context
+        self.context = AgentContext(controller.config, work_context)
+
+    async def run_turn(self, task: str) -> AgentRunResult:
+        registry = self.controller.build_tool_registry()
         loop = AgentLoop(
-            model=self.model_provider,
+            model=self.controller.model_provider,
             tools=registry,
-            config=self.config,
-            event_sink=self.event_sink,
+            config=self.controller.config,
+            event_sink=self.controller.event_sink,
         )
-        return await loop.run(task, work_context)
+        return await loop.run_with_context(task, self.work_context, self.context)
 
 
 def build_sdk_controller(
@@ -138,6 +186,7 @@ def build_sdk_controller(
     sandbox_config: SandboxConfig | None = None,
     permissions_config: PermissionsConfig | None = None,
     sync_config: SyncConfig | None = None,
+    approval_handler: ApprovalHandler | None = None,
 ) -> tuple[AgentController, AgentRuntimeClient]:
     runtime_config = runtime_config or RuntimeConfig()
     client = AgentRuntimeClient.from_broker(
@@ -159,6 +208,7 @@ def build_sdk_controller(
             sandbox_config,
             permissions_config,
             sync_config,
+            approval_handler,
         ),
         client,
     )

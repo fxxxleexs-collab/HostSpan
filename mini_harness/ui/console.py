@@ -145,7 +145,8 @@ class RichEventRenderer:
             raw_output = str(decision.get("raw_output") or "")
             final_text = summary if not details else f"{summary}\n\n{details}"
             self.console.print(Panel(final_text, title="Model Final", border_style="green"))
-            self._render_model_raw_output(raw_output)
+            if raw_output.strip() != final_text.strip():
+                self._render_model_raw_output(raw_output)
             return
         self.console.print(Panel(_json_text(decision), title="Model Output", border_style="cyan"))
 
@@ -232,7 +233,7 @@ def _tool_name_from_payload(payload: dict[str, Any]) -> str:
         if "frame_count" in metadata:
             return "observe_terminal"
         if "bytes" in metadata:
-            return "send_terminal_input"
+            return "send_terminal_control" if "control" in metadata else "send_terminal_input"
         if "tool" in metadata:
             return "ensure_remote_tool"
     return ""
@@ -262,6 +263,8 @@ def _tool_label(name: str, arguments: Any) -> str:
             "send_terminal_input "
             f"{_terminal_input_display(str(arguments.get('data', '')), bool(arguments.get('run_directly', False)))}"
         )
+    if name == "send_terminal_control":
+        return f"send_terminal_control {arguments.get('control', '')}"
     if name == "ensure_remote_tool":
         install = arguments.get("install", False)
         return f"ensure_remote_tool {arguments.get('tool', '')} install={install}"

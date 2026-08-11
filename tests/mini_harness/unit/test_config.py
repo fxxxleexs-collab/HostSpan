@@ -144,6 +144,8 @@ def test_load_config_supports_permissions(tmp_path: Path) -> None:
 [permissions]
 allow = ["file.read:local", "task.observe:*"]
 deny = ["file.write:*", "terminal.open:remote"]
+approve_sandbox_denials = false
+approve_terminal_open = true
 """,
         encoding="utf-8",
     )
@@ -152,6 +154,8 @@ deny = ["file.write:*", "terminal.open:remote"]
 
     assert config.permissions.allow == ["file.read:local", "task.observe:*"]
     assert config.permissions.deny == ["file.write:*", "terminal.open:remote"]
+    assert config.permissions.approve_sandbox_denials is False
+    assert config.permissions.approve_terminal_open is True
 
 
 def test_ssh_runtime_env_and_cli_overrides(

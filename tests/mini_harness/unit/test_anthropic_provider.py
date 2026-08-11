@@ -115,6 +115,68 @@ async def test_anthropic_provider_converts_structured_final() -> None:
 
 
 @pytest.mark.asyncio
+async def test_anthropic_provider_accepts_plain_text_final_output() -> None:
+    raw = "Done.\n\nI checked the project and no changes were needed."
+    provider = AnthropicModelProvider(
+        ModelConfig(
+            provider="anthropic",
+            model="claude-test",
+            api_key="secret",
+            base_url="https://anthropic.example",
+        ),
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": raw,
+                        }
+                    ]
+                },
+            )
+        ),
+    )
+
+    decision = await provider.decide(
+        [ModelMessage(role="user", content="finish")],
+        [],
+    )
+
+    assert isinstance(decision, FinalDecision)
+    assert decision.summary == "Done."
+    assert decision.details == "I checked the project and no changes were needed."
+    assert decision.raw_output == raw
+
+
+@pytest.mark.asyncio
+async def test_anthropic_provider_preserves_internal_model_errors() -> None:
+    provider = AnthropicModelProvider(
+        ModelConfig(
+            provider="anthropic",
+            model="claude-test",
+            api_key="secret",
+            base_url="https://anthropic.example",
+            max_retries=0,
+        ),
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"content": [{"type": "text", "text": ""}]},
+            )
+        ),
+    )
+
+    with pytest.raises(MiniHarnessError) as exc_info:
+        await provider.decide([ModelMessage(role="user", content="finish")], [])
+
+    message = str(exc_info.value)
+    assert "model final response was empty" in message
+    assert "MiniHarnessError" not in message
+
+
+@pytest.mark.asyncio
 async def test_anthropic_provider_reports_http_error_body() -> None:
     captured_paths: list[str] = []
 

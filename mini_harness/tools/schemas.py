@@ -145,6 +145,16 @@ class SendTerminalInput(BaseModel):
     session_ref: str | None = None
 
 
+class SendTerminalControlInput(BaseModel):
+    control: Literal["ctrl_c", "ctrl_d", "enter", "escape", "tab", "backspace"] = Field(
+        description=(
+            "Terminal control key to send as real control bytes. Use ctrl_c to interrupt "
+            "a running foreground process instead of sending literal '\\x03' text."
+        )
+    )
+    session_ref: str | None = None
+
+
 class RunInSessionInput(BaseModel):
     command: str = Field(
         min_length=1,

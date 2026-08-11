@@ -14,6 +14,8 @@ PermissionTarget = Literal["local", "remote", "any"]
 class PermissionsConfig(BaseModel):
     allow: list[str] = Field(default_factory=lambda: ["*"])
     deny: list[str] = Field(default_factory=list)
+    approve_sandbox_denials: bool = True
+    approve_terminal_open: bool = True
 
     @field_validator("allow", "deny")
     @classmethod
@@ -85,12 +87,14 @@ class PermissionDecision:
         reason: str,
         *,
         missing_capabilities: list[str] | tuple[str, ...] = (),
+        approval_required: bool = True,
         metadata: dict[str, Any] | None = None,
     ) -> PermissionDecision:
         return cls(
             allowed=False,
             reason=reason,
             missing_capabilities=tuple(missing_capabilities),
+            approval_required=approval_required,
             metadata=metadata or {},
         )
 

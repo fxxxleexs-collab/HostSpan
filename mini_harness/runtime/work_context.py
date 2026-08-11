@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import platform
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -72,6 +74,7 @@ class WorkContext:
     last_tool_name: str | None = None
     last_task_state: str | None = None
     last_command_exit_code: int | None = None
+    _sandbox_approval_depth: int = 0
 
     def __post_init__(self) -> None:
         if self.local_os == "unknown":
@@ -88,6 +91,8 @@ class WorkContext:
             )
 
     def normalize_path(self, path: str) -> str:
+        if self.sandbox_approval_active():
+            return _normalize_approved_workspace_path(path)
         return self._workspace_policy().normalize_relative_path(path)
 
     def normalize_cwd(self, cwd: str | None) -> str:
@@ -98,26 +103,36 @@ class WorkContext:
 
     def runtime_cwd_for(self, cwd: str | None, target: TerminalTarget) -> str:
         resolved_target = self.resolve_terminal_target(target)
+        if self.sandbox_approval_active():
+            approved = _normalize_approved_workspace_path(cwd or self.cwd or ".")
+            if _is_absolute_path(approved):
+                if resolved_target == "remote":
+                    return approved
+                return str(Path(approved).resolve())
+            if resolved_target == "remote":
+                return self._runtime_relative_path(approved, target="remote")
+            return self._local_runtime_cwd(approved)
         relative = self.normalize_cwd(cwd)
         if resolved_target == "remote":
             return self._workspace_policy().runtime_cwd(relative, target="remote").runtime_path
-        root = Path(self.project_root).resolve()
-        resolved = root if relative == "." else (root / relative).resolve()
-        if not resolved.is_relative_to(root):
-            raise MiniHarnessError(
-                ErrorCode.PATH_OUTSIDE_PROJECT,
-                "cwd must stay inside the project root",
-                recoverable=True,
-            )
-        return str(resolved)
+        return self._local_runtime_cwd(relative)
 
     def runtime_path(self, path: str) -> str:
+        if self.sandbox_approval_active():
+            approved = _normalize_approved_workspace_path(path)
+            if _is_absolute_path(approved):
+                return approved
+            if self.runtime_mode != "ssh":
+                return approved
+            return self._runtime_relative_path(approved, target="remote")
         relative = self.normalize_path(path)
         if self.runtime_mode != "ssh":
             return relative
         return self._workspace_policy().runtime_path(relative, target="remote").runtime_path
 
     def sandbox_task(self, argv: list[str], cwd: str) -> SandboxedCommand:
+        if self.sandbox_approval_active():
+            return self._approved_sandbox_command(argv, cwd)
         return self._workspace_policy().sandbox_task(
             argv, cwd, target=self.default_terminal_target()
         )
@@ -129,11 +144,26 @@ class WorkContext:
         target: TerminalTarget,
     ) -> SandboxedCommand:
         resolved_target = self.resolve_terminal_target(target)
+        if self.sandbox_approval_active():
+            return self._approved_sandbox_command(argv, cwd)
         return self._workspace_policy().sandbox_terminal(argv, cwd, target=resolved_target)
 
     def authorize_session_command(self, command: str) -> None:
+        if self.sandbox_approval_active():
+            return
         target = self.active_session_target or self.default_terminal_target()
         self._workspace_policy().authorize_command([command], target=target)
+
+    @contextmanager
+    def approved_sandbox(self) -> Iterator[None]:
+        self._sandbox_approval_depth += 1
+        try:
+            yield
+        finally:
+            self._sandbox_approval_depth -= 1
+
+    def sandbox_approval_active(self) -> bool:
+        return self._sandbox_approval_depth > 0
 
     def display_path(self, runtime_path: str) -> str:
         if self.runtime_mode != "ssh":
@@ -312,6 +342,31 @@ class WorkContext:
             )
         return self.workspace_policy
 
+    def _runtime_relative_path(self, relative: str, *, target: ResolvedTerminalTarget) -> str:
+        root = self._workspace_policy().root_for(target)
+        if target == "remote":
+            return root if relative == "." else f"{root.rstrip('/')}/{relative}"
+        return relative
+
+    def _local_runtime_cwd(self, relative: str) -> str:
+        root = Path(self.project_root).resolve()
+        resolved = root if relative == "." else (root / relative).resolve()
+        if not resolved.is_relative_to(root):
+            raise MiniHarnessError(
+                ErrorCode.PATH_OUTSIDE_PROJECT,
+                "cwd must stay inside the project root",
+                recoverable=True,
+            )
+        return str(resolved)
+
+    def _approved_sandbox_command(self, argv: list[str], cwd: str) -> SandboxedCommand:
+        return SandboxedCommand(
+            argv=argv,
+            cwd=cwd,
+            engine=self._workspace_policy().config.engine,
+            metadata={"sandbox_override": "approved_by_user"},
+        )
+
 
 def local_os_name() -> str:
     system = platform.system().lower()
@@ -329,3 +384,30 @@ def default_local_shell() -> str:
         shell = os.environ.get("PSMODULEPATH")
         return "powershell" if shell else "cmd"
     return Path(os.environ.get("SHELL", "")).name or "sh"
+
+
+def _normalize_approved_workspace_path(path: str | None) -> str:
+    if not path:
+        path = "."
+    normalized = path.replace("\\", "/").strip()
+    absolute = _is_absolute_path(normalized)
+    parts: list[str] = []
+    for part in normalized.split("/"):
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            raise MiniHarnessError(
+                ErrorCode.PATH_OUTSIDE_PROJECT,
+                "paths must stay inside the project root",
+                recoverable=True,
+            )
+        parts.append(part)
+    if absolute:
+        if len(normalized) > 1 and normalized[1] == ":":
+            return f"{normalized[:2]}/{'/'.join(parts[1:])}".rstrip("/")
+        return "/" + "/".join(parts)
+    return "/".join(parts) or "."
+
+
+def _is_absolute_path(path: str) -> bool:
+    return path.startswith("/") or (len(path) > 1 and path[1] == ":")

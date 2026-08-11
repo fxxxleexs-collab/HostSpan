@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from mini_harness.approvals import ToolApprovalRequest
 from mini_harness.permissions import CapabilitySetPermissionPolicy
 from mini_harness.runtime.work_context import WorkContext
 from mini_harness.sync.config import SyncConfig
@@ -12,6 +13,23 @@ from mini_harness.tools.registry import ToolRegistry
 def _registry(policy: CapabilitySetPermissionPolicy) -> ToolRegistry:
     registry = ToolRegistry(permission_policy=policy)
     return registry
+
+
+class FakeApprovalHandler:
+    def __init__(self, approved: bool) -> None:
+        self.approved = approved
+        self.requests: list[ToolApprovalRequest] = []
+
+    async def approve(self, request: ToolApprovalRequest) -> bool:
+        self.requests.append(request)
+        return self.approved
+
+
+def _registry_with_approval(
+    policy: CapabilitySetPermissionPolicy,
+    approval_handler: FakeApprovalHandler,
+) -> ToolRegistry:
+    return ToolRegistry(permission_policy=policy, approval_handler=approval_handler)
 
 
 def _register_runtime_tools(registry: ToolRegistry, fake_runtime) -> ToolRegistry:
@@ -31,6 +49,21 @@ def _context() -> WorkContext:
     )
 
 
+def _remote_context() -> WorkContext:
+    return WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root="/project",
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+        local_os="windows",
+        local_shell="powershell",
+        remote_os="linux",
+        remote_shell="bash",
+    )
+
+
 @pytest.mark.asyncio
 async def test_permission_policy_denies_file_write_before_runtime_call(fake_runtime) -> None:
     registry = _register_runtime_tools(
@@ -47,6 +80,54 @@ async def test_permission_policy_denies_file_write_before_runtime_call(fake_runt
     assert not result.ok
     assert result.error_code == "PERMISSION_DENIED"
     assert result.metadata["missing_capabilities"] == ["file.write:local"]
+    assert "write_text" not in [name for name, _ in fake_runtime.requests]
+
+
+@pytest.mark.asyncio
+async def test_permission_policy_can_be_overridden_by_user_approval(fake_runtime) -> None:
+    approval = FakeApprovalHandler(approved=True)
+    registry = _register_runtime_tools(
+        _registry_with_approval(
+            CapabilitySetPermissionPolicy(denied={"file.write:*"}),
+            approval,
+        ),
+        fake_runtime,
+    )
+
+    result = await registry.execute(
+        "write_file",
+        {"path": "calculator.py", "content": "x = 1\n"},
+        _context(),
+    )
+
+    assert result.ok
+    assert result.metadata["permission_override"] is True
+    assert result.metadata["approved_by_user"] is True
+    assert approval.requests[0].tool_name == "write_file"
+    assert fake_runtime.requests[-1][0] == "write_text"
+
+
+@pytest.mark.asyncio
+async def test_permission_policy_stays_denied_when_user_rejects(fake_runtime) -> None:
+    approval = FakeApprovalHandler(approved=False)
+    registry = _register_runtime_tools(
+        _registry_with_approval(
+            CapabilitySetPermissionPolicy(denied={"file.write:*"}),
+            approval,
+        ),
+        fake_runtime,
+    )
+
+    result = await registry.execute(
+        "write_file",
+        {"path": "calculator.py", "content": "x = 1\n"},
+        _context(),
+    )
+
+    assert not result.ok
+    assert result.error_code == "PERMISSION_DENIED"
+    assert result.metadata["approved_by_user"] is False
+    assert approval.requests[0].decision.reason.startswith("permission denied")
     assert "write_text" not in [name for name, _ in fake_runtime.requests]
 
 
@@ -81,6 +162,65 @@ async def test_permission_policy_denies_local_terminal_target(fake_runtime) -> N
 
 
 @pytest.mark.asyncio
+async def test_terminal_open_requires_user_approval_when_configured(fake_runtime) -> None:
+    approval = FakeApprovalHandler(approved=True)
+    registry = _register_runtime_tools(
+        ToolRegistry(
+            permission_policy=CapabilitySetPermissionPolicy(),
+            approval_handler=approval,
+            approve_terminal_open=True,
+        ),
+        fake_runtime,
+    )
+
+    result = await registry.execute("open_local_terminal", {}, _context())
+
+    assert result.ok
+    assert result.metadata["terminal_open_approved"] is True
+    assert approval.requests[0].tool_name == "open_local_terminal"
+    assert "interactive terminal" in approval.requests[0].decision.reason
+    assert "open_terminal" in [name for name, _ in fake_runtime.requests]
+
+
+@pytest.mark.asyncio
+async def test_terminal_open_stays_blocked_when_user_rejects(fake_runtime) -> None:
+    approval = FakeApprovalHandler(approved=False)
+    registry = _register_runtime_tools(
+        ToolRegistry(
+            permission_policy=CapabilitySetPermissionPolicy(),
+            approval_handler=approval,
+            approve_terminal_open=True,
+        ),
+        fake_runtime,
+    )
+
+    result = await registry.execute("open_local_terminal", {}, _context())
+
+    assert not result.ok
+    assert result.error_code == "PERMISSION_DENIED"
+    assert result.metadata["approved_by_user"] is False
+    assert "open_terminal" not in [name for name, _ in fake_runtime.requests]
+
+
+@pytest.mark.asyncio
+async def test_permission_policy_denies_terminal_control(fake_runtime) -> None:
+    registry = _register_runtime_tools(
+        _registry(CapabilitySetPermissionPolicy(denied={"terminal.send_input:*"})),
+        fake_runtime,
+    )
+    context = _context()
+    context.active_session_id = "session_1"
+    context.mark_session_state(target="local", os_name="linux", shell="bash")
+
+    result = await registry.execute("send_terminal_control", {"control": "ctrl_c"}, context)
+
+    assert not result.ok
+    assert result.error_code == "PERMISSION_DENIED"
+    assert result.metadata["missing_capabilities"] == ["terminal.send_input:local"]
+    assert "write_terminal" not in [name for name, _ in fake_runtime.requests]
+
+
+@pytest.mark.asyncio
 async def test_permission_policy_denies_run_in_session(fake_runtime) -> None:
     registry = _register_runtime_tools(
         _registry(CapabilitySetPermissionPolicy(denied={"session.run:*"})),
@@ -96,6 +236,114 @@ async def test_permission_policy_denies_run_in_session(fake_runtime) -> None:
     assert result.error_code == "PERMISSION_DENIED"
     assert result.metadata["missing_capabilities"] == ["session.run:local"]
     assert "write_terminal" not in [name for name, _ in fake_runtime.requests]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_absolute_cwd_can_be_approved_before_runtime_call(fake_runtime) -> None:
+    approval = FakeApprovalHandler(approved=True)
+    registry = _register_runtime_tools(
+        ToolRegistry(
+            permission_policy=CapabilitySetPermissionPolicy(),
+            approval_handler=approval,
+            approve_sandbox_denials=True,
+        ),
+        fake_runtime,
+    )
+
+    result = await registry.execute(
+        "run_command",
+        {"argv": ["bash", "-lc", "pwd"], "cwd": "/tmp"},
+        _remote_context(),
+    )
+
+    assert result.ok
+    assert result.metadata["sandbox_override"] is True
+    assert approval.requests[0].decision.missing_capabilities == ("sandbox.override:any",)
+    assert fake_runtime.requests[-1] == (
+        "run_command",
+        {
+            "environment_id": "env_ssh",
+            "target_id": "target_ssh",
+            "argv": ["bash", "-lc", "pwd"],
+            "cwd": "/tmp",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_sandbox_absolute_cwd_stays_blocked_when_user_rejects(fake_runtime) -> None:
+    approval = FakeApprovalHandler(approved=False)
+    registry = _register_runtime_tools(
+        ToolRegistry(
+            permission_policy=CapabilitySetPermissionPolicy(),
+            approval_handler=approval,
+            approve_sandbox_denials=True,
+        ),
+        fake_runtime,
+    )
+
+    result = await registry.execute(
+        "run_command",
+        {"argv": ["bash", "-lc", "pwd"], "cwd": "/tmp"},
+        _remote_context(),
+    )
+
+    assert not result.ok
+    assert result.error_code == "PATH_OUTSIDE_PROJECT"
+    assert result.metadata["approved_by_user"] is False
+    assert "run_command" not in [name for name, _ in fake_runtime.requests]
+
+
+@pytest.mark.asyncio
+async def test_permission_policy_denies_shell_file_write_in_run_command(fake_runtime) -> None:
+    registry = _register_runtime_tools(
+        _registry(CapabilitySetPermissionPolicy(denied={"file.write:*"})),
+        fake_runtime,
+    )
+
+    result = await registry.execute(
+        "run_command",
+        {
+            "argv": ["bash", "-lc", "cat > port_monitor.py <<'PY'\nprint('ok')\nPY"],
+            "cwd": ".",
+        },
+        _remote_context(),
+    )
+
+    assert not result.ok
+    assert result.error_code == "PERMISSION_DENIED"
+    assert result.metadata["missing_capabilities"] == ["file.write:remote"]
+    assert "port_monitor.py" in result.metadata["permission_requests"][1]["resource"]
+    assert "run_command" not in [name for name, _ in fake_runtime.requests]
+
+
+@pytest.mark.asyncio
+async def test_permission_policy_can_approve_shell_file_write_in_session(fake_runtime) -> None:
+    approval = FakeApprovalHandler(approved=True)
+    registry = _register_runtime_tools(
+        _registry_with_approval(
+            CapabilitySetPermissionPolicy(denied={"file.write:*"}),
+            approval,
+        ),
+        fake_runtime,
+    )
+    context = _remote_context()
+    context.active_session_id = "session_1"
+    context.mark_session_state(target="remote", os_name="linux", shell="bash")
+
+    result = await registry.execute(
+        "run_in_session",
+        {"command": "cat > port_monitor.py <<'PY'\nprint('ok')\nPY", "wait_seconds": 0},
+        context,
+    )
+
+    assert result.ok
+    assert approval.requests[0].permission_requests[1].capability_key == "file.write:remote"
+    assert "port_monitor.py" in str(approval.requests[0].permission_requests[1].resource)
+    assert fake_runtime.requests[-2] == (
+        "write_terminal",
+        {"session_id": "session_1", "data": "cat > port_monitor.py <<'PY'\nprint('ok')\nPY\n"},
+    )
 
 
 @pytest.mark.asyncio
