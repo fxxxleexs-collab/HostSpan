@@ -113,7 +113,11 @@ async def test_runtime_tools_map_to_runtime_client(fake_runtime) -> None:
     assert "+def add(a, b):" in str(write.content)
     assert context.file_snapshot("calculator.py").sha256 == write.metadata["after_sha256"]
     assert run.resource_ref == "task:task_1"
+    assert run.metadata["pid"] == 12345
+    assert run.metadata["persistent"] is False
     assert observed.ok
+    assert observed.metadata["pid"] == 12345
+    assert observed.metadata["log_tail"] == ".\n1 passed\n"
     assert observed.cursor == len(".\n1 passed\n")
     assert context.active_task_id is None
     assert [name for name, _ in fake_runtime.requests] == [
@@ -123,6 +127,43 @@ async def test_runtime_tools_map_to_runtime_client(fake_runtime) -> None:
         "write_text",
         "run_command",
         "observe_task",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_start_task_records_managed_long_running_task(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+    fake_runtime.task_state = "RUNNING"
+    fake_runtime.task_exit_code = None
+    fake_runtime.logs = [{"chunk": " * Running on http://127.0.0.1:5000\n"}]
+
+    started = await registry.execute(
+        "start_task",
+        {"argv": ["python", "app.py"], "cwd": ".", "wait_seconds": 0.1},
+        context,
+    )
+    listed = await registry.execute("list_tasks", {"state_filter": "active"}, context)
+    cancelled = await registry.execute("cancel_task", {"task_ref": "task:task_1"}, context)
+
+    assert started.ok
+    assert started.resource_ref == "task:task_1"
+    assert started.metadata["pid"] == 12345
+    assert started.metadata["persistent"] is True
+    assert "Running on" in str(started.content)
+    assert listed.ok
+    assert listed.metadata["task_count"] == 1
+    assert listed.metadata["tasks"][0]["pid"] == 12345
+    assert listed.metadata["tasks"][0]["persistent"] is True
+    assert "python app.py" in str(listed.content)
+    assert cancelled.ok
+    assert cancelled.metadata["pid"] == 12345
+    assert [name for name, _ in fake_runtime.requests] == [
+        "start_task",
+        "observe_task",
+        "cancel_task",
     ]
 
 

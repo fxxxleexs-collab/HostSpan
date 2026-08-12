@@ -98,6 +98,41 @@ class FileSnapshotSummary:
 
 
 @dataclass
+class TaskBrief:
+    task_id: str
+    argv: list[str] = field(default_factory=list)
+    cwd: str = "."
+    state: str = "UNKNOWN"
+    pid: int | None = None
+    persistent: bool = False
+    log_tail: str | None = None
+    exit_code: int | None = None
+    started_by: str = "unknown"
+    touched_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    touch_index: int = 0
+
+    @property
+    def active(self) -> bool:
+        return self.state not in {"SUCCEEDED", "FAILED", "CANCELLED", "LOST"}
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "task_id": self.task_id,
+            "argv": list(self.argv),
+            "cwd": self.cwd,
+            "state": self.state,
+            "pid": self.pid,
+            "persistent": self.persistent,
+            "log_tail": self.log_tail,
+            "exit_code": self.exit_code,
+            "started_by": self.started_by,
+            "active": self.active,
+            "touched_at": self.touched_at,
+            "touch_index": self.touch_index,
+        }
+
+
+@dataclass
 class WorkContext:
     endpoint_id: str
     environment_id: str
@@ -142,7 +177,9 @@ class WorkContext:
     last_command_exit_code: int | None = None
     file_snapshots: dict[str, FileSnapshotSummary] = field(default_factory=dict)
     session_briefs: dict[str, SessionBrief] = field(default_factory=dict)
+    task_briefs: dict[str, TaskBrief] = field(default_factory=dict)
     _session_touch_counter: int = 0
+    _task_touch_counter: int = 0
     _sandbox_approval_depth: int = 0
 
     def __post_init__(self) -> None:
@@ -247,6 +284,42 @@ class WorkContext:
 
     def session_ref(self) -> str | None:
         return f"session:{self.active_session_id}" if self.active_session_id else None
+
+    def record_task_brief(
+        self,
+        task_id: str,
+        *,
+        argv: list[str] | None = None,
+        cwd: str | None = None,
+        state: str | None = None,
+        pid: int | None = None,
+        persistent: bool | None = None,
+        log_tail: str | None = None,
+        exit_code: int | None = None,
+        started_by: str | None = None,
+    ) -> TaskBrief:
+        self._task_touch_counter += 1
+        item = self.task_briefs.get(task_id) or TaskBrief(task_id=task_id)
+        if argv is not None:
+            item.argv = list(argv)
+        if cwd is not None:
+            item.cwd = cwd
+        if state is not None:
+            item.state = state
+        if pid is not None:
+            item.pid = pid
+        if persistent is not None:
+            item.persistent = persistent
+        if log_tail is not None:
+            item.log_tail = log_tail[-4000:]
+        if exit_code is not None:
+            item.exit_code = exit_code
+        if started_by is not None:
+            item.started_by = started_by
+        item.touched_at = datetime.now(UTC).isoformat()
+        item.touch_index = self._task_touch_counter
+        self.task_briefs[task_id] = item
+        return item
 
     def session_state_summary(self) -> str:
         if not self.active_session_id:
@@ -379,6 +452,75 @@ class WorkContext:
             f"local_state_dir={config.local_state_dir}, "
             f"remote_manifest_path={config.remote_manifest_path}"
         )
+
+    def runtime_activity_summary(self, *, max_tasks: int = 5, max_sessions: int = 5) -> str:
+        lines = ["Runtime activity:"]
+        task_lines = self._task_activity_lines(max_tasks=max_tasks)
+        session_lines = self._session_activity_lines(max_sessions=max_sessions)
+        if task_lines:
+            lines.append("Managed tasks:")
+            lines.extend(task_lines)
+        else:
+            lines.append("Managed tasks: none")
+        if session_lines:
+            lines.append("Terminal sessions:")
+            lines.extend(session_lines)
+        else:
+            lines.append("Terminal sessions: none")
+        return "\n".join(lines)
+
+    def _task_activity_lines(self, *, max_tasks: int) -> list[str]:
+        candidates = [
+            task
+            for task in self.task_briefs.values()
+            if task.active or task.persistent or task.task_id == self.active_task_id
+        ]
+        candidates.sort(key=lambda item: item.touch_index, reverse=True)
+        lines: list[str] = []
+        for task in candidates[:max_tasks]:
+            command = _compact_session_text(" ".join(task.argv), limit=180) if task.argv else "n/a"
+            parts = [
+                f"- task:{task.task_id}",
+                f"state={task.state}",
+                f"pid={task.pid or 'unknown'}",
+                f"persistent={str(task.persistent).lower()}",
+                f"cwd={_compact_session_text(task.cwd, limit=120)}",
+            ]
+            if task.exit_code is not None:
+                parts.append(f"exit={task.exit_code}")
+            parts.append(f"cmd={command}")
+            if task.log_tail:
+                parts.append(f"tail={_compact_session_text(task.log_tail, limit=240)}")
+            lines.append(" | ".join(parts))
+        return lines
+
+    def _session_activity_lines(self, *, max_sessions: int) -> list[str]:
+        candidates = [
+            session
+            for session in self.session_briefs.values()
+            if session.runtime_state.upper() == "ACTIVE"
+            or session.pending
+            or session.session_id == self.active_session_id
+        ]
+        candidates.sort(key=lambda item: item.touch_index, reverse=True)
+        lines: list[str] = []
+        for session in candidates[:max_sessions]:
+            parts = [
+                f"- session:{session.session_id}",
+                f"target={session.target}",
+                f"backend={session.backend}",
+                f"state={session.runtime_state}",
+                f"privilege={session.privilege}",
+                f"pending={str(session.pending).lower()}",
+            ]
+            if session.cwd_hint:
+                parts.append(f"cwd={session.cwd_hint}")
+            if session.last_command:
+                parts.append(f"last={session.last_command}")
+            if session.brief:
+                parts.append(f"brief={session.brief}")
+            lines.append(" | ".join(parts))
+        return lines
 
     def default_terminal_target(self) -> ResolvedTerminalTarget:
         return "remote" if self.runtime_mode == "ssh" else "local"

@@ -230,6 +230,7 @@ class WorkspacePolicy:
                 ErrorCode.SANDBOX_DENIED,
                 "sandbox denied command because root shell escalation is disabled",
                 recoverable=True,
+                metadata={"sandbox_reason": "root_escalation", "target": target},
             )
         if not target_config.allow_package_install and _installs_packages(command):
             raise MiniHarnessError(

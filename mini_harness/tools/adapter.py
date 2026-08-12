@@ -37,6 +37,7 @@ from mini_harness.tools.schemas import (
     EnsureRemoteToolInput,
     InspectTerminalSessionInput,
     ListFilesInput,
+    ListTasksInput,
     ListTerminalSessionsInput,
     ObserveTaskInput,
     ObserveTerminalInput,
@@ -47,6 +48,7 @@ from mini_harness.tools.schemas import (
     RunInSessionInput,
     SendTerminalControlInput,
     SendTerminalInput,
+    StartTaskInput,
     SyncPushInput,
     SyncStatusInput,
     ToolDefinition,
@@ -128,6 +130,7 @@ class RuntimeTool(AgentTool):
                 summary=str(exc),
                 error_code=exc.code.value,
                 recoverable=exc.recoverable,
+                metadata=dict(exc.metadata),
             )
         except TimeoutError as exc:
             return ToolResult(
@@ -495,9 +498,11 @@ class RunCommandTool(RuntimeTool):
             runtime,
             "run_command",
             (
-                "Start a clean non-interactive runtime task. This does not inherit "
-                "terminal session state such as root shell, cwd, env vars, venv, "
-                "or login state."
+                "Run a short clean non-interactive command as a managed task. "
+                "Use for one-shot checks, builds, tests, and inspections. "
+                "Do not use for dev servers, watchers, REPLs, sudo/password prompts, "
+                "or commands expected to keep running; use start_task for long-running "
+                "non-interactive services and terminal tools only for human interaction."
             ),
             RunCommandInput,
         )
@@ -553,15 +558,144 @@ class RunCommandTool(RuntimeTool):
         context.task_log_cursor = 0
         context.last_task_state = str(task.get("state", "RUNNING"))
         context.last_command_exit_code = None
+        brief = context.record_task_brief(
+            task_id,
+            argv=sandboxed.argv,
+            cwd=sandboxed.cwd,
+            state=context.last_task_state,
+            pid=_task_pid(task),
+            persistent=bool(task.get("persistent", False)),
+            started_by=self.definition.name,
+        )
         return ToolResult(
             ok=True,
-            summary=f"started task:{task_id}",
+            summary=_task_started_summary("started command", task_id, _task_pid(task)),
             resource_ref=f"task:{task_id}",
             state=context.last_task_state,
             metadata={
                 "task_id": task_id,
+                "pid": brief.pid,
+                "persistent": brief.persistent,
                 "argv": sandboxed.argv,
                 "cwd": sandboxed.cwd,
+                "sandbox_engine": sandboxed.engine,
+            },
+        )
+
+
+class StartTaskTool(RuntimeTool):
+    def __init__(self, runtime: HarnessRuntimeClient) -> None:
+        super().__init__(
+            runtime,
+            "start_task",
+            (
+                "Start a managed long-running non-interactive task. Use for development "
+                "servers, file watchers, background services, and commands expected to "
+                "continue running while you inspect logs with observe_task. Do not use "
+                "for commands that need passwords or live human interaction; use terminal "
+                "tools for those."
+            ),
+            StartTaskInput,
+        )
+
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]:
+        data = StartTaskInput.model_validate(arguments)
+        cwd = context.normalize_cwd(data.cwd)
+        target = context.default_terminal_target()
+        requests = [
+            PermissionRequest.for_target(
+                tool_name=self.definition.name,
+                capability="task.run",
+                target=target,
+                operation="start",
+                resource=cwd,
+                argv=data.argv,
+            )
+        ]
+        requests.extend(
+            _command_write_permission_requests(
+                tool_name=self.definition.name,
+                target=target,
+                command=" ".join(data.argv),
+                resource=cwd,
+            )
+        )
+        return requests
+
+    async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
+        data = parsed if isinstance(parsed, StartTaskInput) else StartTaskInput.model_validate(parsed)
+        cwd = context.runtime_cwd(data.cwd)
+        sandboxed = context.sandbox_task(data.argv, cwd)
+        task = await asyncio.to_thread(
+            self.runtime.start_task,
+            context.environment_id,
+            context.target_id,
+            sandboxed.argv,
+            sandboxed.cwd,
+            True,
+        )
+        task_id = str(task["task_id"])
+        state = str(task.get("state", "RUNNING"))
+        context.active_task_id = task_id
+        context.task_log_cursor = 0
+        context.last_task_state = state
+        context.last_command_exit_code = None
+        pid = _task_pid(task)
+        content: str | None = None
+        truncated = False
+        if data.wait_seconds > 0:
+            observation = await asyncio.to_thread(
+                self.runtime.observe_task,
+                task_id,
+                0,
+                data.max_output_chars,
+                data.wait_seconds,
+            )
+            content = str(observation.get("text", "")) or None
+            context.task_log_cursor = int(observation.get("cursor", 0))
+            task = observation.get("task", task)
+            state = str(observation.get("state") or task.get("state", state))
+            pid = _task_pid(task) or pid
+            truncated = bool(observation.get("truncated", False))
+            exit_code = _task_exit_code(observation, task)
+            context.last_command_exit_code = exit_code
+        else:
+            exit_code = _task_exit_code({}, task)
+        context.last_task_state = state
+        if state in TERMINAL_TASK_STATES:
+            context.active_task_id = None
+        brief = context.record_task_brief(
+            task_id,
+            argv=sandboxed.argv,
+            cwd=sandboxed.cwd,
+            state=state,
+            pid=pid,
+            persistent=True,
+            log_tail=content,
+            exit_code=exit_code,
+            started_by=self.definition.name,
+        )
+        return ToolResult(
+            ok=True,
+            summary=_task_started_summary("started long-running task", task_id, pid),
+            content=content,
+            resource_ref=f"task:{task_id}",
+            state=state,
+            cursor=context.task_log_cursor,
+            truncated=truncated,
+            recoverable=state not in TERMINAL_TASK_STATES,
+            metadata={
+                "task_id": task_id,
+                "pid": brief.pid,
+                "persistent": True,
+                "argv": sandboxed.argv,
+                "cwd": sandboxed.cwd,
+                "log_tail": brief.log_tail,
+                "exit_code": brief.exit_code,
                 "sandbox_engine": sandboxed.engine,
             },
         )
@@ -626,10 +760,17 @@ class ObserveTaskTool(RuntimeTool):
             new_text = new_text[-data.max_output_chars :]
             truncated = True
         context.last_task_state = state
-        exit_code = observation.get("exit_code", task.get("exit_code"))
-        context.last_command_exit_code = int(exit_code) if isinstance(exit_code, int) else None
+        context.last_command_exit_code = _task_exit_code(observation, task)
         if state in TERMINAL_TASK_STATES:
             context.active_task_id = None
+        pid = _task_pid(task)
+        brief = context.record_task_brief(
+            task_id,
+            state=state,
+            pid=pid,
+            log_tail=new_text,
+            exit_code=context.last_command_exit_code,
+        )
         return ToolResult(
             ok=True,
             summary=_task_summary(task_id, state, context.last_command_exit_code),
@@ -639,13 +780,24 @@ class ObserveTaskTool(RuntimeTool):
             cursor=context.task_log_cursor,
             truncated=truncated,
             recoverable=state not in TERMINAL_TASK_STATES,
-            metadata={"task_id": task_id, "exit_code": context.last_command_exit_code},
+            metadata={
+                "task_id": task_id,
+                "pid": brief.pid,
+                "persistent": brief.persistent,
+                "exit_code": context.last_command_exit_code,
+                "log_tail": brief.log_tail,
+            },
         )
 
 
 class CancelTaskTool(RuntimeTool):
     def __init__(self, runtime: HarnessRuntimeClient) -> None:
-        super().__init__(runtime, "cancel_task", "Cancel the active runtime task.", CancelTaskInput)
+        super().__init__(
+            runtime,
+            "cancel_task",
+            "Terminate/cancel the active or referenced managed runtime task.",
+            CancelTaskInput,
+        )
 
     def permission_requests(
         self,
@@ -674,12 +826,79 @@ class CancelTaskTool(RuntimeTool):
         context.active_task_id = None
         state = str(task.get("state", "CANCELLED"))
         context.last_task_state = state
+        pid = _task_pid(task)
+        exit_code = _task_exit_code({}, task)
+        brief = context.record_task_brief(
+            task_id,
+            state=state,
+            pid=pid,
+            exit_code=exit_code,
+        )
         return ToolResult(
             ok=True,
             summary=f"cancelled task:{task_id}",
             resource_ref=f"task:{task_id}",
             state=state,
-            metadata={"task_id": task_id},
+            metadata={
+                "task_id": task_id,
+                "pid": brief.pid,
+                "persistent": brief.persistent,
+                "exit_code": brief.exit_code,
+            },
+        )
+
+
+class ListTasksTool(RuntimeTool):
+    def __init__(self, runtime: HarnessRuntimeClient) -> None:
+        super().__init__(
+            runtime,
+            "list_tasks",
+            "List managed tasks started or observed in this Mini Harness conversation.",
+            ListTasksInput,
+        )
+
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]:
+        data = ListTasksInput.model_validate(arguments)
+        return [
+            PermissionRequest.for_target(
+                tool_name=self.definition.name,
+                capability="task.observe",
+                target=context.default_terminal_target(),
+                operation="list",
+                resource=data.scope,
+            )
+        ]
+
+    async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
+        data = parsed if isinstance(parsed, ListTasksInput) else ListTasksInput.model_validate(parsed)
+        tasks = sorted(
+            context.task_briefs.values(),
+            key=lambda item: item.touch_index,
+            reverse=True,
+        )
+        if data.state_filter == "active":
+            tasks = [task for task in tasks if task.active]
+        elif data.state_filter == "terminal":
+            tasks = [task for task in tasks if not task.active]
+        tasks = tasks[: data.max_tasks]
+        rows = [
+            _render_task_brief(task.as_dict())
+            for task in tasks
+        ]
+        return ToolResult(
+            ok=True,
+            summary=f"found {len(tasks)} managed task(s)",
+            content="\n".join(rows) if rows else "No managed tasks recorded in this conversation.",
+            metadata={
+                "tasks": [task.as_dict() for task in tasks],
+                "task_count": len(tasks),
+                "scope": data.scope,
+                "state_filter": data.state_filter,
+            },
         )
 
 
@@ -2025,8 +2244,10 @@ def build_runtime_tools(runtime: HarnessRuntimeClient) -> list[AgentTool]:
         WriteFileTool(runtime),
         EditFileTool(runtime),
         RunCommandTool(runtime),
+        StartTaskTool(runtime),
         ObserveTaskTool(runtime),
         CancelTaskTool(runtime),
+        ListTasksTool(runtime),
         EnsureRemoteToolTool(runtime),
         SyncStatusTool(runtime),
         SyncPushTool(runtime),
@@ -3412,3 +3633,61 @@ def _task_summary(task_id: str, state: str, exit_code: int | None) -> str:
     if exit_code is None:
         return f"task:{task_id} is {state}"
     return f"task:{task_id} is {state} with exit={exit_code}"
+
+
+def _task_started_summary(prefix: str, task_id: str, pid: int | None) -> str:
+    if pid is None:
+        return f"{prefix} task:{task_id}"
+    return f"{prefix} task:{task_id} pid={pid}"
+
+
+def _task_pid(task: Mapping[str, Any] | None) -> int | None:
+    if not task:
+        return None
+    for key in ("pid", "process_id"):
+        value = task.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    process = task.get("process")
+    if isinstance(process, Mapping):
+        return _task_pid(process)
+    return None
+
+
+def _task_exit_code(
+    observation: Mapping[str, Any] | None,
+    task: Mapping[str, Any] | None,
+) -> int | None:
+    for source in (observation, task):
+        if not source:
+            continue
+        value = source.get("exit_code")
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and re.fullmatch(r"-?\d+", value):
+            return int(value)
+    return None
+
+
+def _render_task_brief(task: Mapping[str, Any]) -> str:
+    argv = task.get("argv")
+    command = " ".join(str(part) for part in argv) if isinstance(argv, list) else ""
+    parts = [
+        f"task:{task.get('task_id')}",
+        f"state={task.get('state')}",
+        f"pid={task.get('pid') or 'unknown'}",
+        f"persistent={str(task.get('persistent')).lower()}",
+        f"cwd={task.get('cwd')}",
+    ]
+    exit_code = task.get("exit_code")
+    if exit_code is not None:
+        parts.append(f"exit={exit_code}")
+    if command:
+        parts.append(f"cmd={command}")
+    log_tail = str(task.get("log_tail") or "").strip()
+    if log_tail:
+        compact_tail = " ".join(log_tail.split())
+        parts.append(f"tail={compact_tail[:240]}")
+    return " | ".join(parts)

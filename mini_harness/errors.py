@@ -23,7 +23,14 @@ class ErrorCode(StrEnum):
 
 
 class MiniHarnessError(Exception):
-    def __init__(self, code: ErrorCode, message: str, recoverable: bool = False) -> None:
+    def __init__(
+        self,
+        code: ErrorCode,
+        message: str,
+        recoverable: bool = False,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.recoverable = recoverable
+        self.metadata = metadata or {}

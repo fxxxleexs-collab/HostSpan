@@ -207,6 +207,7 @@ class AgentController:
             approval_handler=self.approval_handler,
             approve_sandbox_denials=self.permissions_config.approve_sandbox_denials,
             approve_terminal_open=self.permissions_config.approve_terminal_open,
+            approve_root_escalation=self.permissions_config.approve_root_escalation,
         )
         for tool in build_runtime_tools(self.runtime_client):
             registry.register(tool)

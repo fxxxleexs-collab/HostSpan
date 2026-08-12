@@ -243,6 +243,40 @@ def test_agent_context_includes_remote_connection_status() -> None:
     assert "auth=password" in rendered
 
 
+def test_agent_context_includes_runtime_activity_summary() -> None:
+    work_context = _context()
+    work_context.record_task_brief(
+        "task_1",
+        argv=["python", "app.py"],
+        cwd="/project",
+        state="RUNNING",
+        pid=12345,
+        persistent=True,
+        log_tail=" * Running on http://127.0.0.1:5000\n",
+        started_by="start_task",
+    )
+    work_context.record_session_interaction(
+        "session_1",
+        target="local",
+        backend="pty",
+        runtime_state="ACTIVE",
+        brief="interactive shell waiting for input",
+        last_command="python -i",
+        pending=True,
+        updated_by="observe_terminal",
+    )
+    context = AgentContext(AgentConfig(), work_context)
+
+    rendered = "\n".join(message.content for message in context.build_messages([]))
+
+    assert "Runtime activity:" in rendered
+    assert "task:task_1" in rendered
+    assert "pid=12345" in rendered
+    assert "python app.py" in rendered
+    assert "session:session_1" in rendered
+    assert "interactive shell waiting for input" in rendered
+
+
 def test_agent_context_auto_compacts_when_turn_threshold_is_exceeded() -> None:
     config = AgentConfig(max_context_chars=100_000, auto_compact_turns=2, recent_tool_turns=4)
     context = AgentContext(config, _context())
