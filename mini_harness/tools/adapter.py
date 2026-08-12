@@ -7,13 +7,22 @@ import re
 import shlex
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
 from mini_harness.approvals import ToolApprovalRequest
-from mini_harness.diffing import snapshot_text
+from mini_harness.config import AgentConfig
+from mini_harness.diffing import (
+    TextDiff,
+    TextSnapshot,
+    make_unified_diff,
+    snapshot_text,
+    summarize_diff,
+)
 from mini_harness.errors import ErrorCode, MiniHarnessError
+from mini_harness.file_ops import RuntimeWorkspaceFileOps, WorkspaceFileOps
 from mini_harness.permissions import PermissionDecision, PermissionRequest
 from mini_harness.runtime.client import HarnessRuntimeClient
 from mini_harness.runtime.work_context import ResolvedTerminalTarget, TargetBinding, WorkContext
@@ -24,6 +33,7 @@ from mini_harness.tools.schemas import (
     ActivateTerminalSessionInput,
     CancelTaskInput,
     CloseTerminalInput,
+    EditFileInput,
     EnsureRemoteToolInput,
     InspectTerminalSessionInput,
     ListFilesInput,
@@ -44,6 +54,27 @@ from mini_harness.tools.schemas import (
 )
 
 TERMINAL_TASK_STATES = {"SUCCEEDED", "FAILED", "CANCELLED", "LOST"}
+
+
+@dataclass(frozen=True)
+class PreparedTextChange:
+    path: str
+    content: str
+    before_snapshot: TextSnapshot
+    after_snapshot: TextSnapshot
+    diff: TextDiff
+    diff_summary: str
+    expected_sha256: str | None
+    expected_source: str | None
+    existed_before: bool
+
+    @property
+    def hash_guarded(self) -> bool:
+        return self.expected_sha256 is not None
+
+    @property
+    def unguarded_write(self) -> bool:
+        return self.expected_sha256 is None
 
 
 class RuntimeTool(AgentTool):
@@ -114,6 +145,16 @@ class RuntimeTool(AgentTool):
 
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         raise NotImplementedError
+
+    async def approval_preview(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+        permission_requests: list[PermissionRequest],
+        config: AgentConfig,
+    ) -> ToolApprovalRequest | ToolResult | None:
+        _ = arguments, context, permission_requests, config
+        return None
 
 
 class ListFilesTool(RuntimeTool):
@@ -193,23 +234,33 @@ class ReadFileTool(RuntimeTool):
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = parsed if isinstance(parsed, ReadFileInput) else ReadFileInput.model_validate(parsed)
         path = context.normalize_path(data.path)
+        if data.end_line is not None and data.max_lines is not None:
+            raise MiniHarnessError(
+                ErrorCode.TOOL_ARGUMENT_INVALID,
+                "end_line and max_lines cannot be used together",
+                recoverable=True,
+            )
         if data.start_line and data.end_line and data.end_line < data.start_line:
             raise MiniHarnessError(
                 ErrorCode.TOOL_ARGUMENT_INVALID,
                 "end_line must be greater than or equal to start_line",
                 recoverable=True,
             )
-        text = await asyncio.to_thread(
-            self.runtime.read_text,
-            context.endpoint_id,
-            context.runtime_path(path),
-        )
-        snapshot = snapshot_text(path, text)
+        file_ops = RuntimeWorkspaceFileOps(self.runtime, context)
+        read = await asyncio.to_thread(file_ops.read_text, path)
+        snapshot = snapshot_text(read.location.path, read.text)
         snapshot_summary = context.record_file_snapshot(snapshot)
-        lines = text.splitlines()
+        lines = read.text.splitlines()
         start_index = (data.start_line - 1) if data.start_line else 0
-        end_index = data.end_line if data.end_line else len(lines)
+        if data.max_lines is not None:
+            end_index = min(len(lines), start_index + data.max_lines)
+        else:
+            end_index = data.end_line if data.end_line else len(lines)
         selected = lines[start_index:end_index]
+        selected_start_line = start_index + 1 if selected else None
+        selected_end_line = end_index if selected else None
+        has_more = end_index < len(lines)
+        next_start_line = end_index + 1 if has_more else None
         rendered = "\n".join(
             f"{line_no} | {line}" for line_no, line in enumerate(selected, start=start_index + 1)
         )
@@ -218,7 +269,7 @@ class ReadFileTool(RuntimeTool):
             rendered = rendered[: self.max_chars] + "\n[truncated]"
         return ToolResult(
             ok=True,
-            summary=f"{len(selected)} lines read from {path}",
+            summary=_read_file_summary(path, len(selected), selected_start_line, selected_end_line),
             content=rendered,
             resource_ref=f"file:{path}",
             truncated=truncated,
@@ -228,9 +279,17 @@ class ReadFileTool(RuntimeTool):
                 "size": snapshot.size,
                 "line_count": snapshot.line_count,
                 "selected_line_count": len(selected),
+                "start_line": selected_start_line,
+                "end_line": selected_end_line,
+                "requested_start_line": data.start_line,
+                "requested_end_line": data.end_line,
+                "requested_max_lines": data.max_lines,
+                "has_more": has_more,
+                "next_start_line": next_start_line,
                 "newline": snapshot.newline,
                 "encoding": snapshot.encoding,
                 "snapshot": snapshot_summary.as_dict(),
+                "file_location": read.location.as_dict(),
             },
         )
 
@@ -258,23 +317,174 @@ class WriteFileTool(RuntimeTool):
             )
         ]
 
+    async def approval_preview(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+        permission_requests: list[PermissionRequest],
+        config: AgentConfig,
+    ) -> ToolApprovalRequest | ToolResult | None:
+        data = WriteFileInput.model_validate(arguments)
+        path = context.normalize_path(data.path)
+        prepared = await asyncio.to_thread(
+            _prepare_text_change,
+            file_ops=RuntimeWorkspaceFileOps(self.runtime, context),
+            context=context,
+            path=path,
+            new_content=data.content,
+            expected_sha256=data.expected_sha256,
+        )
+        if isinstance(prepared, ToolResult):
+            return prepared
+        if prepared.unguarded_write and not config.allow_unguarded_write:
+            return _unguarded_write_denied_result(self.definition.name, prepared)
+        return _file_change_approval_request(
+            tool_name=self.definition.name,
+            arguments=arguments,
+            permission_requests=permission_requests,
+            prepared=prepared,
+            prefer_edit=prepared.existed_before,
+        )
+
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = (
             parsed if isinstance(parsed, WriteFileInput) else WriteFileInput.model_validate(parsed)
         )
         path = context.normalize_path(data.path)
-        result = await asyncio.to_thread(
-            self.runtime.write_text,
-            context.endpoint_id,
-            context.runtime_path(path),
-            data.content,
+        prepared = await asyncio.to_thread(
+            _prepare_text_change,
+            file_ops=RuntimeWorkspaceFileOps(self.runtime, context),
+            context=context,
+            path=path,
+            new_content=data.content,
+            expected_sha256=data.expected_sha256,
         )
-        size = int(result.get("size", len(data.content.encode("utf-8"))))
+        if isinstance(prepared, ToolResult):
+            return prepared
+        file_ops = RuntimeWorkspaceFileOps(self.runtime, context)
+        write = await asyncio.to_thread(file_ops.write_text, path, data.content)
+        written_summary = context.record_file_snapshot(prepared.after_snapshot)
         return ToolResult(
             ok=True,
-            summary=f"wrote {size} bytes to {path}",
+            summary=_write_file_summary(
+                path,
+                write.size,
+                prepared.diff.changed,
+                prepared.diff.added_lines,
+                prepared.diff.removed_lines,
+            ),
+            content=prepared.diff_summary,
             resource_ref=f"file:{path}",
-            metadata={"path": path, "size": size},
+            metadata={
+                "path": path,
+                "size": write.size,
+                **_prepared_change_metadata(prepared),
+                "parent_directory": write.parent_directory.path,
+                "parent_directory_ensured": write.parent_directory.ensured,
+                "parent_directory_result": write.parent_directory.as_dict(),
+                "file_location": write.location.as_dict(),
+                "snapshot": written_summary.as_dict(),
+            },
+        )
+
+
+class EditFileTool(RuntimeTool):
+    def __init__(self, runtime: HarnessRuntimeClient) -> None:
+        super().__init__(
+            runtime,
+            "edit_file",
+            "Edit a text file by replacing exact old_text with new_text.",
+            EditFileInput,
+        )
+
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]:
+        data = EditFileInput.model_validate(arguments)
+        path = context.normalize_path(data.path)
+        return [
+            PermissionRequest.for_target(
+                tool_name=self.definition.name,
+                capability="file.write",
+                target=context.default_terminal_target(),
+                operation="edit",
+                resource=path,
+            )
+        ]
+
+    async def approval_preview(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+        permission_requests: list[PermissionRequest],
+        config: AgentConfig,
+    ) -> ToolApprovalRequest | ToolResult | None:
+        data = EditFileInput.model_validate(arguments)
+        path = context.normalize_path(data.path)
+        prepared = await asyncio.to_thread(
+            _prepare_edit_change,
+            file_ops=RuntimeWorkspaceFileOps(self.runtime, context),
+            context=context,
+            path=path,
+            old_text=data.old_text,
+            new_text=data.new_text,
+            expected_sha256=data.expected_sha256,
+            replace_all=data.replace_all,
+        )
+        if isinstance(prepared, ToolResult):
+            return prepared
+        if prepared.unguarded_write and not config.allow_unguarded_write:
+            return _unguarded_write_denied_result(self.definition.name, prepared)
+        return _file_change_approval_request(
+            tool_name=self.definition.name,
+            arguments=arguments,
+            permission_requests=permission_requests,
+            prepared=prepared,
+            prefer_edit=False,
+        )
+
+    async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
+        data = parsed if isinstance(parsed, EditFileInput) else EditFileInput.model_validate(parsed)
+        path = context.normalize_path(data.path)
+        prepared = await asyncio.to_thread(
+            _prepare_edit_change,
+            file_ops=RuntimeWorkspaceFileOps(self.runtime, context),
+            context=context,
+            path=path,
+            old_text=data.old_text,
+            new_text=data.new_text,
+            expected_sha256=data.expected_sha256,
+            replace_all=data.replace_all,
+        )
+        if isinstance(prepared, ToolResult):
+            return prepared
+        file_ops = RuntimeWorkspaceFileOps(self.runtime, context)
+        write = await asyncio.to_thread(file_ops.write_text, path, prepared.content)
+        written_summary = context.record_file_snapshot(prepared.after_snapshot)
+        return ToolResult(
+            ok=True,
+            summary=_write_file_summary(
+                path,
+                write.size,
+                prepared.diff.changed,
+                prepared.diff.added_lines,
+                prepared.diff.removed_lines,
+            ),
+            content=prepared.diff_summary,
+            resource_ref=f"file:{path}",
+            metadata={
+                "path": path,
+                "size": write.size,
+                **_prepared_change_metadata(prepared),
+                "replace_all": data.replace_all,
+                "parent_directory": write.parent_directory.path,
+                "parent_directory_ensured": write.parent_directory.ensured,
+                "parent_directory_result": write.parent_directory.as_dict(),
+                "file_location": write.location.as_dict(),
+                "snapshot": written_summary.as_dict(),
+            },
         )
 
 
@@ -1704,6 +1914,7 @@ def build_runtime_tools(runtime: HarnessRuntimeClient) -> list[AgentTool]:
         ListFilesTool(runtime),
         ReadFileTool(runtime),
         WriteFileTool(runtime),
+        EditFileTool(runtime),
         RunCommandTool(runtime),
         ObserveTaskTool(runtime),
         CancelTaskTool(runtime),
@@ -1887,6 +2098,262 @@ def _append_sync_paths(lines: list[str], label: str, paths: list[str], max_paths
         lines.append(f"- {path}")
     if len(paths) > max_paths:
         lines.append(f"- ... {len(paths) - max_paths} more")
+
+
+def _read_file_summary(
+    path: str,
+    selected_count: int,
+    start_line: int | None,
+    end_line: int | None,
+) -> str:
+    if selected_count == 0:
+        return f"0 lines read from {path}"
+    if start_line == end_line:
+        return f"1 line read from {path} at line {start_line}"
+    return f"{selected_count} lines read from {path} lines {start_line}-{end_line}"
+
+
+def _write_file_summary(
+    path: str,
+    size: int,
+    changed: bool,
+    added_lines: int,
+    removed_lines: int,
+) -> str:
+    if not changed:
+        return f"wrote {size} bytes to {path}; no content changes"
+    return f"wrote {size} bytes to {path}; diff +{added_lines} -{removed_lines}"
+
+
+def _prepare_text_change(
+    *,
+    file_ops: WorkspaceFileOps,
+    context: WorkContext,
+    path: str,
+    new_content: str,
+    expected_sha256: str | None,
+) -> PreparedTextChange | ToolResult:
+    current_text, existed_before = _read_text_for_write(file_ops, path)
+    return _prepare_text_change_from_current(
+        context=context,
+        path=path,
+        current_text=current_text,
+        new_content=new_content,
+        expected_sha256=expected_sha256,
+        existed_before=existed_before,
+    )
+
+
+def _prepare_edit_change(
+    *,
+    file_ops: WorkspaceFileOps,
+    context: WorkContext,
+    path: str,
+    old_text: str,
+    new_text: str,
+    expected_sha256: str | None,
+    replace_all: bool,
+) -> PreparedTextChange | ToolResult:
+    current_text, existed_before = _read_text_for_write(file_ops, path)
+    if not existed_before:
+        return ToolResult(
+            ok=False,
+            summary=f"cannot edit missing file: {path}",
+            resource_ref=f"file:{path}",
+            error_code="EDIT_CONTEXT_NOT_FOUND",
+            recoverable=True,
+            metadata={"path": path, "recommended_action": "read_file"},
+        )
+    count = current_text.count(old_text)
+    if count == 0:
+        return ToolResult(
+            ok=False,
+            summary=f"edit context was not found in {path}; reread the file before editing",
+            resource_ref=f"file:{path}",
+            error_code="EDIT_CONTEXT_NOT_FOUND",
+            recoverable=True,
+            metadata={"path": path, "match_count": count, "recommended_action": "read_file"},
+        )
+    if count > 1 and not replace_all:
+        return ToolResult(
+            ok=False,
+            summary=(
+                f"edit context matched {count} locations in {path}; provide more context "
+                "or set replace_all=true"
+            ),
+            resource_ref=f"file:{path}",
+            error_code="EDIT_CONTEXT_AMBIGUOUS",
+            recoverable=True,
+            metadata={"path": path, "match_count": count},
+        )
+    replacement_count = count if replace_all else 1
+    new_content = current_text.replace(old_text, new_text, replacement_count)
+    return _prepare_text_change_from_current(
+        context=context,
+        path=path,
+        current_text=current_text,
+        new_content=new_content,
+        expected_sha256=expected_sha256,
+        existed_before=True,
+    )
+
+
+def _prepare_text_change_from_current(
+    *,
+    context: WorkContext,
+    path: str,
+    current_text: str,
+    new_content: str,
+    expected_sha256: str | None,
+    existed_before: bool,
+) -> PreparedTextChange | ToolResult:
+    before_snapshot = snapshot_text(path, current_text)
+    cached_snapshot = context.file_snapshot(path)
+    expected_source = "argument" if expected_sha256 else None
+    if expected_sha256 is None and cached_snapshot is not None:
+        expected_sha256 = cached_snapshot.sha256
+        expected_source = "recent_read_snapshot"
+    if expected_sha256 is not None and before_snapshot.sha256 != expected_sha256:
+        return ToolResult(
+            ok=False,
+            summary=f"file changed since it was read: {path}; reread the file before writing",
+            resource_ref=f"file:{path}",
+            error_code=ErrorCode.FILE_CHANGED.value,
+            recoverable=True,
+            metadata={
+                "path": path,
+                "expected_sha256": expected_sha256,
+                "actual_sha256": before_snapshot.sha256,
+                "expected_source": expected_source,
+                "existed_before": existed_before,
+                "recommended_action": "read_file",
+            },
+        )
+    after_snapshot = snapshot_text(path, new_content)
+    diff = make_unified_diff(path, before_snapshot, after_snapshot)
+    return PreparedTextChange(
+        path=path,
+        content=new_content,
+        before_snapshot=before_snapshot,
+        after_snapshot=after_snapshot,
+        diff=diff,
+        diff_summary=summarize_diff(diff),
+        expected_sha256=expected_sha256,
+        expected_source=expected_source,
+        existed_before=existed_before,
+    )
+
+
+def _prepared_change_metadata(prepared: PreparedTextChange) -> dict[str, Any]:
+    return {
+        "expected_sha256": prepared.expected_sha256,
+        "expected_source": prepared.expected_source,
+        "hash_guarded": prepared.hash_guarded,
+        "unguarded_write": prepared.unguarded_write,
+        "existed_before": prepared.existed_before,
+        "before_sha256": prepared.before_snapshot.sha256,
+        "after_sha256": prepared.after_snapshot.sha256,
+        "sha256": prepared.after_snapshot.sha256,
+        "line_count": prepared.after_snapshot.line_count,
+        "newline": prepared.after_snapshot.newline,
+        "encoding": prepared.after_snapshot.encoding,
+        "diff": {
+            "changed": prepared.diff.changed,
+            "added_lines": prepared.diff.added_lines,
+            "removed_lines": prepared.diff.removed_lines,
+            "unified": prepared.diff.unified,
+            "summary": prepared.diff_summary,
+        },
+    }
+
+
+def _unguarded_write_denied_result(tool_name: str, prepared: PreparedTextChange) -> ToolResult:
+    return ToolResult(
+        ok=False,
+        summary=(
+            f"unguarded write is disabled for {prepared.path}; read_file first or provide "
+            "expected_sha256"
+        ),
+        resource_ref=f"file:{prepared.path}",
+        error_code=ErrorCode.PERMISSION_DENIED.value,
+        recoverable=True,
+        metadata={
+            "tool_name": tool_name,
+            "path": prepared.path,
+            "unguarded_write": True,
+            "recommended_action": "read_file",
+        },
+    )
+
+
+def _file_change_approval_request(
+    *,
+    tool_name: str,
+    arguments: dict[str, Any],
+    permission_requests: list[PermissionRequest],
+    prepared: PreparedTextChange,
+    prefer_edit: bool,
+) -> ToolApprovalRequest:
+    risks: list[str] = []
+    if prepared.unguarded_write:
+        risks.append("This write has no expected_sha256 guard.")
+    if prefer_edit:
+        risks.append("This overwrites an existing file; prefer edit_file for small changes.")
+    if prepared.diff.added_lines + prepared.diff.removed_lines > 200:
+        risks.append("This is a large diff; review carefully before approving.")
+    if not risks:
+        risks.append("This operation will modify file contents.")
+    return ToolApprovalRequest(
+        tool_name=tool_name,
+        arguments=arguments,
+        decision=PermissionDecision.deny(
+            f"{tool_name} will modify {prepared.path}",
+            missing_capabilities=tuple(request.capability_key for request in permission_requests),
+            metadata={
+                "warning": _file_change_warning(prepared, prefer_edit=prefer_edit),
+                "risks": risks,
+            },
+        ),
+        permission_requests=permission_requests,
+        preview_kind="diff",
+        preview_title=f"Diff preview for {prepared.path}",
+        preview_body=prepared.diff_summary,
+    )
+
+
+def _file_change_warning(prepared: PreparedTextChange, *, prefer_edit: bool) -> str:
+    if prepared.unguarded_write:
+        return "This file write is not protected by an expected hash."
+    if prefer_edit:
+        return "This overwrites an existing file; edit_file is safer for targeted changes."
+    return "Review the diff before allowing this file change."
+
+
+def _read_text_for_write(
+    file_ops: WorkspaceFileOps,
+    path: str,
+) -> tuple[str, bool]:
+    try:
+        return file_ops.read_text(path).text, True
+    except Exception as exc:
+        if _looks_like_missing_file(exc):
+            return "", False
+        raise
+
+
+def _looks_like_missing_file(exc: Exception) -> bool:
+    if isinstance(exc, (FileNotFoundError, KeyError)):
+        return True
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "no such file",
+            "not found",
+            "cannot find the path",
+            "does not exist",
+        )
+    )
 
 
 def _resolve_task_id(task_ref: str | None, context: WorkContext) -> str:

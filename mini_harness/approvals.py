@@ -12,6 +12,9 @@ class ToolApprovalRequest:
     arguments: dict[str, Any]
     decision: PermissionDecision
     permission_requests: list[PermissionRequest]
+    preview_kind: str | None = None
+    preview_title: str | None = None
+    preview_body: str | None = None
 
     def lines(self) -> list[str]:
         lines = [
@@ -39,6 +42,11 @@ class ToolApprovalRequest:
             if request_warning:
                 detail += f" warning={request_warning}"
             lines.append(detail)
+        if self.preview_body:
+            title = self.preview_title or "Preview"
+            kind = f" ({self.preview_kind})" if self.preview_kind else ""
+            lines.append(f"{title}{kind}:")
+            lines.extend(f"  {line}" for line in self.preview_body.splitlines())
         return lines
 
 

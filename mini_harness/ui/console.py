@@ -227,6 +227,11 @@ def _tool_name_from_payload(payload: dict[str, Any]) -> str:
             return "run_command"
         if "line_count" in metadata:
             return "read_file"
+        if (
+            "replace_all" in metadata
+            and payload.get("resource_ref", "").startswith("file:")
+        ):
+            return "edit_file"
         if "size" in metadata and payload.get("resource_ref", "").startswith("file:"):
             return "write_file"
         if "exit_code" in metadata:
@@ -256,7 +261,7 @@ def _is_failed_task_observation(payload: dict[str, Any]) -> bool:
 def _tool_label(name: str, arguments: Any) -> str:
     if not isinstance(arguments, dict):
         return name
-    if name in {"read_file", "write_file", "list_files"}:
+    if name in {"read_file", "write_file", "edit_file", "list_files"}:
         path = arguments.get("path", ".")
         return f"{name} {path}"
     if name == "run_command":
@@ -279,7 +284,7 @@ def _tool_label(name: str, arguments: Any) -> str:
 def _result_label(name: str, summary: str, metadata: Any) -> str:
     if not isinstance(metadata, dict):
         return summary
-    if name == "write_file":
+    if name in {"write_file", "edit_file"}:
         return f"{summary} ({metadata.get('path', '')})"
     if name == "read_file":
         return f"{summary} ({metadata.get('path', '')})"
