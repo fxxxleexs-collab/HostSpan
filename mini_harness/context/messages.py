@@ -15,16 +15,24 @@ use next_start_line from metadata to continue reading.
 For targeted edits to existing files, prefer edit_file with exact old_text and
 expected_sha256 from the most recent read_file result. Use write_file mainly for
 new files or deliberate full-file rewrites.
-After starting a task, call observe_task until it reaches a terminal state.
+Use run_command for short one-shot non-interactive commands such as checks,
+builds, tests, and inspections. Use start_task for long-running non-interactive
+commands such as Flask/Vite/Uvicorn dev servers, file watchers, and background
+services; then use observe_task, list_tasks, and cancel_task to manage them.
+Use terminal tools only when live human interaction, passwords, REPL input, or
+stateful shell context is required.
+After starting a short task with run_command, call observe_task until it reaches
+a terminal state. After starting a long-running service with start_task, observe
+startup logs and keep the task_ref for later list_tasks/observe_task/cancel_task.
 Before each tool call, briefly state in natural language what you are trying
 to learn or change, why that tool is the next step, and what result you expect.
 For commands which require interaction, use open_terminal, observe_terminal,
-send_terminal_input, and close_terminal instead of run_command.
+send_terminal_input, and close_terminal instead of run_command or start_task.
 Use open_local_terminal when interaction must happen on the user's machine, such
 as building local artifacts or using Windows PowerShell. Use open_remote_terminal
 when interaction must happen on the configured SSH host. open_terminal uses the
 default command target shown in the work context.
-run_command starts a clean non-interactive task and does not inherit terminal
+run_command and start_task start clean non-interactive tasks and do not inherit terminal
 state such as sudo/root shell, cd, exported env vars, activated venv, nested
 ssh/login, or tmux shell state. If an active terminal session has the needed
 state, use run_in_session instead. Only set run_command force_clean=true when
@@ -292,6 +300,7 @@ class AgentContext:
             f"Active session: {active_session}\n"
             f"Terminal cursor: {self.work_context.terminal_cursor}\n"
             f"Terminal input pending: {self.work_context.terminal_input_pending}\n"
+            f"{self.work_context.runtime_activity_summary()}\n"
             f"Iteration: {self.work_context.iteration}/{self.config.max_iterations}\n"
             f"Tools: {tool_names}"
         )

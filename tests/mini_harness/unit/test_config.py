@@ -201,6 +201,7 @@ allow = ["file.read:local", "task.observe:*"]
 deny = ["file.write:*", "terminal.open:remote"]
 approve_sandbox_denials = false
 approve_terminal_open = true
+approve_root_escalation = false
 """,
         encoding="utf-8",
     )
@@ -211,6 +212,7 @@ approve_terminal_open = true
     assert config.permissions.deny == ["file.write:*", "terminal.open:remote"]
     assert config.permissions.approve_sandbox_denials is False
     assert config.permissions.approve_terminal_open is True
+    assert config.permissions.approve_root_escalation is False
 
 
 def test_ssh_runtime_env_and_cli_overrides(

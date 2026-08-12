@@ -70,6 +70,7 @@ deny = [
 ]
 approve_sandbox_denials = true
 approve_terminal_open = true
+approve_root_escalation = true
 ```
 
 Patterns can match exact capability keys such as `file.read:local`, target-wide keys such as `terminal.open:*`, or all capabilities with `*`. Deny rules win over allow rules.
@@ -84,7 +85,7 @@ Covered permission request families:
 - Shell commands which look like they create or overwrite files, such as `>`, `>>`, `tee`, `touch`, `mkdir`, `cp`, or `mv`, also request `file.write` for the target.
 - Sync tools request `sync.status` or `sync.push` with the remote target.
 
-In CLI `run` and `chat` sessions, a policy denial prompts the user for a one-shot `y/n` approval before the Runtime SDK call is attempted. If `approve_sandbox_denials` is enabled, recoverable sandbox denials such as absolute paths or blocked command patterns can also be approved once and retried with a sandbox override. If `approve_terminal_open` is enabled, opening a local or remote interactive terminal always asks for confirmation because later input can run arbitrary shell commands and may inherit session state such as cwd, env vars, login state, or root privileges.
+In CLI `run` and `chat` sessions, a policy denial prompts the user for a one-shot `y/n` approval before the Runtime SDK call is attempted. If `approve_sandbox_denials` is enabled, recoverable sandbox denials such as absolute paths or blocked command patterns can also be approved once and retried with a sandbox override. If `approve_root_escalation` is enabled, root shell escalation such as `sudo -i` gets a dedicated high-risk warning before approval; disable it to block those approvals completely. If `approve_terminal_open` is enabled, opening a local or remote interactive terminal always asks for confirmation because later input can run arbitrary shell commands and may inherit session state such as cwd, env vars, login state, or root privileges.
 
 If the user rejects the operation, or no approval handler is installed, Mini Harness returns a structured denial result and does not call the underlying Runtime SDK.
 

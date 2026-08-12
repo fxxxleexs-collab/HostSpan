@@ -39,12 +39,14 @@ class ToolRegistry:
         approval_handler: ApprovalHandler | None = None,
         approve_sandbox_denials: bool = True,
         approve_terminal_open: bool = False,
+        approve_root_escalation: bool = True,
     ) -> None:
         self.config = config or AgentConfig()
         self.permission_policy = permission_policy or AllowAllPermissionPolicy()
         self.approval_handler = approval_handler
         self.approve_sandbox_denials = approve_sandbox_denials
         self.approve_terminal_open = approve_terminal_open
+        self.approve_root_escalation = approve_root_escalation
         self._tools: dict[str, AgentTool] = {}
 
     def register(self, tool: AgentTool) -> None:
@@ -129,6 +131,7 @@ class ToolRegistry:
             if (
                 _is_sandbox_denial_result(result)
                 and self.approve_sandbox_denials
+                and (self.approve_root_escalation or not _is_root_escalation_result(result))
                 and self.approval_handler is not None
                 and not sandbox_overridden
             ):
@@ -185,6 +188,7 @@ class ToolRegistry:
         except MiniHarnessError as exc:
             if (
                 self.approve_sandbox_denials
+                and (self.approve_root_escalation or not _is_root_escalation_error(exc))
                 and self.approval_handler is not None
                 and _is_sandbox_error(exc)
             ):
@@ -284,6 +288,7 @@ def _mini_harness_error_result(
     approved_by_user: bool | None = None,
 ) -> ToolResult:
     metadata: dict[str, Any] = {}
+    metadata.update(exc.metadata)
     if approved_by_user is not None:
         metadata["approved_by_user"] = approved_by_user
     return ToolResult(
@@ -306,7 +311,10 @@ def _sandbox_approval_request_from_error(
         decision=PermissionDecision.deny(
             str(exc),
             missing_capabilities=("sandbox.override:any",),
-            metadata=_sandbox_warning_metadata(exc.code.value),
+            metadata=_sandbox_warning_metadata(
+                exc.code.value,
+                sandbox_reason=exc.metadata.get("sandbox_reason"),
+            ),
         ),
         permission_requests=[
             PermissionRequest.for_target(
@@ -332,7 +340,10 @@ def _sandbox_approval_request_from_result(
         decision=PermissionDecision.deny(
             result.summary,
             missing_capabilities=("sandbox.override:any",),
-            metadata=_sandbox_warning_metadata(result.error_code),
+            metadata=_sandbox_warning_metadata(
+                result.error_code,
+                sandbox_reason=result.metadata.get("sandbox_reason"),
+            ),
         ),
         permission_requests=permission_requests
         or [
@@ -375,7 +386,24 @@ def _terminal_open_approval_request(
     )
 
 
-def _sandbox_warning_metadata(error_code: str | None) -> dict[str, Any]:
+def _sandbox_warning_metadata(
+    error_code: str | None,
+    *,
+    sandbox_reason: object | None = None,
+) -> dict[str, Any]:
+    if sandbox_reason == "root_escalation":
+        return {
+            "warning": (
+                "This operation attempts to open or enter a root/elevated shell. "
+                "The elevated state can persist inside this terminal session."
+            ),
+            "risks": [
+                "Subsequent terminal commands in this session may run with root privileges.",
+                "On a remote target, this can modify system files, packages, users, services, or process state on the SSH host.",
+                "A root shell can bypass project workspace boundaries and ordinary file permission protections.",
+                "Only approve if you intend to grant temporary administrative control for this task, and close or exit the root shell when finished.",
+            ],
+        }
     if error_code == ErrorCode.PATH_OUTSIDE_PROJECT.value:
         warning = "This operation references a path outside the configured workspace."
     else:
@@ -394,8 +422,16 @@ def _is_sandbox_error(exc: MiniHarnessError) -> bool:
     return exc.code.value in _SANDBOX_APPROVAL_ERROR_CODES
 
 
+def _is_root_escalation_error(exc: MiniHarnessError) -> bool:
+    return exc.metadata.get("sandbox_reason") == "root_escalation"
+
+
 def _is_sandbox_denial_result(result: ToolResult) -> bool:
     return result.error_code in _SANDBOX_APPROVAL_ERROR_CODES
+
+
+def _is_root_escalation_result(result: ToolResult) -> bool:
+    return result.metadata.get("sandbox_reason") == "root_escalation"
 
 
 def tool_call_fingerprint(name: str, arguments: dict[str, Any]) -> str:

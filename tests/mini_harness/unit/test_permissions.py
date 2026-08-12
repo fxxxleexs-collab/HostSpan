@@ -347,6 +347,68 @@ async def test_permission_policy_can_approve_shell_file_write_in_session(fake_ru
 
 
 @pytest.mark.asyncio
+async def test_root_escalation_approval_uses_specific_warning(fake_runtime) -> None:
+    approval = FakeApprovalHandler(approved=True)
+    registry = _register_runtime_tools(
+        ToolRegistry(
+            permission_policy=CapabilitySetPermissionPolicy(),
+            approval_handler=approval,
+            approve_sandbox_denials=True,
+            approve_root_escalation=True,
+        ),
+        fake_runtime,
+    )
+    context = _remote_context()
+    context.active_session_id = "session_1"
+    context.mark_session_state(target="remote", os_name="linux", shell="bash")
+
+    result = await registry.execute(
+        "run_in_session",
+        {"command": "sudo -i", "wait_seconds": 0},
+        context,
+    )
+
+    assert result.ok
+    assert result.metadata["sandbox_override"] is True
+    assert approval.requests[0].decision.metadata["warning"].startswith(
+        "This operation attempts to open or enter a root/elevated shell"
+    )
+    assert any(
+        "Subsequent terminal commands in this session may run with root privileges" in risk
+        for risk in approval.requests[0].decision.metadata["risks"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_root_escalation_can_disable_approval_path(fake_runtime) -> None:
+    approval = FakeApprovalHandler(approved=True)
+    registry = _register_runtime_tools(
+        ToolRegistry(
+            permission_policy=CapabilitySetPermissionPolicy(),
+            approval_handler=approval,
+            approve_sandbox_denials=True,
+            approve_root_escalation=False,
+        ),
+        fake_runtime,
+    )
+    context = _remote_context()
+    context.active_session_id = "session_1"
+    context.mark_session_state(target="remote", os_name="linux", shell="bash")
+
+    result = await registry.execute(
+        "run_in_session",
+        {"command": "sudo -i", "wait_seconds": 0},
+        context,
+    )
+
+    assert not result.ok
+    assert result.error_code == "SANDBOX_DENIED"
+    assert result.metadata["sandbox_reason"] == "root_escalation"
+    assert approval.requests == []
+    assert "write_terminal" not in [name for name, _ in fake_runtime.requests]
+
+
+@pytest.mark.asyncio
 async def test_permission_policy_denies_sync_push_before_runtime_call(
     fake_runtime,
     tmp_path,

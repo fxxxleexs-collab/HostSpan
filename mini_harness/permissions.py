@@ -16,6 +16,7 @@ class PermissionsConfig(BaseModel):
     deny: list[str] = Field(default_factory=list)
     approve_sandbox_denials: bool = True
     approve_terminal_open: bool = True
+    approve_root_escalation: bool = True
 
     @field_validator("allow", "deny")
     @classmethod

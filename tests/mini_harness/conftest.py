@@ -32,6 +32,7 @@ class FakeHarnessRuntime:
         }
         self.requests: list[tuple[str, dict[str, Any]]] = []
         self.task_id = "task_1"
+        self.task_pid = 12345
         self.task_state = "SUCCEEDED"
         self.task_exit_code = 0
         self.logs = [{"chunk": ".\n1 passed\n"}]
@@ -120,11 +121,16 @@ class FakeHarnessRuntime:
                 },
             )
         )
-        return {"task_id": self.task_id, "state": "RUNNING"}
+        return {"task_id": self.task_id, "state": "RUNNING", "pid": self.task_pid, "persistent": persistent}
 
     def get_task(self, task_id: str) -> dict[str, Any]:
         self.requests.append(("get_task", {"task_id": task_id}))
-        return {"task_id": task_id, "state": self.task_state, "exit_code": self.task_exit_code}
+        return {
+            "task_id": task_id,
+            "state": self.task_state,
+            "exit_code": self.task_exit_code,
+            "pid": self.task_pid,
+        }
 
     def task_logs(self, task_id: str) -> list[dict[str, Any]]:
         self.requests.append(("task_logs", {"task_id": task_id}))
@@ -132,7 +138,7 @@ class FakeHarnessRuntime:
 
     def cancel_task(self, task_id: str) -> dict[str, Any]:
         self.requests.append(("cancel_task", {"task_id": task_id}))
-        return {"task_id": task_id, "state": "CANCELLED"}
+        return {"task_id": task_id, "state": "CANCELLED", "pid": self.task_pid}
 
     def run_command(
         self,
@@ -185,7 +191,7 @@ class FakeHarnessRuntime:
                 self.task_state = "FAILED"
                 self.task_exit_code = 7
                 self.logs = [{"chunk": "ENVRT_TOOL_MISSING tmux\n"}]
-        return {"task_id": self.task_id, "state": "RUNNING"}
+        return {"task_id": self.task_id, "state": "RUNNING", "pid": self.task_pid}
 
     def observe_task(
         self,
@@ -211,6 +217,7 @@ class FakeHarnessRuntime:
                 "task_id": task_id,
                 "state": self.task_state,
                 "exit_code": self.task_exit_code,
+                "pid": self.task_pid,
             },
             "text": text[cursor:],
             "cursor": len(text),

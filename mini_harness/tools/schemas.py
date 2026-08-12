@@ -85,6 +85,26 @@ class RunCommandInput(BaseModel):
     )
 
 
+class StartTaskInput(BaseModel):
+    argv: list[str] = Field(
+        min_length=1,
+        description=(
+            "Command to start as a managed long-running, non-interactive task. "
+            "Use this for dev servers, watchers, and services; use terminal tools "
+            "only when human interaction or shell state is required."
+        ),
+        examples=[["python", "app.py"], ["npm", "run", "dev"], ["uvicorn", "app:app"]],
+    )
+    cwd: str = "."
+    wait_seconds: float = Field(
+        default=1.0,
+        ge=0,
+        le=30,
+        description="Initial time to wait for startup logs after starting the task.",
+    )
+    max_output_chars: int = Field(default=12_000, ge=1, le=200_000)
+
+
 class ObserveTaskInput(BaseModel):
     task_ref: str | None = None
     wait_seconds: float = Field(default=0.5, ge=0, le=30)
@@ -93,6 +113,15 @@ class ObserveTaskInput(BaseModel):
 
 class CancelTaskInput(BaseModel):
     task_ref: str | None = None
+
+
+class ListTasksInput(BaseModel):
+    scope: Literal["conversation"] = Field(
+        default="conversation",
+        description="Currently lists tasks started or observed in this Mini Harness conversation.",
+    )
+    state_filter: Literal["all", "active", "terminal"] = "all"
+    max_tasks: int = Field(default=10, ge=1, le=100)
 
 
 class EnsureRemoteToolInput(BaseModel):
