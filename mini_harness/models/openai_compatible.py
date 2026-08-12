@@ -107,7 +107,8 @@ def _tool_payload(tool: ToolDefinition) -> dict[str, Any]:
 
 def _convert_response(payload: dict[str, Any]) -> AgentDecision:
     try:
-        message = payload["choices"][0]["message"]
+        choice = payload["choices"][0]
+        message = choice["message"]
     except (KeyError, IndexError, TypeError) as exc:
         raise MiniHarnessError(
             ErrorCode.MODEL_INVALID_RESPONSE,
@@ -139,6 +140,12 @@ def _convert_response(payload: dict[str, Any]) -> AgentDecision:
             ),
         )
     content = str(message.get("content") or "").strip()
+    if not content and choice.get("finish_reason") == "stop":
+        return FinalDecision(
+            type="final",
+            summary="Model stopped without a final message.",
+            raw_output=json.dumps(choice, ensure_ascii=False, indent=2),
+        )
     return parse_final_decision(content)
 
 

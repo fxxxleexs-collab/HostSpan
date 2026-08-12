@@ -100,7 +100,12 @@ class AgentLoop:
                 )
                 if isinstance(decision, FinalDecision):
                     self._transition(AgentState.PROCESSING_RESULT)
-                    guard = validate_final(decision, work_context, user_task)
+                    guard = validate_final(
+                        decision,
+                        work_context,
+                        user_task,
+                        block_failed_command=self.config.block_final_on_failed_command,
+                    )
                     if guard is not None:
                         context.add_tool_result("final_guard", {}, guard)
                         self.tool_error_count += 1
@@ -110,6 +115,13 @@ class AgentLoop:
                             guard.summary,
                             guard.model_dump(exclude_none=True),
                         )
+                        if self._consecutive_tool_errors >= self.config.max_consecutive_tool_errors:
+                            raise MiniHarnessError(
+                                ErrorCode.CONSECUTIVE_ERROR_LIMIT,
+                                "consecutive finalization guard limit reached",
+                                recoverable=False,
+                                metadata=guard.metadata,
+                            )
                         continue
                     context.add_final_decision(decision)
                     self._transition(AgentState.COMPLETED)

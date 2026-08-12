@@ -165,6 +165,8 @@ def _convert_response(payload: dict[str, Any]) -> AgentDecision:
         if block.get("type") == "text":
             text_parts.append(str(block.get("text") or ""))
     text = "\n".join(part for part in text_parts if part).strip()
+    if not text and payload.get("stop_reason") == "end_turn":
+        return parse_final_decision("Model stopped without a final message.")
     return parse_final_decision(text)
 
 

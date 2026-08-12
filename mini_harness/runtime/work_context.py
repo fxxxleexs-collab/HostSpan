@@ -687,15 +687,29 @@ def default_local_shell() -> str:
 
 
 _SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?i)\b(password|passwd|token|api[_-]?key|secret|authorization)\s*[:=]\s*([^\s;&|]+)"
+    r"(?i)\b(password|passwd|token|api[_-]?key|secret|[A-Z0-9_]*api[_-]?key)\s*[:=]\s*([^\s;&|]+)"
 )
-_LONG_SECRET_RE = re.compile(r"\b[A-Za-z0-9_./+=-]{32,}\b")
+_AUTH_BEARER_RE = re.compile(r"(?i)\b(authorization\s*:\s*bearer)\s+([^\s;&|]+)")
+_KNOWN_TOKEN_RE = re.compile(
+    r"\b("
+    r"sk-[A-Za-z0-9_-]{16,}|"
+    r"sk-ant-[A-Za-z0-9_-]{16,}|"
+    r"github_pat_[A-Za-z0-9_]{16,}|"
+    r"gh[pousr]_[A-Za-z0-9_]{16,}"
+    r")\b"
+)
+_PEM_PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+    re.DOTALL,
+)
 
 
 def _compact_session_text(text: str, *, limit: int) -> str:
     value = text.replace("\r", "\n")
     value = _SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}=[REDACTED]", value)
-    value = _LONG_SECRET_RE.sub("[REDACTED]", value)
+    value = _AUTH_BEARER_RE.sub(lambda match: f"{match.group(1)} [REDACTED]", value)
+    value = _KNOWN_TOKEN_RE.sub("[REDACTED]", value)
+    value = _PEM_PRIVATE_KEY_RE.sub("[REDACTED_PRIVATE_KEY]", value)
     value = " ".join(value.split())
     if len(value) <= limit:
         return value

@@ -105,6 +105,36 @@ async def test_openai_provider_accepts_plain_text_final_output() -> None:
 
 
 @pytest.mark.asyncio
+async def test_openai_provider_accepts_empty_stop_as_final() -> None:
+    provider = OpenAICompatibleModelProvider(
+        ModelConfig(
+            provider="openai",
+            model="test-model",
+            api_key="test-key",
+            base_url="https://api.openai.test/v1",
+        ),
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {"content": ""},
+                        }
+                    ]
+                },
+            )
+        ),
+    )
+
+    decision = await provider.decide([ModelMessage(role="user", content="finish")], [])
+
+    assert isinstance(decision, FinalDecision)
+    assert decision.summary == "Model stopped without a final message."
+
+
+@pytest.mark.asyncio
 async def test_openai_provider_preserves_internal_model_errors() -> None:
     provider = OpenAICompatibleModelProvider(
         ModelConfig(

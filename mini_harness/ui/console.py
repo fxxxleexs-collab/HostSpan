@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
@@ -65,7 +66,7 @@ class RichEventRenderer:
     def render(self, event: AgentEvent) -> None:
         if event.event_type == AgentEventType.STATE_CHANGED:
             if self.verbose:
-                self.console.print(f"[dim][STATE][/dim] {event.summary}")
+                self.console.print(f"[dim][STATE][/dim] {_escape(event.summary)}")
             return
         if event.event_type == AgentEventType.MODEL_REQUEST_STARTED:
             message_count = event.payload.get("message_count")
@@ -77,13 +78,13 @@ class RichEventRenderer:
             )
             return
         if event.event_type == AgentEventType.CONTEXT_TRUNCATED:
-            self.console.print(f"[yellow][CONTEXT][/yellow] {event.summary}")
+            self.console.print(f"[yellow][CONTEXT][/yellow] {_escape(event.summary)}")
             return
         if event.event_type == AgentEventType.MODEL_REQUEST_COMPLETED:
             self._render_model_decision(event)
             return
         if event.event_type == AgentEventType.TOOL_SELECTED:
-            self.console.print(f"[cyan][THINK][/cyan] {event.summary}")
+            self.console.print(f"[cyan][THINK][/cyan] {_escape(event.summary)}")
             return
         if event.event_type == AgentEventType.TOOL_STARTED:
             self._render_tool_started(event)
@@ -109,10 +110,10 @@ class RichEventRenderer:
                 )
             return
         if event.event_type == AgentEventType.TASK_COMPLETED:
-            self.console.print(f"[green][TASK][/green] {event.summary}")
+            self.console.print(f"[green][TASK][/green] {_escape(event.summary)}")
             return
         if event.event_type == AgentEventType.TASK_STATUS_CHANGED:
-            self.console.print(f"[yellow][TASK][/yellow] {event.summary}")
+            self.console.print(f"[yellow][TASK][/yellow] {_escape(event.summary)}")
             return
         if event.event_type in {AgentEventType.AGENT_COMPLETED, AgentEventType.AGENT_FAILED}:
             style = "green" if event.event_type == AgentEventType.AGENT_COMPLETED else "red"
@@ -121,12 +122,12 @@ class RichEventRenderer:
             )
             return
         if self.verbose:
-            self.console.print(f"[dim]{event.event_type.value}[/dim] {event.summary}")
+            self.console.print(f"[dim]{event.event_type.value}[/dim] {_escape(event.summary)}")
 
     def _render_model_decision(self, event: AgentEvent) -> None:
         decision = event.payload.get("decision")
         if not isinstance(decision, dict):
-            self.console.print(f"[cyan][MODEL][/cyan] {event.summary}")
+            self.console.print(f"[cyan][MODEL][/cyan] {_escape(event.summary)}")
             return
         if decision.get("type") == "tool":
             tool_name = str(decision.get("tool_name", ""))
@@ -169,7 +170,7 @@ class RichEventRenderer:
         name = str(event.payload.get("tool_name", ""))
         arguments = event.payload.get("arguments", {})
         label = _tool_label(name, arguments)
-        self.console.print(f"[blue][TOOL][/blue] {label}")
+        self.console.print(f"[blue][TOOL][/blue] {_escape(label)}")
         if self.verbose and arguments:
             self.console.print(Syntax(_json_text(arguments), "json", word_wrap=True))
 
@@ -184,7 +185,7 @@ class RichEventRenderer:
         state = event.payload.get("state")
         cursor = event.payload.get("cursor")
         self.console.print(
-            f"[{style}][{prefix}][/{style}] {_result_label(name, summary, metadata)}"
+            f"[{style}][{prefix}][/{style}] {_escape(_result_label(name, summary, metadata))}"
         )
         details = _result_details(name, resource_ref, state, cursor, metadata)
         if details:
@@ -223,6 +224,8 @@ class RichEventRenderer:
 def _tool_name_from_payload(payload: dict[str, Any]) -> str:
     metadata = payload.get("metadata", {})
     if isinstance(metadata, dict):
+        if metadata.get("guard") == "final":
+            return "final_guard"
         if "argv" in metadata:
             return "run_command"
         if "line_count" in metadata:
@@ -295,6 +298,9 @@ def _result_label(name: str, summary: str, metadata: Any) -> str:
     if name == "observe_task":
         exit_code = metadata.get("exit_code")
         return summary if exit_code is None else f"{summary} exit={exit_code}"
+    if name == "final_guard":
+        reason = metadata.get("reason")
+        return summary if not reason else f"{summary} reason={reason}"
     if name == "open_terminal" and metadata.get("fallback_from"):
         return f"{summary} fallback_error={metadata.get('fallback_error')}"
     return summary
@@ -326,6 +332,16 @@ def _result_details(
                     rows.append((key, str(metadata[key])))
         if name == "ensure_remote_tool":
             for key in ("tool", "present", "installed", "missing", "recommended_action"):
+                if metadata.get(key) is not None:
+                    rows.append((key, str(metadata[key])))
+        if name == "final_guard":
+            for key in (
+                "attempted_final_summary",
+                "active_task",
+                "active_session",
+                "terminal_input_pending",
+                "last_command_exit_code",
+            ):
                 if metadata.get(key) is not None:
                     rows.append((key, str(metadata[key])))
     if not rows:
@@ -371,3 +387,7 @@ def _terminal_input_display(data: str, run_directly: bool = False) -> str:
         normalized += "\n"
     value = normalized.replace("\r\n", "<ENTER>").replace("\n", "<ENTER>").replace("\r", "<CR>")
     return _clip(value, 80)
+
+
+def _escape(value: object) -> str:
+    return escape(str(value))

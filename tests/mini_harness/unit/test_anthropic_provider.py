@@ -151,6 +151,35 @@ async def test_anthropic_provider_accepts_plain_text_final_output() -> None:
 
 
 @pytest.mark.asyncio
+async def test_anthropic_provider_accepts_empty_end_turn_as_final() -> None:
+    provider = AnthropicModelProvider(
+        ModelConfig(
+            provider="anthropic",
+            model="claude-test",
+            api_key="secret",
+            base_url="https://anthropic.example",
+        ),
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "stop_reason": "end_turn",
+                    "content": [],
+                },
+            )
+        ),
+    )
+
+    decision = await provider.decide(
+        [ModelMessage(role="user", content="finish")],
+        [],
+    )
+
+    assert isinstance(decision, FinalDecision)
+    assert decision.summary == "Model stopped without a final message."
+
+
+@pytest.mark.asyncio
 async def test_anthropic_provider_preserves_internal_model_errors() -> None:
     provider = AnthropicModelProvider(
         ModelConfig(
