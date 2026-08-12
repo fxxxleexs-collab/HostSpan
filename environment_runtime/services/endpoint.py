@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from environment_runtime.core.capabilities import Capability
 from environment_runtime.core.errors import NotFoundError, ValidationError
 from environment_runtime.core.events import RuntimeEvent
@@ -37,19 +39,27 @@ class EndpointService:
         username: str,
         known_hosts_file: str,
         port: int = 22,
+        auth_method: Literal["auto", "agent", "key", "password"] = "auto",
         identity_file: str | None = None,
+        password_secret_ref: str | None = None,
         use_ssh_agent: bool = True,
         proxy_jump: str | None = None,
-        connect_timeout: float = 15.0,
+        connect_timeout: float = 300.0,
         keepalive_interval: float = 20.0,
     ) -> Endpoint:
-        if identity_file is None and not use_ssh_agent:
-            raise ValidationError("identity_file is required when use_ssh_agent is false")
+        _validate_ssh_auth(
+            auth_method=auth_method,
+            identity_file=identity_file,
+            password_secret_ref=password_secret_ref,
+            use_ssh_agent=use_ssh_agent,
+        )
         config = SSHEndpointConfig(
             hostname=hostname,
             port=port,
             username=username,
+            auth_method=auth_method,
             identity_file=identity_file,
+            password_secret_ref=password_secret_ref,
             use_ssh_agent=use_ssh_agent,
             known_hosts_file=known_hosts_file,
             proxy_jump=proxy_jump,
@@ -95,3 +105,27 @@ class EndpointService:
         )
         await self.context.event_store.append(event)
         await self.context.event_bus.publish(event)
+
+
+def _validate_ssh_auth(
+    *,
+    auth_method: Literal["auto", "agent", "key", "password"],
+    identity_file: str | None,
+    password_secret_ref: str | None,
+    use_ssh_agent: bool,
+) -> None:
+    if auth_method == "key" and not identity_file:
+        raise ValidationError("identity_file is required when auth_method is key")
+    if auth_method == "password" and not password_secret_ref:
+        raise ValidationError("password_secret_ref is required when auth_method is password")
+    if auth_method == "agent" and not use_ssh_agent:
+        raise ValidationError("use_ssh_agent must be true when auth_method is agent")
+    if (
+        auth_method == "auto"
+        and identity_file is None
+        and not use_ssh_agent
+        and not password_secret_ref
+    ):
+        raise ValidationError(
+            "identity_file, password_secret_ref, or use_ssh_agent is required for SSH authentication"
+        )

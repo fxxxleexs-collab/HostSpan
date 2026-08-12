@@ -74,7 +74,7 @@ class EditFileInput(BaseModel):
 class RunCommandInput(BaseModel):
     argv: list[str] = Field(min_length=1)
     cwd: str = "."
-    timeout_seconds: int | None = Field(default=120, ge=1, le=3_600)
+    timeout_seconds: int | None = Field(default=300, ge=1, le=3_600)
     force_clean: bool = Field(
         default=False,
         description=(
@@ -98,7 +98,7 @@ class CancelTaskInput(BaseModel):
 class EnsureRemoteToolInput(BaseModel):
     tool: Literal["tmux"] = "tmux"
     install: bool = False
-    wait_seconds: float = Field(default=180.0, ge=1, le=900)
+    wait_seconds: float = Field(default=300.0, ge=1, le=900)
     max_output_chars: int = Field(default=12_000, ge=1, le=200_000)
 
 
@@ -110,6 +110,17 @@ class SyncStatusInput(BaseModel):
 class SyncPushInput(BaseModel):
     workspace_id: str = Field(default="default", min_length=1, max_length=120)
     max_paths: int = Field(default=50, ge=1, le=500)
+
+
+class RequestSSHConnectionInput(BaseModel):
+    reason: str = Field(
+        default="remote runtime is needed",
+        max_length=500,
+        description=(
+            "Brief reason why an SSH runtime is needed. Do not include passwords, "
+            "tokens, or private key contents."
+        ),
+    )
 
 
 class OpenTerminalInput(BaseModel):
@@ -188,7 +199,7 @@ class ObserveTerminalInput(BaseModel):
     wait_seconds: float | None = Field(
         default=None,
         ge=0,
-        le=120,
+        le=300,
         description=(
             "Maximum seconds to wait for new terminal output. Leave unset for the default "
             "short observe, or set to expected command duration plus a small buffer."

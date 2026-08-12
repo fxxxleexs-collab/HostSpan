@@ -50,8 +50,31 @@ class FakeHarnessRuntime:
             "target_id": "target_1",
         }
 
-    def ensure_ssh(self, name: str, ssh: SSHRuntimeConfig) -> dict[str, Any]:
-        self.requests.append(("ensure_ssh", {"name": name, "hostname": ssh.hostname}))
+    def put_secret(self, value: str, purpose: str = "runtime") -> str:
+        self.requests.append(("put_secret", {"purpose": purpose, "has_value": bool(value)}))
+        return "secret:test"
+
+    def delete_secret(self, secret_ref: str) -> bool:
+        self.requests.append(("delete_secret", {"secret_ref": secret_ref}))
+        return True
+
+    def ensure_ssh(
+        self,
+        name: str,
+        ssh: SSHRuntimeConfig,
+        password_secret_ref: str | None = None,
+    ) -> dict[str, Any]:
+        self.requests.append(
+            (
+                "ensure_ssh",
+                {
+                    "name": name,
+                    "hostname": ssh.hostname,
+                    "auth_method": ssh.auth_method,
+                    "has_password_secret_ref": password_secret_ref is not None,
+                },
+            )
+        )
         return {
             "endpoint": {"endpoint_id": "endpoint_ssh"},
             "environment": {"environment_id": "env_ssh"},

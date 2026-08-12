@@ -107,33 +107,33 @@ class AgentController:
                 target_id=target_id,
                 project_root=project_path,
                 runtime_mode=self.runtime_config.mode,
+                runtime_name=self.runtime_config.name,
                 remote_root=self.runtime_config.ssh.remote_root,
+                remote_hostname=self.runtime_config.ssh.hostname,
+                remote_username=self.runtime_config.ssh.username,
+                remote_port=self.runtime_config.ssh.port,
+                remote_auth_method=self.runtime_config.ssh.auth_method,
                 sandbox_config=self.sandbox_config,
                 sync_config=self.sync_config,
                 approval_handler=self.approval_handler,
             )
         if self.runtime_config.mode == "ssh":
             local_bundle = self.runtime_client.ensure_local("mini-harness-local", project_path)
-            bundle = self.runtime_client.ensure_ssh(
-                self.runtime_config.name,
-                self.runtime_config.ssh,
-            )
-            endpoint = bundle["endpoint"]
-            environment = bundle["environment"]
-            remote_root = self.runtime_config.ssh.remote_root
-            self.runtime_client.ensure_dir(str(endpoint["endpoint_id"]), remote_root)
             return WorkContext(
-                endpoint_id=str(endpoint["endpoint_id"]),
-                environment_id=str(environment["environment_id"]),
-                target_id=str(bundle["target_id"]),
+                endpoint_id=str(local_bundle["endpoint"]["endpoint_id"]),
+                environment_id=str(local_bundle["environment"]["environment_id"]),
+                target_id=str(local_bundle["target_id"]),
                 project_root=project_path,
-                runtime_mode="ssh",
-                remote_root=remote_root,
+                runtime_mode="local",
+                runtime_name=self.runtime_config.name,
+                remote_root=self.runtime_config.ssh.remote_root,
+                remote_hostname=self.runtime_config.ssh.hostname,
+                remote_username=self.runtime_config.ssh.username,
+                remote_port=self.runtime_config.ssh.port,
+                remote_auth_method=self.runtime_config.ssh.auth_method,
                 local_endpoint_id=str(local_bundle["endpoint"]["endpoint_id"]),
                 local_environment_id=str(local_bundle["environment"]["environment_id"]),
                 local_target_id=str(local_bundle["target_id"]),
-                remote_os="linux",
-                remote_shell="bash",
                 sandbox_config=self.sandbox_config,
                 sync_config=self.sync_config,
                 approval_handler=self.approval_handler,
@@ -144,10 +144,61 @@ class AgentController:
             environment_id=str(bundle["environment"]["environment_id"]),
             target_id=str(bundle["target_id"]),
             project_root=project_path,
+            runtime_name=self.runtime_config.name,
+            remote_hostname=self.runtime_config.ssh.hostname,
+            remote_username=self.runtime_config.ssh.username,
+            remote_port=self.runtime_config.ssh.port,
+            remote_auth_method=self.runtime_config.ssh.auth_method,
             sandbox_config=self.sandbox_config,
             sync_config=self.sync_config,
             approval_handler=self.approval_handler,
         )
+
+    async def ensure_remote_runtime(self, work_context: WorkContext) -> None:
+        if self.runtime_config.mode != "ssh" or work_context.runtime_mode == "ssh":
+            return
+        password_secret_ref = await self._prepare_ssh_password_secret()
+        try:
+            bundle = self.runtime_client.ensure_ssh(
+                self.runtime_config.name,
+                self.runtime_config.ssh,
+                password_secret_ref=password_secret_ref,
+            )
+        except Exception:
+            if password_secret_ref is not None:
+                self.runtime_client.delete_secret(password_secret_ref)
+            raise
+        endpoint = bundle["endpoint"]
+        environment = bundle["environment"]
+        remote_root = self.runtime_config.ssh.remote_root
+        self.runtime_client.ensure_dir(str(endpoint["endpoint_id"]), remote_root)
+        work_context.endpoint_id = str(endpoint["endpoint_id"])
+        work_context.environment_id = str(environment["environment_id"])
+        work_context.target_id = str(bundle["target_id"])
+        work_context.runtime_mode = "ssh"
+        work_context.remote_root = remote_root
+        work_context.remote_hostname = self.runtime_config.ssh.hostname
+        work_context.remote_username = self.runtime_config.ssh.username
+        work_context.remote_port = self.runtime_config.ssh.port
+        work_context.remote_auth_method = self.runtime_config.ssh.auth_method
+        work_context.remote_os = "linux"
+        work_context.remote_shell = "bash"
+        work_context.refresh_workspace_policy()
+
+    async def _prepare_ssh_password_secret(self) -> str | None:
+        if self.runtime_config.ssh.auth_method != "password":
+            return None
+        if self.approval_handler is None:
+            raise ValueError("ssh password auth requires interactive secret input")
+        prompt_secret = getattr(self.approval_handler, "prompt_secret", None)
+        if prompt_secret is None:
+            raise ValueError("ssh password auth requires interactive secret input")
+        password = await prompt_secret(
+            f"SSH password for {self.runtime_config.ssh.username}@{self.runtime_config.ssh.hostname}"
+        )
+        if not password:
+            raise ValueError("ssh password auth was cancelled")
+        return self.runtime_client.put_secret(password, purpose="ssh-password")
 
     def build_tool_registry(self) -> ToolRegistry:
         registry = ToolRegistry(
@@ -169,6 +220,7 @@ class AgentSession:
         self.context = AgentContext(controller.config, work_context)
 
     async def run_turn(self, task: str) -> AgentRunResult:
+        await self.controller.ensure_remote_runtime(self.work_context)
         registry = self.controller.build_tool_registry()
         loop = AgentLoop(
             model=self.controller.model_provider,

@@ -6,7 +6,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from environment_runtime.broker import BrokerAddress
 from environment_runtime.config import RuntimeSettings
@@ -38,6 +38,7 @@ class AgentRuntimeClient:
         self.transport = transport
         self.policy = policy or RuntimePolicy()
         self.broker = BrokerNamespace(transport)
+        self.secrets = SecretNamespace(transport)
         self.endpoints = EndpointNamespace(transport)
         self.environments = EnvironmentNamespace(transport)
         self.workspaces = WorkspaceNamespace(transport)
@@ -118,6 +119,19 @@ class BrokerNamespace:
         yield from self._transport.stream("event.subscribe", params)
 
 
+class SecretNamespace:
+    def __init__(self, transport: RuntimeTransport) -> None:
+        self._transport = transport
+
+    def put(self, value: str, purpose: str = "runtime") -> str:
+        result = self._transport.request("secret.put", {"value": value, "purpose": purpose})
+        return str(result["secret_ref"])
+
+    def delete(self, secret_ref: str) -> bool:
+        result = self._transport.request("secret.delete", {"secret_ref": secret_ref})
+        return bool(result["deleted"])
+
+
 class EndpointNamespace:
     def __init__(self, transport: RuntimeTransport) -> None:
         self._transport = transport
@@ -132,10 +146,12 @@ class EndpointNamespace:
         username: str,
         known_hosts_file: str | Path,
         port: int = 22,
+        auth_method: Literal["auto", "agent", "key", "password"] = "auto",
         identity_file: str | Path | None = None,
+        password_secret_ref: str | None = None,
         use_ssh_agent: bool = True,
         proxy_jump: str | None = None,
-        connect_timeout: float = 15.0,
+        connect_timeout: float = 300.0,
         keepalive_interval: float = 20.0,
     ) -> dict[str, Any]:
         params = {
@@ -144,7 +160,9 @@ class EndpointNamespace:
             "username": username,
             "known_hosts_file": str(known_hosts_file),
             "port": port,
+            "auth_method": auth_method,
             "identity_file": str(identity_file) if identity_file is not None else None,
+            "password_secret_ref": password_secret_ref,
             "use_ssh_agent": use_ssh_agent,
             "proxy_jump": proxy_jump,
             "connect_timeout": connect_timeout,
@@ -194,10 +212,12 @@ class EnvironmentNamespace:
         username: str,
         known_hosts_file: str | Path,
         port: int = 22,
+        auth_method: Literal["auto", "agent", "key", "password"] = "auto",
         identity_file: str | Path | None = None,
+        password_secret_ref: str | None = None,
         use_ssh_agent: bool = True,
         proxy_jump: str | None = None,
-        connect_timeout: float = 15.0,
+        connect_timeout: float = 300.0,
         keepalive_interval: float = 20.0,
     ) -> dict[str, Any]:
         return self._transport.request(
@@ -208,7 +228,9 @@ class EnvironmentNamespace:
                 "username": username,
                 "known_hosts_file": str(known_hosts_file),
                 "port": port,
+                "auth_method": auth_method,
                 "identity_file": str(identity_file) if identity_file is not None else None,
+                "password_secret_ref": password_secret_ref,
                 "use_ssh_agent": use_ssh_agent,
                 "proxy_jump": proxy_jump,
                 "connect_timeout": connect_timeout,

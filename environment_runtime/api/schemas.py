@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -14,10 +16,12 @@ class CreateSSHEndpointRequest(BaseModel):
     username: str
     known_hosts_file: str
     port: int = 22
+    auth_method: Literal["auto", "agent", "key", "password"] = "auto"
     identity_file: str | None = None
+    password_secret_ref: str | None = None
     use_ssh_agent: bool = True
     proxy_jump: str | None = None
-    connect_timeout: float = 15.0
+    connect_timeout: float = 300.0
     keepalive_interval: float = 20.0
 
 

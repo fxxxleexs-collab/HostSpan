@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -29,11 +30,13 @@ class SSHEndpointConfig(BaseModel):
     hostname: str
     port: int = 22
     username: str
+    auth_method: Literal["auto", "agent", "key", "password"] = "auto"
     identity_file: str | None = None
+    password_secret_ref: str | None = None
     use_ssh_agent: bool = True
     known_hosts_file: str
     proxy_jump: str | None = None
-    connect_timeout: float = 15.0
+    connect_timeout: float = 300.0
     keepalive_interval: float = 20.0
 
     @field_validator("hostname", "username", "known_hosts_file")

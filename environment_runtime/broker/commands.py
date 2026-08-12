@@ -33,7 +33,9 @@ from environment_runtime.broker.schemas import (
     FileStatParams,
     FileWriteBytesParams,
     FileWriteTextParams,
+    PutSecretParams,
     ResizeSessionParams,
+    SecretRefParams,
     SessionFramesParams,
     SessionIdParams,
     SessionTailParams,
@@ -60,6 +62,8 @@ CANONICAL_COMMANDS: dict[str, dict[str, Any]] = {
     "broker.status": {"group": "broker", "params_schema": "EmptyParams"},
     "broker.commands": {"group": "broker", "params_schema": "EmptyParams"},
     "broker.shutdown": {"group": "broker", "params_schema": "EmptyParams"},
+    "secret.put": {"group": "broker", "params_schema": "PutSecretParams"},
+    "secret.delete": {"group": "broker", "params_schema": "SecretRefParams"},
     "event.subscribe": {
         "group": "broker",
         "params_schema": "EventSubscribeParams",
@@ -134,6 +138,8 @@ class RuntimeCommandHandler:
         if method == "broker.commands":
             parse_params(EmptyParams, params)
             return self._commands()
+        if method.startswith("secret."):
+            return await self._secret(method, params)
         if method.startswith("endpoint."):
             return await self._endpoint(method, params)
         if method.startswith("env."):
@@ -175,7 +181,9 @@ class RuntimeCommandHandler:
                     username=data.username,
                     known_hosts_file=data.known_hosts_file,
                     port=data.port,
+                    auth_method=data.auth_method,
                     identity_file=data.identity_file,
+                    password_secret_ref=data.password_secret_ref,
                     use_ssh_agent=data.use_ssh_agent,
                     proxy_jump=data.proxy_jump,
                     connect_timeout=data.connect_timeout,
@@ -188,6 +196,15 @@ class RuntimeCommandHandler:
         if method == "endpoint.health":
             data = parse_params(EndpointIdParams, params)
             return await service.health(data.endpoint_id)
+        raise ValidationError(f"unknown broker method: {method}")
+
+    async def _secret(self, method: str, params: dict[str, Any]) -> Any:
+        if method == "secret.put":
+            data = parse_params(PutSecretParams, params)
+            return {"secret_ref": self.context.secrets.put(data.value, purpose=data.purpose)}
+        if method == "secret.delete":
+            data = parse_params(SecretRefParams, params)
+            return {"deleted": self.context.secrets.delete(data.secret_ref)}
         raise ValidationError(f"unknown broker method: {method}")
 
     async def _environment(self, method: str, params: dict[str, Any]) -> Any:
@@ -439,7 +456,9 @@ class RuntimeCommandHandler:
             "port": data.port,
             "username": data.username,
             "known_hosts_file": data.known_hosts_file,
+            "auth_method": data.auth_method,
             "identity_file": data.identity_file,
+            "password_secret_ref": data.password_secret_ref,
             "use_ssh_agent": data.use_ssh_agent,
             "proxy_jump": data.proxy_jump,
             "connect_timeout": data.connect_timeout,
@@ -456,7 +475,9 @@ class RuntimeCommandHandler:
             username=data.username,
             known_hosts_file=data.known_hosts_file,
             port=data.port,
+            auth_method=data.auth_method,
             identity_file=data.identity_file,
+            password_secret_ref=data.password_secret_ref,
             use_ssh_agent=data.use_ssh_agent,
             proxy_jump=data.proxy_jump,
             connect_timeout=data.connect_timeout,

@@ -218,6 +218,31 @@ def test_agent_context_compacts_older_turns_and_tool_results() -> None:
     assert "new task" in rendered
 
 
+def test_agent_context_includes_remote_connection_status() -> None:
+    work_context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root="/project",
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+        remote_hostname="example.test",
+        remote_username="envrt",
+        remote_port=2222,
+        remote_auth_method="password",
+        remote_os="linux",
+        remote_shell="bash",
+    )
+    context = AgentContext(AgentConfig(), work_context)
+
+    rendered = "\n".join(message.content for message in context.build_messages([]))
+
+    assert "Remote connection: host=envrt@example.test:2222" in rendered
+    assert "configured=true" in rendered
+    assert "connected=true" in rendered
+    assert "auth=password" in rendered
+
+
 def test_agent_context_auto_compacts_when_turn_threshold_is_exceeded() -> None:
     config = AgentConfig(max_context_chars=100_000, auto_compact_turns=2, recent_tool_turns=4)
     context = AgentContext(config, _context())

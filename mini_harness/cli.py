@@ -17,7 +17,7 @@ from mini_harness.agent.controller import (
     build_sdk_controller,
 )
 from mini_harness.approvals import ToolApprovalRequest
-from mini_harness.config import load_harness_config
+from mini_harness.config import RuntimeConfig, SSHRuntimeConfig, load_harness_config
 from mini_harness.trace.writer import TraceWriter
 from mini_harness.ui.console import RichEventRenderer
 
@@ -41,6 +41,19 @@ class ConsoleApprovalHandler:
             lambda: typer.prompt(prompt, hide_input=True, default="", show_default=False)
         )
         return str(value) if value else None
+
+    async def prompt_ssh_connection(
+        self,
+        *,
+        reason: str,
+        default_name: str,
+    ) -> RuntimeConfig | None:
+        self.renderer.console.print(f"[yellow]SSH connection requested:[/yellow] {reason}")
+        try:
+            return await _prompt_ssh_runtime_config(self.renderer, default_name=default_name)
+        except ValueError as exc:
+            self.renderer.console.print(f"[red]SSH connect cancelled: {exc}[/red]")
+            return None
 
 
 @app.callback()
@@ -67,6 +80,7 @@ def _main_callback(ctx: typer.Context) -> None:
                 ssh_host=None,
                 ssh_user=None,
                 ssh_port=None,
+                ssh_auth_method=None,
                 ssh_key=None,
                 ssh_known_hosts=None,
                 remote_root=None,
@@ -105,6 +119,9 @@ def run(
     ssh_host: str | None = typer.Option(None, "--ssh-host", help="SSH hostname override."),
     ssh_user: str | None = typer.Option(None, "--ssh-user", help="SSH username override."),
     ssh_port: int | None = typer.Option(None, "--ssh-port", help="SSH port override."),
+    ssh_auth_method: str | None = typer.Option(
+        None, "--ssh-auth-method", help="SSH auth method: auto, agent, key, or password."
+    ),
     ssh_key: str | None = typer.Option(None, "--ssh-key", help="SSH identity file override."),
     ssh_known_hosts: str | None = typer.Option(
         None, "--ssh-known-hosts", help="SSH known_hosts file override."
@@ -136,6 +153,7 @@ def run(
                 ssh_host=ssh_host,
                 ssh_user=ssh_user,
                 ssh_port=ssh_port,
+                ssh_auth_method=ssh_auth_method,
                 ssh_key=ssh_key,
                 ssh_known_hosts=ssh_known_hosts,
                 remote_root=remote_root,
@@ -172,6 +190,9 @@ def chat(
     ssh_host: str | None = typer.Option(None, "--ssh-host", help="SSH hostname override."),
     ssh_user: str | None = typer.Option(None, "--ssh-user", help="SSH username override."),
     ssh_port: int | None = typer.Option(None, "--ssh-port", help="SSH port override."),
+    ssh_auth_method: str | None = typer.Option(
+        None, "--ssh-auth-method", help="SSH auth method: auto, agent, key, or password."
+    ),
     ssh_key: str | None = typer.Option(None, "--ssh-key", help="SSH identity file override."),
     ssh_known_hosts: str | None = typer.Option(
         None, "--ssh-known-hosts", help="SSH known_hosts file override."
@@ -202,6 +223,7 @@ def chat(
                 ssh_host=ssh_host,
                 ssh_user=ssh_user,
                 ssh_port=ssh_port,
+                ssh_auth_method=ssh_auth_method,
                 ssh_key=ssh_key,
                 ssh_known_hosts=ssh_known_hosts,
                 remote_root=remote_root,
@@ -230,6 +252,7 @@ async def _run_async(
     ssh_host: str | None,
     ssh_user: str | None,
     ssh_port: int | None,
+    ssh_auth_method: str | None,
     ssh_key: str | None,
     ssh_known_hosts: str | None,
     remote_root: str | None,
@@ -252,6 +275,7 @@ async def _run_async(
         ssh_host_override=ssh_host,
         ssh_user_override=ssh_user,
         ssh_port_override=ssh_port,
+        ssh_auth_method_override=ssh_auth_method,
         ssh_key_override=ssh_key,
         ssh_known_hosts_override=ssh_known_hosts,
         remote_root_override=remote_root,
@@ -275,6 +299,7 @@ async def _run_async(
         transport="BrokerTransport",
     )
     sink = FanoutEventSink([trace, renderer])
+    approval_handler = ConsoleApprovalHandler(renderer)
     controller, client = build_sdk_controller(
         model_provider,
         config,
@@ -285,7 +310,7 @@ async def _run_async(
         sandbox_config=harness_config.sandbox,
         permissions_config=harness_config.permissions,
         sync_config=harness_config.sync,
-        approval_handler=ConsoleApprovalHandler(renderer),
+        approval_handler=approval_handler,
     )
     try:
         result = await controller.run(
@@ -324,6 +349,7 @@ async def _chat_async(
     ssh_host: str | None,
     ssh_user: str | None,
     ssh_port: int | None,
+    ssh_auth_method: str | None,
     ssh_key: str | None,
     ssh_known_hosts: str | None,
     remote_root: str | None,
@@ -346,6 +372,7 @@ async def _chat_async(
         ssh_host_override=ssh_host,
         ssh_user_override=ssh_user,
         ssh_port_override=ssh_port,
+        ssh_auth_method_override=ssh_auth_method,
         ssh_key_override=ssh_key,
         ssh_known_hosts_override=ssh_known_hosts,
         remote_root_override=remote_root,
@@ -370,9 +397,10 @@ async def _chat_async(
     )
     renderer.console.print(
         "Enter a task or follow-up. Use /compact to summarize older context, "
-        "or /exit to end the session."
+        "/connect-ssh to configure a remote runtime, or /exit to end the session."
     )
     sink = FanoutEventSink([trace, renderer])
+    approval_handler = ConsoleApprovalHandler(renderer)
     controller, client = build_sdk_controller(
         model_provider,
         config,
@@ -383,7 +411,7 @@ async def _chat_async(
         sandbox_config=harness_config.sandbox,
         permissions_config=harness_config.permissions,
         sync_config=harness_config.sync,
-        approval_handler=ConsoleApprovalHandler(renderer),
+        approval_handler=approval_handler,
     )
     try:
         session = controller.start_session(
@@ -407,6 +435,27 @@ async def _chat_async(
                 compacted = session.compact_context()
                 renderer.console.print(f"[cyan]{compacted.summary}[/cyan]")
                 continue
+            if task.lower() == "/connect-ssh":
+                if session.work_context.runtime_mode == "ssh":
+                    renderer.console.print(
+                        "[yellow]SSH runtime is already connected for this chat session.[/yellow]"
+                    )
+                    continue
+                try:
+                    runtime_config = await approval_handler.prompt_ssh_connection(
+                        reason="manual /connect-ssh command",
+                        default_name=harness_config.runtime.name,
+                    )
+                    if runtime_config is None:
+                        continue
+                    session.controller.runtime_config = runtime_config
+                    await session.controller.ensure_remote_runtime(session.work_context)
+                    renderer.console.print(
+                        "[green]SSH runtime connected for this chat session.[/green]"
+                    )
+                except ValueError as exc:
+                    renderer.console.print(f"[red]SSH connect cancelled: {exc}[/red]")
+                continue
             result = await session.run_turn(task)
             trace.write_summary(
                 final_state=result.final_state.value,
@@ -422,6 +471,53 @@ async def _chat_async(
             await server.stop()
         if thread is not None:
             thread.join(timeout=10)
+
+
+async def _prompt_ssh_runtime_config(
+    renderer: RichEventRenderer,
+    *,
+    default_name: str,
+) -> RuntimeConfig:
+    console = renderer.console
+    console.print("[yellow]Configure SSH runtime for this chat session only.[/yellow]")
+    auth_method = await asyncio.to_thread(
+        lambda: typer.prompt(
+            "Auth method (key/password/agent/auto)",
+            default="key",
+        )
+    )
+    if auth_method not in {"auto", "agent", "key", "password"}:
+        raise ValueError("auth method must be one of: auto, agent, key, password")
+    hostname = await asyncio.to_thread(lambda: typer.prompt("SSH host"))
+    username = await asyncio.to_thread(lambda: typer.prompt("SSH user"))
+    port_text = await asyncio.to_thread(lambda: typer.prompt("SSH port", default="22"))
+    known_hosts_file = await asyncio.to_thread(
+        lambda: typer.prompt("known_hosts file", default=str(Path.home() / ".ssh" / "known_hosts"))
+    )
+    identity_file = None
+    if auth_method in {"auto", "key"}:
+        key_text = await asyncio.to_thread(
+            lambda: typer.prompt("SSH key file (blank for none)", default="", show_default=False)
+        )
+        identity_file = key_text or None
+    use_ssh_agent = auth_method in {"auto", "agent"} and await asyncio.to_thread(
+        lambda: typer.confirm("Allow SSH agent auth?", default=auth_method != "key")
+    )
+    remote_root = await asyncio.to_thread(lambda: typer.prompt("Remote root", default="."))
+    return RuntimeConfig(
+        mode="ssh",
+        name=default_name,
+        ssh=SSHRuntimeConfig(
+            hostname=str(hostname),
+            username=str(username),
+            port=int(str(port_text)),
+            known_hosts_file=str(known_hosts_file),
+            auth_method=auth_method,
+            identity_file=identity_file,
+            use_ssh_agent=use_ssh_agent,
+            remote_root=str(remote_root),
+        ),
+    )
 
 
 def _address_from_runtime_url(runtime_url: str | None) -> BrokerAddress | None:

@@ -13,7 +13,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ValidationError
 
 from mini_harness.approvals import ToolApprovalRequest
-from mini_harness.config import AgentConfig
+from mini_harness.config import AgentConfig, RuntimeConfig
 from mini_harness.diffing import (
     TextDiff,
     TextSnapshot,
@@ -42,6 +42,7 @@ from mini_harness.tools.schemas import (
     ObserveTerminalInput,
     OpenTerminalInput,
     ReadFileInput,
+    RequestSSHConnectionInput,
     RunCommandInput,
     RunInSessionInput,
     SendTerminalControlInput,
@@ -1005,6 +1006,114 @@ class SyncPushTool(RuntimeTool):
         )
 
 
+class RequestSSHConnectionTool(RuntimeTool):
+    def __init__(self, runtime: HarnessRuntimeClient) -> None:
+        super().__init__(
+            runtime,
+            "request_ssh_connection",
+            (
+                "Ask the user to open the interactive SSH connection setup flow. "
+                "This tool never accepts passwords or key contents."
+            ),
+            RequestSSHConnectionInput,
+        )
+
+    async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
+        data = (
+            parsed
+            if isinstance(parsed, RequestSSHConnectionInput)
+            else RequestSSHConnectionInput.model_validate(parsed)
+        )
+        if context.runtime_mode == "ssh":
+            return ToolResult(
+                ok=True,
+                summary="SSH runtime is already connected",
+                content="The current conversation already has an SSH runtime target.",
+                metadata={"runtime_mode": context.runtime_mode},
+            )
+        prompt_ssh_connection = getattr(
+            context.approval_handler,
+            "prompt_ssh_connection",
+            None,
+        )
+        if prompt_ssh_connection is None:
+            return ToolResult(
+                ok=False,
+                summary="interactive SSH setup is not available",
+                content=(
+                    "Ask the user to enter /connect-ssh in chat. Mini Harness will then "
+                    "prompt for host, user, auth method, key path, and SSH password if needed."
+                ),
+                error_code=ErrorCode.PERMISSION_DENIED.value,
+                recoverable=True,
+                metadata={
+                    "requires_user_command": "/connect-ssh",
+                    "password_policy": "SSH passwords are accepted only via hidden interactive prompt.",
+                },
+            )
+        runtime_config = await prompt_ssh_connection(
+            reason=data.reason,
+            default_name=context.runtime_name,
+        )
+        if runtime_config is None:
+            return ToolResult(
+                ok=False,
+                summary="SSH connection setup was cancelled by the user",
+                error_code=ErrorCode.PERMISSION_DENIED.value,
+                recoverable=True,
+            )
+        if not isinstance(runtime_config, RuntimeConfig):
+            runtime_config = RuntimeConfig.model_validate(runtime_config)
+        password_secret_ref = await _prepare_ssh_password_secret_for_tool(
+            self.runtime,
+            context,
+            runtime_config,
+        )
+        try:
+            bundle = await asyncio.to_thread(
+                self.runtime.ensure_ssh,
+                runtime_config.name,
+                runtime_config.ssh,
+                password_secret_ref,
+            )
+        except Exception:
+            if password_secret_ref is not None:
+                await asyncio.to_thread(self.runtime.delete_secret, password_secret_ref)
+            raise
+        endpoint = bundle["endpoint"]
+        environment = bundle["environment"]
+        remote_root = runtime_config.ssh.remote_root
+        await asyncio.to_thread(self.runtime.ensure_dir, str(endpoint["endpoint_id"]), remote_root)
+        context.endpoint_id = str(endpoint["endpoint_id"])
+        context.environment_id = str(environment["environment_id"])
+        context.target_id = str(bundle["target_id"])
+        context.runtime_mode = "ssh"
+        context.runtime_name = runtime_config.name
+        context.remote_root = remote_root
+        context.remote_hostname = runtime_config.ssh.hostname
+        context.remote_username = runtime_config.ssh.username
+        context.remote_port = runtime_config.ssh.port
+        context.remote_auth_method = runtime_config.ssh.auth_method
+        context.remote_os = "linux"
+        context.remote_shell = "bash"
+        context.refresh_workspace_policy()
+        return ToolResult(
+            ok=True,
+            summary="SSH runtime connected for this conversation",
+            content=(
+                f"Connected to {runtime_config.ssh.username}@{runtime_config.ssh.hostname} "
+                f"with remote root {remote_root}."
+            ),
+            metadata={
+                "runtime_mode": "ssh",
+                "hostname": runtime_config.ssh.hostname,
+                "username": runtime_config.ssh.username,
+                "remote_root": remote_root,
+                "password_policy": "SSH passwords are accepted only via hidden interactive prompt.",
+            },
+        )
+
+
 class OpenTerminalTool(RuntimeTool):
     def __init__(
         self,
@@ -1921,6 +2030,7 @@ def build_runtime_tools(runtime: HarnessRuntimeClient) -> list[AgentTool]:
         EnsureRemoteToolTool(runtime),
         SyncStatusTool(runtime),
         SyncPushTool(runtime),
+        RequestSSHConnectionTool(runtime),
         OpenTerminalTool(runtime),
         OpenTerminalTool(runtime, "open_local_terminal", fixed_target="local"),
         OpenTerminalTool(runtime, "open_remote_terminal", fixed_target="remote"),
@@ -1965,6 +2075,32 @@ def _sync_disabled_result(context: WorkContext) -> ToolResult | None:
             "recommended_config": {"sync.enabled": True, "sync.mode": "push"},
         },
     )
+
+
+async def _prepare_ssh_password_secret_for_tool(
+    runtime: HarnessRuntimeClient,
+    context: WorkContext,
+    runtime_config: RuntimeConfig,
+) -> str | None:
+    if runtime_config.ssh.auth_method != "password":
+        return None
+    prompt_secret = getattr(context.approval_handler, "prompt_secret", None)
+    if prompt_secret is None:
+        raise MiniHarnessError(
+            ErrorCode.PERMISSION_DENIED,
+            "ssh password auth requires interactive secret input",
+            recoverable=True,
+        )
+    password = await prompt_secret(
+        f"SSH password for {runtime_config.ssh.username}@{runtime_config.ssh.hostname}"
+    )
+    if not password:
+        raise MiniHarnessError(
+            ErrorCode.PERMISSION_DENIED,
+            "ssh password auth was cancelled",
+            recoverable=True,
+        )
+    return await asyncio.to_thread(runtime.put_secret, password, "ssh-password")
 
 
 def _require_push_sync_context(context: WorkContext) -> None:
