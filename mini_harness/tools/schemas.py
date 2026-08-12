@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+from pydantic.json_schema import SkipJsonSchema
 
 
 class ToolDefinition(BaseModel):
@@ -248,17 +249,27 @@ class SendTerminalInput(BaseModel):
         max_length=20_000,
         description=(
             "Exact bytes/text to send to the terminal. Use an empty string or '\\n' "
-            "to press Enter. Set run_directly=true to append Enter automatically "
-            "when submitting a shell command."
+            "to press Enter. By default, Mini Harness appends Enter when data does "
+            "not already end with Enter, so shell commands and password prompts are "
+            "submitted immediately. Set input_only=true only when typing text without "
+            "submitting it."
         ),
         examples=["echo hello", "echo hello\n", "\n", "", "y\n"],
     )
-    run_directly: bool = Field(
+    run_directly: SkipJsonSchema[bool] = Field(
+        default=True,
+        description=(
+            "Deprecated compatibility flag. Defaults to true. If true, append Enter "
+            "when data does not already end with Enter. Prefer input_only=true when "
+            "you need to type without submitting."
+        ),
+    )
+    input_only: bool = Field(
         default=False,
         description=(
-            "If true, append a newline when data does not already end with Enter, "
-            "so the terminal executes the command immediately. Do not use for passwords "
-            "or partial interactive input unless you intend to submit it."
+            "If true, send data exactly as provided and do not append Enter. Use for "
+            "partial interactive typing only; leave false for commands, confirmations, "
+            "and passwords that should be submitted."
         ),
     )
     session_ref: str | None = None

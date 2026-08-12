@@ -929,7 +929,7 @@ async def test_send_terminal_input_treats_empty_data_as_enter(fake_runtime) -> N
 
 
 @pytest.mark.asyncio
-async def test_send_terminal_input_run_directly_appends_enter(fake_runtime) -> None:
+async def test_send_terminal_input_appends_enter_by_default(fake_runtime) -> None:
     registry = ToolRegistry()
     for tool in build_runtime_tools(fake_runtime):
         registry.register(tool)
@@ -938,18 +938,28 @@ async def test_send_terminal_input_run_directly_appends_enter(fake_runtime) -> N
     await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
     result = await registry.execute(
         "send_terminal_input",
-        {"data": "id", "run_directly": True},
+        {"data": "id"},
         context,
     )
 
     assert result.ok
     assert result.metadata["run_directly"] is True
+    assert result.metadata["input_only"] is False
     assert result.metadata["appended_enter"] is True
     assert result.metadata["display"] == "id<ENTER>"
     assert fake_runtime.requests[-1] == (
         "write_terminal",
         {"session_id": "session_1", "data": "id\n"},
     )
+
+
+def test_send_terminal_input_tool_schema_hides_deprecated_run_directly(fake_runtime) -> None:
+    definitions = {tool.definition.name: tool.definition for tool in build_runtime_tools(fake_runtime)}
+    schema = definitions["send_terminal_input"].input_schema
+    properties = schema["properties"]
+
+    assert "run_directly" not in properties
+    assert "input_only" in properties
 
 
 @pytest.mark.asyncio
@@ -971,6 +981,30 @@ async def test_send_terminal_input_run_directly_keeps_existing_enter(fake_runtim
     assert fake_runtime.requests[-1] == (
         "write_terminal",
         {"session_id": "session_1", "data": "id\n"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_terminal_input_input_only_does_not_append_enter(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+
+    await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
+    result = await registry.execute(
+        "send_terminal_input",
+        {"data": "partial", "input_only": True},
+        context,
+    )
+
+    assert result.ok
+    assert result.metadata["run_directly"] is True
+    assert result.metadata["input_only"] is True
+    assert result.metadata["appended_enter"] is False
+    assert fake_runtime.requests[-1] == (
+        "write_terminal",
+        {"session_id": "session_1", "data": "partial"},
     )
 
 

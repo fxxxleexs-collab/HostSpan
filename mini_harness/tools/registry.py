@@ -80,35 +80,11 @@ class ToolRegistry:
             return permission_requests_result
         permission_requests, sandbox_overridden = permission_requests_result
         permission_decision = self.permission_policy.authorize_many(permission_requests)
+        permission_needs_approval = not permission_decision.allowed
+        if permission_needs_approval and self.approval_handler is None:
+            return _permission_denied_result(name, permission_decision, permission_requests)
         permission_overridden = False
-        if not permission_decision.allowed:
-            approval_request = ToolApprovalRequest(
-                tool_name=name,
-                arguments=arguments,
-                decision=permission_decision,
-                permission_requests=permission_requests,
-            )
-            approved = (
-                await self.approval_handler.approve(approval_request)
-                if self.approval_handler is not None
-                else False
-            )
-            if not approved:
-                return _permission_denied_result(name, permission_decision, permission_requests)
-            permission_overridden = True
         terminal_open_approved = False
-        if self.approve_terminal_open and name in _TERMINAL_OPEN_TOOLS:
-            approval_request = _terminal_open_approval_request(name, arguments, permission_requests)
-            approved = (
-                await self.approval_handler.approve(approval_request)
-                if self.approval_handler is not None
-                else False
-            )
-            if not approved:
-                return _permission_denied_result(
-                    name, approval_request.decision, permission_requests
-                )
-            terminal_open_approved = True
         preview_approved = False
         try:
             preview_result = None
@@ -118,6 +94,12 @@ class ToolRegistry:
                 )
             if isinstance(preview_result, ToolResult):
                 return preview_result
+            if preview_result is not None and permission_needs_approval:
+                preview_result = _approval_request_with_permission_decision(
+                    preview_result,
+                    permission_decision=permission_decision,
+                    permission_requests=permission_requests,
+                )
             if (
                 preview_result is not None
                 and self.approval_handler is not None
@@ -127,6 +109,40 @@ class ToolRegistry:
                     name, preview_result.decision, preview_result.permission_requests
                 )
             preview_approved = preview_result is not None and self.approval_handler is not None
+            if permission_needs_approval:
+                if preview_approved:
+                    permission_overridden = True
+                else:
+                    approval_request = ToolApprovalRequest(
+                        tool_name=name,
+                        arguments=arguments,
+                        decision=permission_decision,
+                        permission_requests=permission_requests,
+                    )
+                    approved = (
+                        await self.approval_handler.approve(approval_request)
+                        if self.approval_handler is not None
+                        else False
+                    )
+                    if not approved:
+                        return _permission_denied_result(
+                            name, permission_decision, permission_requests
+                        )
+                    permission_overridden = True
+            if self.approve_terminal_open and name in _TERMINAL_OPEN_TOOLS:
+                approval_request = _terminal_open_approval_request(
+                    name, arguments, permission_requests
+                )
+                approved = (
+                    await self.approval_handler.approve(approval_request)
+                    if self.approval_handler is not None
+                    else False
+                )
+                if not approved:
+                    return _permission_denied_result(
+                        name, approval_request.decision, permission_requests
+                    )
+                terminal_open_approved = True
             result = await self._execute_tool(tool, arguments, context, sandbox_overridden)
             if (
                 _is_sandbox_denial_result(result)
@@ -279,6 +295,45 @@ def _permission_denied_result(
             ],
             **permission_decision.metadata,
         },
+    )
+
+
+def _approval_request_with_permission_decision(
+    request: ToolApprovalRequest,
+    *,
+    permission_decision: PermissionDecision,
+    permission_requests: list[PermissionRequest],
+) -> ToolApprovalRequest:
+    metadata = dict(request.decision.metadata)
+    risks = list(metadata.get("risks") or [])
+    risks.append(permission_decision.reason)
+    metadata["risks"] = risks
+    for key, value in permission_decision.metadata.items():
+        if key == "risks" and isinstance(value, list):
+            metadata["risks"].extend(value)
+        else:
+            metadata.setdefault(key, value)
+    missing = tuple(
+        dict.fromkeys(
+            [
+                *request.decision.missing_capabilities,
+                *permission_decision.missing_capabilities,
+            ]
+        )
+    )
+    return ToolApprovalRequest(
+        tool_name=request.tool_name,
+        arguments=request.arguments,
+        decision=PermissionDecision.deny(
+            request.decision.reason,
+            missing_capabilities=missing,
+            approval_required=True,
+            metadata=metadata,
+        ),
+        permission_requests=permission_requests or request.permission_requests,
+        preview_kind=request.preview_kind,
+        preview_title=request.preview_title,
+        preview_body=request.preview_body,
     )
 
 

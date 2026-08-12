@@ -53,9 +53,10 @@ running dependent commands with run_in_session until that state is no longer
 needed.
 When observing a terminal command expected to run for N seconds, call
 observe_terminal with wait_seconds set to at least N plus a small buffer.
-For send_terminal_input, an empty data string means press Enter. Prefer sending
-commands with run_directly=true, such as data "id" plus run_directly true,
-instead of sending "id" and Enter separately.
+For send_terminal_input, all data is submitted by default: Mini Harness appends
+Enter when data does not already end with Enter. This includes shell commands,
+yes/no confirmations, and password prompts. Use input_only=true only for partial
+typing that must not be submitted yet. An empty data string means press Enter.
 To interrupt a running foreground terminal process, use send_terminal_control
 with control="ctrl_c"; do not send literal "\\x03" text.
 If open_terminal reports fallback_from=ssh_tmux, use ensure_remote_tool with
@@ -325,7 +326,8 @@ def _format_tool_arguments(name: str, arguments: dict[str, object]) -> dict[str,
     rendered = dict(arguments)
     data = rendered.get("data")
     if isinstance(data, str):
-        run_directly = bool(rendered.get("run_directly", False))
+        input_only = bool(rendered.get("input_only", False))
+        run_directly = bool(rendered.get("run_directly", True)) and not input_only
         rendered["data_display"] = _terminal_input_display(data, run_directly)
         rendered.pop("data", None)
     return rendered

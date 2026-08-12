@@ -103,7 +103,11 @@ async def test_permission_policy_can_be_overridden_by_user_approval(fake_runtime
     assert result.ok
     assert result.metadata["permission_override"] is True
     assert result.metadata["approved_by_user"] is True
+    assert result.metadata["preview_approved"] is True
+    assert len(approval.requests) == 1
     assert approval.requests[0].tool_name == "write_file"
+    assert approval.requests[0].preview_kind == "diff"
+    assert approval.requests[0].decision.missing_capabilities == ("file.write:local",)
     assert fake_runtime.requests[-1][0] == "write_text"
 
 
@@ -127,7 +131,11 @@ async def test_permission_policy_stays_denied_when_user_rejects(fake_runtime) ->
     assert not result.ok
     assert result.error_code == "PERMISSION_DENIED"
     assert result.metadata["approved_by_user"] is False
-    assert approval.requests[0].decision.reason.startswith("permission denied")
+    assert len(approval.requests) == 1
+    assert approval.requests[0].preview_kind == "diff"
+    assert approval.requests[0].decision.reason == "write_file will modify calculator.py"
+    assert approval.requests[0].decision.missing_capabilities == ("file.write:local",)
+    assert "permission denied by policy" in approval.requests[0].decision.metadata["risks"][-1]
     assert "write_text" not in [name for name, _ in fake_runtime.requests]
 
 
