@@ -15,7 +15,7 @@ import shlex
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 import asyncssh
@@ -34,8 +34,13 @@ STREAM = "stdout"
 
 
 def _launcher_bytes() -> bytes:
-    files = importlib.resources.files("environment_runtime.providers.execution")
-    return files.joinpath("_launcher.py").read_bytes()
+    path = Path(__file__).with_name("_launcher.py")
+    if path.exists():
+        return path.read_bytes()
+    return importlib.resources.read_binary(
+        "environment_runtime.providers.execution",
+        "_launcher.py",
+    )
 
 
 @dataclass

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import importlib.resources
 import json
 import os
 import signal
@@ -41,8 +40,7 @@ STREAM = "stdout"
 
 def _launcher_path() -> Path:
     """Resolve the on-disk path to the bundled launcher script."""
-    files = importlib.resources.files("environment_runtime.providers.execution")
-    return Path(str(files.joinpath("_launcher.py")))
+    return Path(__file__).with_name("_launcher.py")
 
 
 def _is_windows() -> bool:

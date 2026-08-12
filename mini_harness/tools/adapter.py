@@ -1879,10 +1879,14 @@ class SendTerminalInputTool(RuntimeTool):
                 target=target,
                 operation="send_input",
                 resource=data.session_ref or context.session_ref(),
-                metadata={"run_directly": data.run_directly},
+                metadata={"run_directly": data.run_directly, "input_only": data.input_only},
             )
         ]
-        normalized = _normalize_terminal_input(data.data, data.run_directly)
+        normalized = _normalize_terminal_input(
+            data.data,
+            run_directly=data.run_directly,
+            input_only=data.input_only,
+        )
         if _should_authorize_terminal_input(normalized):
             requests.extend(
                 _command_write_permission_requests(
@@ -1914,7 +1918,11 @@ class SendTerminalInputTool(RuntimeTool):
             context,
             activate=bool(data.session_ref and context.active_session_id != session_id),
         )
-        normalized = _normalize_terminal_input(data.data, data.run_directly)
+        normalized = _normalize_terminal_input(
+            data.data,
+            run_directly=data.run_directly,
+            input_only=data.input_only,
+        )
         if _should_authorize_terminal_input(normalized):
             context.authorize_session_command(normalized)
         await asyncio.to_thread(self.runtime.write_terminal, session_id, normalized)
@@ -1946,6 +1954,7 @@ class SendTerminalInputTool(RuntimeTool):
                 "display": display,
                 "normalized_empty_to_enter": data.data == "",
                 "run_directly": data.run_directly,
+                "input_only": data.input_only,
                 "appended_enter": normalized != data.data and data.data != "",
             },
         )
@@ -2098,7 +2107,7 @@ class RunInSessionTool(RuntimeTool):
             context,
             activate=bool(data.session_ref and context.active_session_id != session_id),
         )
-        command = _normalize_terminal_input(data.command, run_directly=True)
+        command = _normalize_terminal_input(data.command, run_directly=True, input_only=False)
         context.authorize_session_command(command)
         await asyncio.to_thread(self.runtime.write_terminal, session_id, command)
         context.last_terminal_input = command
@@ -3362,9 +3371,11 @@ def _should_authorize_terminal_input(data: str) -> bool:
     return bool(stripped) and ("\n" in data or "\r" in data)
 
 
-def _normalize_terminal_input(data: str, run_directly: bool) -> str:
+def _normalize_terminal_input(data: str, run_directly: bool, input_only: bool = False) -> str:
     if data == "":
         return "\n"
+    if input_only:
+        return data
     if run_directly and not data.endswith(("\n", "\r")):
         return data + "\n"
     return data

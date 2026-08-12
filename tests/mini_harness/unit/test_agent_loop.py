@@ -277,6 +277,17 @@ def test_agent_context_includes_runtime_activity_summary() -> None:
     assert "interactive shell waiting for input" in rendered
 
 
+def test_agent_context_terminal_input_prompt_uses_input_only_not_run_directly() -> None:
+    context = AgentContext(AgentConfig(), _context())
+
+    rendered = "\n".join(message.content for message in context.build_messages([]))
+
+    assert "run_directly" not in rendered
+    assert "input_only=true" in rendered
+    assert "password prompts" in rendered
+    assert "all data is submitted by default" in rendered
+
+
 def test_agent_context_auto_compacts_when_turn_threshold_is_exceeded() -> None:
     config = AgentConfig(max_context_chars=100_000, auto_compact_turns=2, recent_tool_turns=4)
     context = AgentContext(config, _context())

@@ -267,9 +267,11 @@ def _tool_label(name: str, arguments: Any) -> str:
     if name == "run_command":
         return f"run_command {_command_text(arguments.get('argv'))}"
     if name == "send_terminal_input":
+        input_only = bool(arguments.get("input_only", False))
+        run_directly = bool(arguments.get("run_directly", True)) and not input_only
         return (
             "send_terminal_input "
-            f"{_terminal_input_display(str(arguments.get('data', '')), bool(arguments.get('run_directly', False)))}"
+            f"{_terminal_input_display(str(arguments.get('data', '')), run_directly)}"
         )
     if name == "send_terminal_control":
         return f"send_terminal_control {arguments.get('control', '')}"
