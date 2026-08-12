@@ -10,7 +10,7 @@ from mini_harness.agent.controller import AgentController
 from mini_harness.agent.events import InMemoryEventSink
 from mini_harness.agent.state import AgentState
 from mini_harness.approvals import ToolApprovalRequest
-from mini_harness.config import RuntimeConfig, SSHRuntimeConfig
+from mini_harness.config import AgentConfig, RuntimeConfig, SSHRuntimeConfig
 from mini_harness.models.fake import FakeModelProvider
 from mini_harness.models.schemas import FinalDecision, ToolDecision
 from mini_harness.permissions import PermissionsConfig
@@ -83,14 +83,22 @@ async def test_runtime_tools_map_to_runtime_client(fake_runtime) -> None:
     assert read.metadata["newline"] == "lf"
     assert read.metadata["encoding"] == "utf-8"
     assert context.file_snapshot("calculator.py") is not None
-    assert context.file_snapshot("calculator.py").sha256 == expected_hash
     assert write.ok
+    assert write.metadata["hash_guarded"] is True
+    assert write.metadata["expected_source"] == "recent_read_snapshot"
+    assert write.metadata["before_sha256"] == expected_hash
+    assert write.metadata["after_sha256"] != expected_hash
+    assert write.metadata["diff"]["changed"] is True
+    assert "-def add(a: int, b: int) -> int:" in str(write.content)
+    assert "+def add(a, b):" in str(write.content)
+    assert context.file_snapshot("calculator.py").sha256 == write.metadata["after_sha256"]
     assert run.resource_ref == "task:task_1"
     assert observed.ok
     assert observed.cursor == len(".\n1 passed\n")
     assert context.active_task_id is None
     assert [name for name, _ in fake_runtime.requests] == [
         "list_files",
+        "read_text",
         "read_text",
         "write_text",
         "run_command",
@@ -160,6 +168,411 @@ async def test_read_file_metadata_keeps_full_snapshot_for_line_window(fake_runti
     assert snapshot is not None
     assert snapshot.line_count == 5
     assert snapshot.sha256 == result.metadata["sha256"]
+
+
+@pytest.mark.asyncio
+async def test_read_file_supports_line_blocks_with_next_start(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+
+    first = await registry.execute(
+        "read_file",
+        {"path": "test_calculator.py", "start_line": 1, "max_lines": 2},
+        context,
+    )
+    second = await registry.execute(
+        "read_file",
+        {
+            "path": "test_calculator.py",
+            "start_line": first.metadata["next_start_line"],
+            "max_lines": 10,
+        },
+        context,
+    )
+
+    assert first.ok
+    assert "1 | from calculator import add" in str(first.content)
+    assert first.metadata["start_line"] == 1
+    assert first.metadata["end_line"] == 2
+    assert first.metadata["selected_line_count"] == 2
+    assert first.metadata["has_more"] is True
+    assert first.metadata["next_start_line"] == 3
+    assert second.ok
+    assert second.metadata["start_line"] == 3
+    assert second.metadata["end_line"] == 5
+    assert second.metadata["has_more"] is False
+    assert second.metadata["next_start_line"] is None
+
+
+@pytest.mark.asyncio
+async def test_read_file_rejects_end_line_with_max_lines(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+
+    result = await registry.execute(
+        "read_file",
+        {"path": "calculator.py", "start_line": 1, "end_line": 2, "max_lines": 2},
+        context,
+    )
+
+    assert not result.ok
+    assert result.error_code == "TOOL_ARGUMENT_INVALID"
+    assert "cannot be used together" in result.summary
+
+
+@pytest.mark.asyncio
+async def test_write_file_allows_unguarded_write_without_recent_snapshot(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+
+    result = await registry.execute(
+        "write_file",
+        {"path": "calculator.py", "content": "def add(a, b):\n    return a + b\n"},
+        context,
+    )
+
+    assert result.ok
+    assert result.metadata["hash_guarded"] is False
+    assert result.metadata["unguarded_write"] is True
+    assert result.metadata["expected_sha256"] is None
+    assert result.metadata["diff"]["changed"] is True
+    assert "calculator.py:" in str(result.content)
+    assert [name for name, _ in fake_runtime.requests] == ["read_text", "write_text"]
+
+
+@pytest.mark.asyncio
+async def test_write_file_uses_explicit_expected_sha256(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+    before = hashlib.sha256(
+        b"def add(a: int, b: int) -> int:\n    return a - b\n"
+    ).hexdigest()
+
+    result = await registry.execute(
+        "write_file",
+        {
+            "path": "calculator.py",
+            "content": "def add(a: int, b: int) -> int:\n    return a + b\n",
+            "expected_sha256": before,
+        },
+        context,
+    )
+
+    assert result.ok
+    assert result.metadata["hash_guarded"] is True
+    assert result.metadata["expected_source"] == "argument"
+    assert result.metadata["expected_sha256"] == before
+    assert result.metadata["before_sha256"] == before
+
+
+@pytest.mark.asyncio
+async def test_write_file_rejects_when_expected_sha256_is_stale(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+
+    result = await registry.execute(
+        "write_file",
+        {
+            "path": "calculator.py",
+            "content": "def add(a, b):\n    return a + b\n",
+            "expected_sha256": "0" * 64,
+        },
+        context,
+    )
+
+    assert not result.ok
+    assert result.error_code == "FILE_CHANGED"
+    assert result.metadata["expected_sha256"] == "0" * 64
+    assert result.metadata["actual_sha256"] != "0" * 64
+    assert result.metadata["recommended_action"] == "read_file"
+    assert "write_text" not in [name for name, _ in fake_runtime.requests]
+
+
+@pytest.mark.asyncio
+async def test_write_file_rejects_when_recent_read_snapshot_is_stale(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+
+    read = await registry.execute("read_file", {"path": "calculator.py"}, context)
+    assert read.ok
+    fake_runtime.files["calculator.py"] = "def add(a, b):\n    return 999\n"
+    result = await registry.execute(
+        "write_file",
+        {"path": "calculator.py", "content": "def add(a, b):\n    return a + b\n"},
+        context,
+    )
+
+    assert not result.ok
+    assert result.error_code == "FILE_CHANGED"
+    assert result.metadata["expected_source"] == "recent_read_snapshot"
+    assert result.metadata["expected_sha256"] == read.metadata["sha256"]
+    assert "write_text" not in [name for name, _ in fake_runtime.requests]
+
+
+@pytest.mark.asyncio
+async def test_write_file_creates_new_file_with_diff_preview(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+
+    result = await registry.execute(
+        "write_file",
+        {"path": "new_module.py", "content": "VALUE = 42\n"},
+        context,
+    )
+
+    assert result.ok
+    assert result.metadata["existed_before"] is False
+    assert result.metadata["hash_guarded"] is False
+    assert result.metadata["diff"]["added_lines"] == 1
+    assert result.metadata["diff"]["removed_lines"] == 0
+    assert "+VALUE = 42" in str(result.content)
+    assert fake_runtime.files["new_module.py"] == "VALUE = 42\n"
+
+
+@pytest.mark.asyncio
+async def test_write_file_ensures_parent_directory(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+
+    result = await registry.execute(
+        "write_file",
+        {"path": "src/new_module.py", "content": "VALUE = 42\n"},
+        _context(),
+    )
+
+    assert result.ok
+    assert result.metadata["parent_directory"] == "src"
+    assert result.metadata["parent_directory_ensured"] is True
+    assert fake_runtime.requests[-2:] == [
+        ("ensure_dir", {"endpoint_id": "endpoint_1", "path": "src"}),
+        ("write_text", {"endpoint_id": "endpoint_1", "path": "src/new_module.py"}),
+    ]
+    assert fake_runtime.files["new_module.py"] == "VALUE = 42\n"
+
+
+@pytest.mark.asyncio
+async def test_write_file_ensures_remote_parent_directory(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root="/local/project",
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+    )
+
+    result = await registry.execute(
+        "write_file",
+        {"path": "src/new_module.py", "content": "VALUE = 42\n"},
+        context,
+    )
+
+    assert result.ok
+    assert result.metadata["parent_directory"] == "src"
+    assert fake_runtime.requests[-2:] == [
+        ("ensure_dir", {"endpoint_id": "endpoint_ssh", "path": "/srv/app/src"}),
+        ("write_text", {"endpoint_id": "endpoint_ssh", "path": "/srv/app/src/new_module.py"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_write_file_preflight_approval_shows_diff_before_write(fake_runtime) -> None:
+    approval = FakeInteractiveApprovalHandler(approved=True)
+    registry = ToolRegistry(approval_handler=approval)
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+
+    result = await registry.execute(
+        "write_file",
+        {"path": "calculator.py", "content": "def add(a, b):\n    return a + b\n"},
+        context,
+    )
+
+    assert result.ok
+    assert result.metadata["preview_approved"] is True
+    assert len(approval.requests) == 1
+    request = approval.requests[0]
+    assert request.tool_name == "write_file"
+    assert request.preview_kind == "diff"
+    assert request.preview_title == "Diff preview for calculator.py"
+    assert "-def add(a: int, b: int) -> int:" in str(request.preview_body)
+    assert "+def add(a, b):" in str(request.preview_body)
+    assert [name for name, _ in fake_runtime.requests] == [
+        "read_text",
+        "read_text",
+        "write_text",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_write_file_preflight_denial_prevents_write(fake_runtime) -> None:
+    approval = FakeInteractiveApprovalHandler(approved=False)
+    registry = ToolRegistry(approval_handler=approval)
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+
+    result = await registry.execute(
+        "write_file",
+        {"path": "calculator.py", "content": "def add(a, b):\n    return a + b\n"},
+        _context(),
+    )
+
+    assert not result.ok
+    assert result.error_code == "PERMISSION_DENIED"
+    assert approval.requests[0].preview_kind == "diff"
+    assert "write_text" not in [name for name, _ in fake_runtime.requests]
+
+
+@pytest.mark.asyncio
+async def test_write_file_can_disallow_unguarded_write(fake_runtime) -> None:
+    registry = ToolRegistry(config=AgentConfig(allow_unguarded_write=False))
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+
+    result = await registry.execute(
+        "write_file",
+        {"path": "calculator.py", "content": "def add(a, b):\n    return a + b\n"},
+        _context(),
+    )
+
+    assert not result.ok
+    assert result.error_code == "PERMISSION_DENIED"
+    assert result.metadata["unguarded_write"] is True
+    assert result.metadata["recommended_action"] == "read_file"
+    assert "write_text" not in [name for name, _ in fake_runtime.requests]
+
+
+@pytest.mark.asyncio
+async def test_edit_file_replaces_exact_single_context(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    before = hashlib.sha256(
+        b"def add(a: int, b: int) -> int:\n    return a - b\n"
+    ).hexdigest()
+
+    result = await registry.execute(
+        "edit_file",
+        {
+            "path": "calculator.py",
+            "old_text": "return a - b",
+            "new_text": "return a + b",
+            "expected_sha256": before,
+        },
+        _context(),
+    )
+
+    assert result.ok
+    assert result.metadata["hash_guarded"] is True
+    assert result.metadata["expected_source"] == "argument"
+    assert result.metadata["diff"]["changed"] is True
+    assert "-    return a - b" in str(result.content)
+    assert "+    return a + b" in str(result.content)
+    assert "return a + b" in fake_runtime.files["calculator.py"]
+
+
+@pytest.mark.asyncio
+async def test_edit_file_rejects_ambiguous_context(fake_runtime) -> None:
+    fake_runtime.files["repeat.py"] = "VALUE = 1\nVALUE = 1\n"
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+
+    result = await registry.execute(
+        "edit_file",
+        {"path": "repeat.py", "old_text": "VALUE = 1", "new_text": "VALUE = 2"},
+        _context(),
+    )
+
+    assert not result.ok
+    assert result.error_code == "EDIT_CONTEXT_AMBIGUOUS"
+    assert result.metadata["match_count"] == 2
+    assert fake_runtime.files["repeat.py"] == "VALUE = 1\nVALUE = 1\n"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_replace_all_updates_all_matches(fake_runtime) -> None:
+    fake_runtime.files["repeat.py"] = "VALUE = 1\nVALUE = 1\n"
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+
+    result = await registry.execute(
+        "edit_file",
+        {
+            "path": "repeat.py",
+            "old_text": "VALUE = 1",
+            "new_text": "VALUE = 2",
+            "replace_all": True,
+        },
+        _context(),
+    )
+
+    assert result.ok
+    assert result.metadata["replace_all"] is True
+    assert fake_runtime.files["repeat.py"] == "VALUE = 2\nVALUE = 2\n"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_rejects_missing_context(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+
+    result = await registry.execute(
+        "edit_file",
+        {"path": "calculator.py", "old_text": "return a * b", "new_text": "return a + b"},
+        _context(),
+    )
+
+    assert not result.ok
+    assert result.error_code == "EDIT_CONTEXT_NOT_FOUND"
+    assert result.metadata["recommended_action"] == "read_file"
+    assert "write_text" not in [name for name, _ in fake_runtime.requests]
+
+
+@pytest.mark.asyncio
+async def test_edit_file_rejects_stale_recent_read_snapshot(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+
+    read = await registry.execute("read_file", {"path": "calculator.py"}, context)
+    assert read.ok
+    fake_runtime.files["calculator.py"] = (
+        "def add(a: int, b: int) -> int:\n    return a - b\n# changed elsewhere\n"
+    )
+    result = await registry.execute(
+        "edit_file",
+        {"path": "calculator.py", "old_text": "return a - b", "new_text": "return a + b"},
+        context,
+    )
+
+    assert not result.ok
+    assert result.error_code == "FILE_CHANGED"
+    assert result.metadata["expected_source"] == "recent_read_snapshot"
+    assert result.metadata["expected_sha256"] == read.metadata["sha256"]
+    assert "write_text" not in [name for name, _ in fake_runtime.requests]
 
 
 @pytest.mark.asyncio

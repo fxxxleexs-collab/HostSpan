@@ -1,0 +1,553 @@
+diff --git a/.gitignore b/.gitignore
+--- a/.gitignore
++++ b/.gitignore
+@@
+ .env
+ .env.*
++!.env.example
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@
+-Mini Harness supports TOML configuration for OpenAI-compatible APIs and Anthropic:
++Mini Harness can be configured with a project `.env` file. Copy `.env.example`
++to `.env`, then set your provider, model, API key, runtime mode, SSH settings,
++permissions, sandbox, and sync options there.
++
++The loader checks `<project>/.env` first, then `./.env`. Values already present
++in the process environment are not overwritten. CLI flags still have the highest
++priority.
++
++TOML configuration is still supported for OpenAI-compatible APIs and Anthropic:
+diff --git a/mini_harness/config.py b/mini_harness/config.py
+--- a/mini_harness/config.py
++++ b/mini_harness/config.py
+@@
+-from mini_harness.workspace import SandboxConfig
++from mini_harness.workspace import SandboxConfig, SandboxTargetConfig
+@@
+ ) -> HarnessConfig:
++    load_project_env(project_root)
+     payload: dict[str, object] = {}
+@@
+-    model = model.model_copy(
+-        update={
+-            "provider": provider,
+-            "model": model_override
+-            or os.getenv("MINI_AGENT_MODEL")
+-            or model.model
+-            or _default_model(provider),
+-            "base_url": os.getenv("MINI_AGENT_BASE_URL")
+-            or model.base_url
+-            or _default_base_url(provider),
+-            "api_key": os.getenv("MINI_AGENT_API_KEY")
+-            or (os.getenv("ANTHROPIC_API_KEY") if provider == "anthropic" else None)
+-            or model.api_key,
+-        }
+-    )
+-    agent = config.agent
++    model = _model_from_env(model, provider)
++    if model_override is not None:
++        model = model.model_copy(update={"model": model_override})
++    agent = _agent_from_env(config.agent)
+@@
+-        sandbox=config.sandbox,
+-        permissions=config.permissions,
+-        sync=config.sync,
++        sandbox=_sandbox_from_env(config.sandbox),
++        permissions=_permissions_from_env(config.permissions),
++        sync=_sync_from_env(config.sync),
+     )
+ 
+ 
++def load_project_env(project_root: str | None = None, env_path: str | None = None) -> Path | None:
++    path = _resolve_env_path(project_root, env_path)
++    if path is None:
++        return None
++    values = _parse_env_file(path)
++    for key, value in values.items():
++        os.environ.setdefault(key, value)
++    return path
++
++
+ def normalize_provider(value: str | None) -> ProviderName | None:
+@@
+ def _resolve_config_path(config_path: str | None, project_root: str | None) -> Path | None:
+@@
+     return None
+ 
+ 
++def _resolve_env_path(project_root: str | None, env_path: str | None = None) -> Path | None:
++    if env_path:
++        path = Path(env_path).expanduser().resolve()
++        return path if path.exists() else None
++    candidates: list[Path] = []
++    if project_root:
++        candidates.append(Path(project_root).resolve() / ".env")
++    candidates.append(Path.cwd() / ".env")
++    for candidate in candidates:
++        if candidate.exists():
++            return candidate
++    return None
++
++
++def _parse_env_file(path: Path) -> dict[str, str]:
++    values: dict[str, str] = {}
++    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
++        line = raw_line.strip()
++        if not line or line.startswith("#"):
++            continue
++        if line.startswith("export "):
++            line = line[len("export ") :].lstrip()
++        if "=" not in line:
++            raise ValueError(f"invalid .env line {line_number}: expected KEY=value")
++        key, value = line.split("=", 1)
++        key = key.strip()
++        if not key:
++            raise ValueError(f"invalid .env line {line_number}: key cannot be empty")
++        values[key] = _parse_env_value(value.strip())
++    return values
++
++
++def _parse_env_value(value: str) -> str:
++    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
++        inner = value[1:-1]
++        if value[0] == '"':
++            return bytes(inner, "utf-8").decode("unicode_escape")
++        return inner
++    return _strip_inline_env_comment(value).strip()
++
++
++def _strip_inline_env_comment(value: str) -> str:
++    in_single = False
++    in_double = False
++    escaped = False
++    for index, char in enumerate(value):
++        if escaped:
++            escaped = False
++            continue
++        if char == "\\" and in_double:
++            escaped = True
++            continue
++        if char == "'" and not in_double:
++            in_single = not in_single
++            continue
++        if char == '"' and not in_single:
++            in_double = not in_double
++            continue
++        if char == "#" and not in_single and not in_double and (
++            index == 0 or value[index - 1].isspace()
++        ):
++            return value[:index]
++    return value
++
++
+ def _provider_from_env() -> ProviderName | None:
+@@
+             "known_hosts_file": os.getenv("MINI_AGENT_SSH_KNOWN_HOSTS")
+             or config.ssh.known_hosts_file,
+             "identity_file": os.getenv("MINI_AGENT_SSH_KEY") or config.ssh.identity_file,
++            "use_ssh_agent": _env_bool("MINI_AGENT_SSH_USE_AGENT", config.ssh.use_ssh_agent),
++            "proxy_jump": os.getenv("MINI_AGENT_SSH_PROXY_JUMP") or config.ssh.proxy_jump,
++            "connect_timeout": _env_float(
++                "MINI_AGENT_SSH_CONNECT_TIMEOUT", config.ssh.connect_timeout
++            ),
++            "keepalive_interval": _env_float(
++                "MINI_AGENT_SSH_KEEPALIVE_INTERVAL", config.ssh.keepalive_interval
++            ),
+             "remote_root": os.getenv("MINI_AGENT_REMOTE_ROOT") or config.ssh.remote_root,
++            "prefer_tmux": _env_bool("MINI_AGENT_SSH_PREFER_TMUX", config.ssh.prefer_tmux),
++            "allow_ssh_pty_fallback": _env_bool(
++                "MINI_AGENT_SSH_ALLOW_PTY_FALLBACK", config.ssh.allow_ssh_pty_fallback
++            ),
+         }
+     )
+-    return config.model_copy(update={"mode": mode, "ssh": ssh})
++    return config.model_copy(
++        update={"mode": mode, "name": os.getenv("MINI_AGENT_RUNTIME_NAME") or config.name, "ssh": ssh}
++    )
++
++
++def _model_from_env(config: ModelConfig, provider: ProviderName) -> ModelConfig:
++    return config.model_copy(
++        update={
++            "provider": provider,
++            "model": os.getenv("MINI_AGENT_MODEL")
++            or config.model
++            or _default_model(provider),
++            "base_url": os.getenv("MINI_AGENT_BASE_URL")
++            or config.base_url
++            or _default_base_url(provider),
++            "api_key": os.getenv("MINI_AGENT_API_KEY")
++            or (os.getenv("ANTHROPIC_API_KEY") if provider == "anthropic" else None)
++            or config.api_key,
++            "timeout_seconds": _env_float(
++                "MINI_AGENT_MODEL_TIMEOUT_SECONDS", config.timeout_seconds
++            ),
++            "max_retries": _env_int("MINI_AGENT_MODEL_MAX_RETRIES", config.max_retries),
++            "max_tokens": _env_int("MINI_AGENT_MODEL_MAX_TOKENS", config.max_tokens),
++            "anthropic_version": os.getenv("MINI_AGENT_ANTHROPIC_VERSION")
++            or config.anthropic_version,
++        }
++    )
++
++
++def _agent_from_env(config: AgentConfig) -> AgentConfig:
++    return config.model_copy(
++        update={
++            "max_iterations": _env_int("MINI_AGENT_MAX_ITERATIONS", config.max_iterations),
++            "max_consecutive_tool_errors": _env_int(
++                "MINI_AGENT_MAX_CONSECUTIVE_TOOL_ERRORS",
++                config.max_consecutive_tool_errors,
++            ),
++            "repeated_action_limit": _env_int(
++                "MINI_AGENT_REPEATED_ACTION_LIMIT", config.repeated_action_limit
++            ),
++            "max_context_chars": _env_int(
++                "MINI_AGENT_MAX_CONTEXT_CHARS", config.max_context_chars
++            ),
++            "max_tool_result_chars": _env_int(
++                "MINI_AGENT_MAX_TOOL_RESULT_CHARS", config.max_tool_result_chars
++            ),
++            "recent_tool_turns": _env_int(
++                "MINI_AGENT_RECENT_TOOL_TURNS", config.recent_tool_turns
++            ),
++            "auto_compact_turns": _env_int(
++                "MINI_AGENT_AUTO_COMPACT_TURNS", config.auto_compact_turns
++            ),
++            "auto_compact_tool_turns": _env_int(
++                "MINI_AGENT_AUTO_COMPACT_TOOL_TURNS", config.auto_compact_tool_turns
++            ),
++            "tool_timeout_seconds": _env_float(
++                "MINI_AGENT_TOOL_TIMEOUT_SECONDS", config.tool_timeout_seconds
++            ),
++            "task_observe_poll_seconds": _env_float(
++                "MINI_AGENT_TASK_OBSERVE_POLL_SECONDS",
++                config.task_observe_poll_seconds,
++            ),
++            "allow_unguarded_write": _env_bool(
++                "MINI_AGENT_ALLOW_UNGUARDED_WRITE", config.allow_unguarded_write
++            ),
++        }
++    )
++
++
++def _permissions_from_env(config: PermissionsConfig) -> PermissionsConfig:
++    return config.model_copy(
++        update={
++            "allow": _env_csv("MINI_AGENT_PERMISSIONS_ALLOW", config.allow),
++            "deny": _env_csv("MINI_AGENT_PERMISSIONS_DENY", config.deny),
++            "approve_sandbox_denials": _env_bool(
++                "MINI_AGENT_APPROVE_SANDBOX_DENIALS", config.approve_sandbox_denials
++            ),
++            "approve_terminal_open": _env_bool(
++                "MINI_AGENT_APPROVE_TERMINAL_OPEN", config.approve_terminal_open
++            ),
++        }
++    )
++
++
++def _sandbox_from_env(config: SandboxConfig) -> SandboxConfig:
++    local = _sandbox_target_from_env(config.local, "LOCAL")
++    remote = _sandbox_target_from_env(config.remote, "REMOTE")
++    paths = config.paths.model_copy(
++        update={
++            "allow": _env_csv("MINI_AGENT_SANDBOX_PATHS_ALLOW", config.paths.allow),
++            "deny": _env_csv("MINI_AGENT_SANDBOX_PATHS_DENY", config.paths.deny),
++            "follow_symlinks": _env_bool(
++                "MINI_AGENT_SANDBOX_FOLLOW_SYMLINKS", config.paths.follow_symlinks
++            ),
++        }
++    )
++    return config.model_copy(
++        update={
++            "profile": os.getenv("MINI_AGENT_SANDBOX_PROFILE") or config.profile,
++            "engine": os.getenv("MINI_AGENT_SANDBOX_ENGINE") or config.engine,
++            "local": local,
++            "remote": remote,
++            "paths": paths,
++        }
++    )
++
++
++def _sandbox_target_from_env(config: SandboxTargetConfig, prefix: str) -> SandboxTargetConfig:
++    return config.model_copy(
++        update={
++            "root": os.getenv(f"MINI_AGENT_SANDBOX_{prefix}_ROOT") or config.root,
++            "engine": os.getenv(f"MINI_AGENT_SANDBOX_{prefix}_ENGINE") or config.engine,
++            "require_engine": _env_bool(
++                f"MINI_AGENT_SANDBOX_{prefix}_REQUIRE_ENGINE", config.require_engine
++            ),
++            "network": os.getenv(f"MINI_AGENT_SANDBOX_{prefix}_NETWORK") or config.network,
++            "allow_root_shell": _env_bool(
++                f"MINI_AGENT_SANDBOX_{prefix}_ALLOW_ROOT_SHELL",
++                config.allow_root_shell,
++            ),
++            "allow_system_paths": _env_bool(
++                f"MINI_AGENT_SANDBOX_{prefix}_ALLOW_SYSTEM_PATHS",
++                config.allow_system_paths,
++            ),
++            "allow_package_install": _env_bool(
++                f"MINI_AGENT_SANDBOX_{prefix}_ALLOW_PACKAGE_INSTALL",
++                config.allow_package_install,
++            ),
++        }
++    )
++
++
++def _sync_from_env(config: SyncConfig) -> SyncConfig:
++    ignore = config.ignore.model_copy(
++        update={"patterns": _env_csv("MINI_AGENT_SYNC_IGNORE_PATTERNS", config.ignore.patterns)}
++    )
++    return config.model_copy(
++        update={
++            "enabled": _env_bool("MINI_AGENT_SYNC_ENABLED", config.enabled),
++            "mode": os.getenv("MINI_AGENT_SYNC_MODE") or config.mode,
++            "delete_remote": _env_bool("MINI_AGENT_SYNC_DELETE_REMOTE", config.delete_remote),
++            "max_file_bytes": _env_int(
++                "MINI_AGENT_SYNC_MAX_FILE_BYTES", config.max_file_bytes
++            ),
++            "text_only": _env_bool("MINI_AGENT_SYNC_TEXT_ONLY", config.text_only),
++            "local_state_dir": os.getenv("MINI_AGENT_SYNC_LOCAL_STATE_DIR")
++            or config.local_state_dir,
++            "remote_manifest_path": os.getenv("MINI_AGENT_SYNC_REMOTE_MANIFEST_PATH")
++            or config.remote_manifest_path,
++            "ignore": ignore,
++        }
++    )
++
++
++def _env_bool(name: str, default: bool) -> bool:
++    value = os.getenv(name)
++    if value is None:
++        return default
++    normalized = value.strip().lower()
++    if normalized in {"1", "true", "yes", "y", "on"}:
++        return True
++    if normalized in {"0", "false", "no", "n", "off"}:
++        return False
++    raise ValueError(f"{name} must be a boolean")
++
++
++def _env_int(name: str, default: int) -> int:
++    value = os.getenv(name)
++    return default if value is None else int(value)
++
++
++def _env_float(name: str, default: float) -> float:
++    value = os.getenv(name)
++    return default if value is None else float(value)
++
++
++def _env_csv(name: str, default: list[str]) -> list[str]:
++    value = os.getenv(name)
++    if value is None:
++        return default
++    return [item.strip() for item in value.split(",") if item.strip()]
+diff --git a/tests/mini_harness/unit/test_config.py b/tests/mini_harness/unit/test_config.py
+--- a/tests/mini_harness/unit/test_config.py
++++ b/tests/mini_harness/unit/test_config.py
+@@
++import os
+ from pathlib import Path
+@@
+ from mini_harness.config import load_harness_config
+ 
+ 
++@pytest.fixture(autouse=True)
++def _restore_mini_agent_env() -> None:
++    prefixes = ("MINI_AGENT_", "ANTHROPIC_API_KEY")
++    before = {key: value for key, value in os.environ.items() if key.startswith(prefixes)}
++    yield
++    for key in list(os.environ):
++        if key.startswith(prefixes):
++            os.environ.pop(key, None)
++    os.environ.update(before)
++
++
+ def test_load_config_supports_anthropic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@@
++def test_project_env_file_is_loaded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++    monkeypatch.delenv("MINI_AGENT_PROVIDER", raising=False)
++    monkeypatch.delenv("MINI_AGENT_MODEL", raising=False)
++    monkeypatch.delenv("MINI_AGENT_API_KEY", raising=False)
++    (tmp_path / ".env").write_text(
++        """
++MINI_AGENT_PROVIDER=anthropic
++MINI_AGENT_MODEL=claude-from-env-file
++MINI_AGENT_API_KEY="from env file"
++MINI_AGENT_MAX_ITERATIONS=11
++MINI_AGENT_RUNTIME_MODE=ssh
++MINI_AGENT_SSH_HOST=env-file-host
++MINI_AGENT_SSH_USER=envrt
++MINI_AGENT_SSH_PORT=2201
++MINI_AGENT_REMOTE_ROOT=.environment-runtime/project
++""",
++        encoding="utf-8",
++    )
++
++    config = load_harness_config(project_root=str(tmp_path))
++
++    assert config.model.provider == "anthropic"
++    assert config.model.model == "claude-from-env-file"
++    assert config.model.api_key == "from env file"
++    assert config.agent.max_iterations == 11
++    assert config.runtime.mode == "ssh"
++    assert config.runtime.ssh.hostname == "env-file-host"
++    assert config.runtime.ssh.username == "envrt"
++    assert config.runtime.ssh.port == 2201
++    assert config.runtime.ssh.remote_root == ".environment-runtime/project"
++
++
++def test_project_env_file_does_not_override_existing_env(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    monkeypatch.setenv("MINI_AGENT_MODEL", "from-process-env")
++    (tmp_path / ".env").write_text("MINI_AGENT_MODEL=from-env-file\n", encoding="utf-8")
++
++    config = load_harness_config(project_root=str(tmp_path))
++
++    assert config.model.model == "from-process-env"
++
++
+ def test_load_config_supports_ssh_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@@
++def test_env_overrides_agent_permissions_sandbox_and_sync(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    monkeypatch.setenv("MINI_AGENT_ALLOW_UNGUARDED_WRITE", "false")
++    monkeypatch.setenv("MINI_AGENT_PERMISSIONS_ALLOW", "file.read:*,task.observe:*")
++    monkeypatch.setenv("MINI_AGENT_PERMISSIONS_DENY", "file.write:*")
++    monkeypatch.setenv("MINI_AGENT_APPROVE_TERMINAL_OPEN", "false")
++    monkeypatch.setenv("MINI_AGENT_SANDBOX_PROFILE", "strict")
++    monkeypatch.setenv("MINI_AGENT_SANDBOX_REMOTE_ROOT", "/srv/app")
++    monkeypatch.setenv("MINI_AGENT_SANDBOX_REMOTE_ALLOW_PACKAGE_INSTALL", "true")
++    monkeypatch.setenv("MINI_AGENT_SANDBOX_PATHS_ALLOW", "src/**,tests/**")
++    monkeypatch.setenv("MINI_AGENT_SANDBOX_PATHS_DENY", ".env,**/*.pem")
++    monkeypatch.setenv("MINI_AGENT_SYNC_ENABLED", "true")
++    monkeypatch.setenv("MINI_AGENT_SYNC_MAX_FILE_BYTES", "4096")
++    monkeypatch.setenv("MINI_AGENT_SYNC_IGNORE_PATTERNS", ".git/**,dist/**")
++
++    config = load_harness_config(project_root=str(tmp_path))
++
++    assert config.agent.allow_unguarded_write is False
++    assert config.permissions.allow == ["file.read:*", "task.observe:*"]
++    assert config.permissions.deny == ["file.write:*"]
++    assert config.permissions.approve_terminal_open is False
++    assert config.sandbox.profile == "strict"
++    assert config.sandbox.remote.root == "/srv/app"
++    assert config.sandbox.remote.allow_package_install is True
++    assert config.sandbox.paths.allow == ["src/**", "tests/**"]
++    assert config.sandbox.paths.deny == [".env", "**/*.pem"]
++    assert config.sync.enabled is True
++    assert config.sync.max_file_bytes == 4096
++    assert config.sync.ignore.patterns == [".git/**", "dist/**"]
++
++
+ def test_ssh_runtime_env_and_cli_overrides(
+diff --git a/.env.example b/.env.example
+new file mode 100644
+--- /dev/null
++++ b/.env.example
+@@
++# Mini Harness project configuration.
++# Copy this file to .env and fill in the values you need.
++# Environment variables override mini-harness.toml; CLI flags override both.
++
++# ---------------------------------------------------------------------------
++# Model provider
++# ---------------------------------------------------------------------------
++# openai, openai-compatible, or anthropic
++MINI_AGENT_PROVIDER=openai
++MINI_AGENT_MODEL=gpt-4.1-mini
++MINI_AGENT_BASE_URL=https://api.openai.com/v1
++MINI_AGENT_API_KEY=
++
++# Anthropic can use ANTHROPIC_API_KEY or MINI_AGENT_API_KEY.
++# MINI_AGENT_PROVIDER=anthropic
++# MINI_AGENT_MODEL=claude-sonnet-4-20250514
++# MINI_AGENT_BASE_URL=https://api.anthropic.com
++ANTHROPIC_API_KEY=
++MINI_AGENT_ANTHROPIC_VERSION=2023-06-01
++
++MINI_AGENT_MODEL_TIMEOUT_SECONDS=60
++MINI_AGENT_MODEL_MAX_RETRIES=2
++MINI_AGENT_MODEL_MAX_TOKENS=4096
++
++# ---------------------------------------------------------------------------
++# Agent loop and context
++# ---------------------------------------------------------------------------
++MINI_AGENT_MAX_ITERATIONS=30
++MINI_AGENT_MAX_CONSECUTIVE_TOOL_ERRORS=3
++MINI_AGENT_REPEATED_ACTION_LIMIT=3
++MINI_AGENT_MAX_CONTEXT_CHARS=120000
++MINI_AGENT_MAX_TOOL_RESULT_CHARS=20000
++MINI_AGENT_RECENT_TOOL_TURNS=12
++MINI_AGENT_AUTO_COMPACT_TURNS=8
++MINI_AGENT_AUTO_COMPACT_TOOL_TURNS=24
++MINI_AGENT_TOOL_TIMEOUT_SECONDS=30
++MINI_AGENT_TASK_OBSERVE_POLL_SECONDS=0.5
++MINI_AGENT_ALLOW_UNGUARDED_WRITE=true
++
++# ---------------------------------------------------------------------------
++# Runtime target
++# ---------------------------------------------------------------------------
++MINI_AGENT_RUNTIME_MODE=local
++MINI_AGENT_RUNTIME_NAME=mini-harness
++MINI_AGENT_SSH_HOST=
++MINI_AGENT_SSH_USER=
++MINI_AGENT_SSH_PORT=22
++MINI_AGENT_SSH_KNOWN_HOSTS=
++MINI_AGENT_SSH_KEY=
++MINI_AGENT_SSH_USE_AGENT=true
++MINI_AGENT_SSH_PROXY_JUMP=
++MINI_AGENT_SSH_CONNECT_TIMEOUT=15
++MINI_AGENT_SSH_KEEPALIVE_INTERVAL=20
++MINI_AGENT_REMOTE_ROOT=.environment-runtime/mini-harness-project
++MINI_AGENT_SSH_PREFER_TMUX=true
++MINI_AGENT_SSH_ALLOW_PTY_FALLBACK=true
++
++# ---------------------------------------------------------------------------
++# Permissions and interactive approvals
++# ---------------------------------------------------------------------------
++MINI_AGENT_PERMISSIONS_ALLOW=*
++MINI_AGENT_PERMISSIONS_DENY=
++MINI_AGENT_APPROVE_SANDBOX_DENIALS=true
++MINI_AGENT_APPROVE_TERMINAL_OPEN=true
++
++# ---------------------------------------------------------------------------
++# Workspace sandbox policy
++# ---------------------------------------------------------------------------
++MINI_AGENT_SANDBOX_PROFILE=workspace
++MINI_AGENT_SANDBOX_ENGINE=policy-only
++MINI_AGENT_SANDBOX_LOCAL_ROOT=
++MINI_AGENT_SANDBOX_LOCAL_ENGINE=
++MINI_AGENT_SANDBOX_LOCAL_REQUIRE_ENGINE=false
++MINI_AGENT_SANDBOX_LOCAL_NETWORK=inherit
++MINI_AGENT_SANDBOX_LOCAL_ALLOW_ROOT_SHELL=false
++MINI_AGENT_SANDBOX_LOCAL_ALLOW_SYSTEM_PATHS=false
++MINI_AGENT_SANDBOX_LOCAL_ALLOW_PACKAGE_INSTALL=false
++MINI_AGENT_SANDBOX_REMOTE_ROOT=
++MINI_AGENT_SANDBOX_REMOTE_ENGINE=
++MINI_AGENT_SANDBOX_REMOTE_REQUIRE_ENGINE=false
++MINI_AGENT_SANDBOX_REMOTE_NETWORK=inherit
++MINI_AGENT_SANDBOX_REMOTE_ALLOW_ROOT_SHELL=false
++MINI_AGENT_SANDBOX_REMOTE_ALLOW_SYSTEM_PATHS=false
++MINI_AGENT_SANDBOX_REMOTE_ALLOW_PACKAGE_INSTALL=false
++MINI_AGENT_SANDBOX_PATHS_ALLOW=**
++MINI_AGENT_SANDBOX_PATHS_DENY=.env,.env.*,**/.env,**/.env.*,**/*.pem,**/*.key,**/id_*,.ssh/**,**/.ssh/**
++MINI_AGENT_SANDBOX_FOLLOW_SYMLINKS=false
++
++# ---------------------------------------------------------------------------
++# Sync mode prototype
++# ---------------------------------------------------------------------------
++MINI_AGENT_SYNC_ENABLED=false
++MINI_AGENT_SYNC_MODE=push
++MINI_AGENT_SYNC_DELETE_REMOTE=false
++MINI_AGENT_SYNC_MAX_FILE_BYTES=1048576
++MINI_AGENT_SYNC_TEXT_ONLY=true
++MINI_AGENT_SYNC_LOCAL_STATE_DIR=.mini-harness/sync
++MINI_AGENT_SYNC_REMOTE_MANIFEST_PATH=.mini-harness/sync-manifest.json
++MINI_AGENT_SYNC_IGNORE_PATTERNS=.git/**,.mini-harness/**,.environment-runtime/**,.venv/**,node_modules/**,__pycache__/**,.pytest_cache/**,.ruff_cache/**,dist/**,build/**,.env,.env.*,**/.env,**/.env.*

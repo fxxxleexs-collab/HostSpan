@@ -34,11 +34,41 @@ class ReadFileInput(BaseModel):
     path: str
     start_line: int | None = Field(default=None, ge=1)
     end_line: int | None = Field(default=None, ge=1)
+    max_lines: int | None = Field(
+        default=None,
+        ge=1,
+        le=5_000,
+        description=(
+            "Read at most this many lines starting at start_line. Use this for block/"
+            "paged reads. Do not combine with end_line."
+        ),
+    )
 
 
 class WriteFileInput(BaseModel):
     path: str
     content: str = Field(max_length=1_000_000)
+    expected_sha256: str | None = Field(
+        default=None,
+        description=(
+            "Optional sha256 of the file version this write is based on. If omitted, "
+            "Mini Harness uses the most recent read_file snapshot for this path when available."
+        ),
+    )
+
+
+class EditFileInput(BaseModel):
+    path: str
+    old_text: str = Field(min_length=1, max_length=200_000)
+    new_text: str = Field(max_length=200_000)
+    expected_sha256: str | None = Field(
+        default=None,
+        description=(
+            "Optional sha256 of the file version this edit is based on. If omitted, "
+            "Mini Harness uses the most recent read_file snapshot for this path when available."
+        ),
+    )
+    replace_all: bool = False
 
 
 class RunCommandInput(BaseModel):

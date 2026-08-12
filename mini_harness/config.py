@@ -23,6 +23,7 @@ class AgentConfig(BaseModel):
     auto_compact_tool_turns: int = Field(default=24, ge=2)
     tool_timeout_seconds: float = Field(default=30.0, gt=0)
     task_observe_poll_seconds: float = Field(default=0.5, ge=0)
+    allow_unguarded_write: bool = True
 
 
 ProviderName = Literal["openai", "openai-compatible", "anthropic"]

@@ -107,7 +107,24 @@ class ToolRegistry:
                     name, approval_request.decision, permission_requests
                 )
             terminal_open_approved = True
+        preview_approved = False
         try:
+            preview_result = None
+            if self.approval_handler is not None or not self.config.allow_unguarded_write:
+                preview_result = await self._approval_preview(
+                    tool, name, arguments, context, permission_requests, sandbox_overridden
+                )
+            if isinstance(preview_result, ToolResult):
+                return preview_result
+            if (
+                preview_result is not None
+                and self.approval_handler is not None
+                and not await self.approval_handler.approve(preview_result)
+            ):
+                return _permission_denied_result(
+                    name, preview_result.decision, preview_result.permission_requests
+                )
+            preview_approved = preview_result is not None and self.approval_handler is not None
             result = await self._execute_tool(tool, arguments, context, sandbox_overridden)
             if (
                 _is_sandbox_denial_result(result)
@@ -134,6 +151,9 @@ class ToolRegistry:
                 result.metadata["approved_by_user"] = True
             if terminal_open_approved:
                 result.metadata["terminal_open_approved"] = True
+                result.metadata["approved_by_user"] = True
+            if preview_approved:
+                result.metadata["preview_approved"] = True
                 result.metadata["approved_by_user"] = True
             return result
         except TimeoutError:
@@ -192,6 +212,41 @@ class ToolRegistry:
             tool.execute(arguments, context),
             timeout=self.config.tool_timeout_seconds,
         )
+
+    async def _approval_preview(
+        self,
+        tool: AgentTool,
+        name: str,
+        arguments: dict[str, Any],
+        context: WorkContext,
+        permission_requests: list[PermissionRequest],
+        sandbox_overridden: bool,
+    ) -> ToolApprovalRequest | ToolResult | None:
+        preview = getattr(tool, "approval_preview", None)
+        if preview is None:
+            return None
+        try:
+            if sandbox_overridden:
+                with context.approved_sandbox():
+                    return await asyncio.wait_for(
+                        preview(arguments, context, permission_requests, self.config),
+                        timeout=self.config.tool_timeout_seconds,
+                    )
+            return await asyncio.wait_for(
+                preview(arguments, context, permission_requests, self.config),
+                timeout=self.config.tool_timeout_seconds,
+            )
+        except ValidationError as exc:
+            errors = exc.errors(include_url=False)
+            return ToolResult(
+                ok=False,
+                summary=f"tool arguments are invalid: {errors[0].get('msg', 'validation failed')}",
+                error_code=ErrorCode.TOOL_ARGUMENT_INVALID.value,
+                recoverable=True,
+                metadata={"errors": errors},
+            )
+        except MiniHarnessError as exc:
+            return _mini_harness_error_result(exc)
 
 
 def _permission_denied_result(
