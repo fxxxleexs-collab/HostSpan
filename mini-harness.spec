@@ -4,6 +4,12 @@ from PyInstaller.utils.hooks import collect_all
 datas = []
 binaries = []
 hiddenimports = []
+datas += [
+    (
+        'environment_runtime\\providers\\execution\\_launcher.py',
+        'environment_runtime\\providers\\execution',
+    )
+]
 tmp_ret = collect_all('environment_runtime')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('mini_harness')

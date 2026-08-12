@@ -24,6 +24,7 @@ class AgentConfig(BaseModel):
     tool_timeout_seconds: float = Field(default=300.0, gt=0)
     task_observe_poll_seconds: float = Field(default=0.5, ge=0)
     allow_unguarded_write: bool = True
+    block_final_on_failed_command: bool = False
 
 
 ProviderName = Literal["openai", "openai-compatible", "anthropic"]

@@ -21,13 +21,20 @@ commands such as Flask/Vite/Uvicorn dev servers, file watchers, and background
 services; then use observe_task, list_tasks, and cancel_task to manage them.
 Use terminal tools only when live human interaction, passwords, REPL input, or
 stateful shell context is required.
+Runtime tasks and terminal sessions are separate. run_command/start_task create
+task_id values; read their output only with observe_task and manage them with
+list_tasks/cancel_task. open_terminal/open_local_terminal/open_remote_terminal
+create session_id values; read their output only with observe_terminal and send
+input only with send_terminal_input, send_terminal_control, or
+run_terminal_command.
 After starting a short task with run_command, call observe_task until it reaches
 a terminal state. After starting a long-running service with start_task, observe
 startup logs and keep the task_ref for later list_tasks/observe_task/cancel_task.
 Before each tool call, briefly state in natural language what you are trying
 to learn or change, why that tool is the next step, and what result you expect.
 For commands which require interaction, use open_terminal, observe_terminal,
-send_terminal_input, and close_terminal instead of run_command or start_task.
+send_terminal_input, request_human_terminal_input, and close_terminal instead of
+run_command or start_task.
 Use open_local_terminal when interaction must happen on the user's machine, such
 as building local artifacts or using Windows PowerShell. Use open_remote_terminal
 when interaction must happen on the configured SSH host. open_terminal uses the
@@ -35,8 +42,10 @@ default command target shown in the work context.
 run_command and start_task start clean non-interactive tasks and do not inherit terminal
 state such as sudo/root shell, cd, exported env vars, activated venv, nested
 ssh/login, or tmux shell state. If an active terminal session has the needed
-state, use run_in_session instead. Only set run_command force_clean=true when
-you deliberately want a clean task without session state.
+state, use run_terminal_command instead. run_terminal_command submits a command
+inside the active terminal session and observes terminal output; it is not a
+task and it does not create task logs. Only set run_command force_clean=true
+when you deliberately want a clean task without session state.
 In SSH runtime mode, open_remote_terminal already starts the process on the
 remote host. Do not run ssh inside open_remote_terminal; leave argv unset or use
 argv ["bash", "-l"] for a remote shell.
@@ -49,14 +58,17 @@ into normal chat, config files, command arguments, or tool arguments.
 Before sending terminal commands, check the active terminal target, OS, and shell
 in the work context and use the matching command syntax.
 If you opened root privileges or changed shell state inside a terminal, keep
-running dependent commands with run_in_session until that state is no longer
-needed.
+running dependent commands with run_terminal_command until that state is no
+longer needed.
 When observing a terminal command expected to run for N seconds, call
 observe_terminal with wait_seconds set to at least N plus a small buffer.
 For send_terminal_input, all data is submitted by default: Mini Harness appends
 Enter when data does not already end with Enter. This includes shell commands,
 yes/no confirmations, and password prompts. Use input_only=true only for partial
 typing that must not be submitted yet. An empty data string means press Enter.
+If observe_terminal shows a password, one-time code, or other sensitive prompt,
+call request_human_terminal_input with a human-facing prompt. The user's input is
+hidden from you and is submitted to the terminal with Enter by default.
 To interrupt a running foreground terminal process, use send_terminal_control
 with control="ctrl_c"; do not send literal "\\x03" text.
 If open_terminal reports fallback_from=ssh_tmux, use ensure_remote_tool with
@@ -321,6 +333,10 @@ def _one_line(text: str, max_chars: int = 500) -> str:
 
 
 def _format_tool_arguments(name: str, arguments: dict[str, object]) -> dict[str, object]:
+    if name == "request_human_terminal_input":
+        rendered = dict(arguments)
+        rendered["input_visibility"] = "hidden_from_model"
+        return rendered
     if name != "send_terminal_input":
         return arguments
     rendered = dict(arguments)

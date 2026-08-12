@@ -209,6 +209,36 @@ async def test_runtime_tools_map_remote_paths_and_terminal_tools(fake_runtime) -
 
 
 @pytest.mark.asyncio
+async def test_request_human_terminal_input_submits_hidden_input_with_enter(fake_runtime) -> None:
+    approval = FakeInteractiveApprovalHandler(secret="s3cr3t")
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+    context.approval_handler = approval
+
+    await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
+    result = await registry.execute(
+        "request_human_terminal_input",
+        {"prompt": "Password for sudo"},
+        context,
+    )
+
+    assert result.ok
+    assert approval.secret_prompts == ["Password for sudo"]
+    assert result.metadata["hidden_input"] is True
+    assert result.metadata["submitted"] is True
+    assert "s3cr3t" not in result.summary
+    assert "s3cr3t" not in str(result.metadata)
+    assert fake_runtime.requests[-1] == (
+        "write_terminal",
+        {"session_id": "session_1", "data": "s3cr3t\n"},
+    )
+    assert context.last_terminal_input == "s3cr3t\n"
+    assert context.terminal_input_pending is True
+
+
+@pytest.mark.asyncio
 async def test_read_file_metadata_keeps_full_snapshot_for_line_window(fake_runtime) -> None:
     registry = ToolRegistry()
     for tool in build_runtime_tools(fake_runtime):
@@ -1049,7 +1079,7 @@ async def test_run_command_warns_when_root_session_is_active(fake_runtime) -> No
 
     assert not result.ok
     assert result.recoverable
-    assert result.metadata["recommended_tool"] == "run_in_session"
+    assert result.metadata["recommended_tool"] == "run_terminal_command"
     assert result.metadata["session_privilege"] == "root"
     assert "will not inherit that root shell" in result.summary
     assert "run_command" not in [name for name, _ in fake_runtime.requests]
@@ -1131,6 +1161,29 @@ async def test_run_in_session_uses_active_terminal_state(fake_runtime) -> None:
     assert fake_runtime.requests[-2] == (
         "write_terminal",
         {"session_id": "session_1", "data": "apt-get install -y tmux\n"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_terminal_command_alias_uses_active_terminal_state(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+
+    await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
+    result = await registry.execute(
+        "run_terminal_command",
+        {"command": "id", "wait_seconds": 0},
+        context,
+    )
+
+    assert result.ok
+    assert result.resource_ref == "session:session_1"
+    assert result.metadata["command"] == "id\n"
+    assert fake_runtime.requests[-2] == (
+        "write_terminal",
+        {"session_id": "session_1", "data": "id\n"},
     )
 
 

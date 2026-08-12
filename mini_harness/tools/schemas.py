@@ -275,6 +275,26 @@ class SendTerminalInput(BaseModel):
     session_ref: str | None = None
 
 
+class RequestHumanTerminalInput(BaseModel):
+    prompt: str = Field(
+        min_length=1,
+        max_length=500,
+        description=(
+            "Human-facing prompt explaining what input is needed for the active terminal. "
+            "Use for passwords, one-time codes, or other sensitive interactive input that "
+            "must not be visible to the model."
+        ),
+    )
+    session_ref: str | None = None
+    submit: bool = Field(
+        default=True,
+        description=(
+            "If true, append Enter before sending the hidden user input. Leave true for "
+            "password prompts, yes/no prompts, sudo, su, and most terminal interactions."
+        ),
+    )
+
+
 class SendTerminalControlInput(BaseModel):
     control: Literal["ctrl_c", "ctrl_d", "enter", "escape", "tab", "backspace"] = Field(
         description=(

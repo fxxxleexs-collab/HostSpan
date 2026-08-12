@@ -7,6 +7,7 @@ import pytest
 
 from environment_runtime.core.commands import CommandSpec
 from environment_runtime.core.models import Task, TaskState
+from environment_runtime.providers.execution.ssh_detached import _launcher_bytes
 from environment_runtime.services.endpoint import EndpointService
 from environment_runtime.services.environment import EnvironmentService
 from environment_runtime.services.task import TaskService
@@ -83,6 +84,12 @@ async def test_persistent_ssh_task_routes_to_ssh_detached(runtime, ssh_environme
     assert task.backend_ref["backend"] == "ssh_detached"
     assert task.backend_ref["endpoint_id"] == endpoint.endpoint_id
     assert task.state == TaskState.RUNNING
+
+
+def test_ssh_detached_launcher_resource_is_readable() -> None:
+    data = _launcher_bytes()
+
+    assert b"Bundled launcher for detached persistent tasks" in data
 
 
 @pytest.mark.unit

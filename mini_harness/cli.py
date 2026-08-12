@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import typer
+from rich.markup import escape
 
 from environment_runtime.broker import BrokerAddress, LocalBrokerServer
 from environment_runtime.config import RuntimeSettings, SecuritySettings
@@ -31,7 +32,7 @@ class ConsoleApprovalHandler:
     async def approve(self, request: ToolApprovalRequest) -> bool:
         self.renderer.console.print("[yellow][APPROVAL][/yellow] Tool permission required")
         for line in request.lines():
-            self.renderer.console.print(f"  {line}")
+            self.renderer.console.print(f"  {escape(line)}")
         return await asyncio.to_thread(
             lambda: typer.confirm("Allow this operation?", default=False)
         )
@@ -48,11 +49,11 @@ class ConsoleApprovalHandler:
         reason: str,
         default_name: str,
     ) -> RuntimeConfig | None:
-        self.renderer.console.print(f"[yellow]SSH connection requested:[/yellow] {reason}")
+        self.renderer.console.print(f"[yellow]SSH connection requested:[/yellow] {escape(reason)}")
         try:
             return await _prompt_ssh_runtime_config(self.renderer, default_name=default_name)
         except ValueError as exc:
-            self.renderer.console.print(f"[red]SSH connect cancelled: {exc}[/red]")
+            self.renderer.console.print(f"[red]SSH connect cancelled: {escape(str(exc))}[/red]")
             return None
 
 
@@ -433,7 +434,7 @@ async def _chat_async(
                 break
             if task.lower() == "/compact":
                 compacted = session.compact_context()
-                renderer.console.print(f"[cyan]{compacted.summary}[/cyan]")
+                renderer.console.print(f"[cyan]{escape(compacted.summary)}[/cyan]")
                 continue
             if task.lower() == "/connect-ssh":
                 if session.work_context.runtime_mode == "ssh":
@@ -454,7 +455,7 @@ async def _chat_async(
                         "[green]SSH runtime connected for this chat session.[/green]"
                     )
                 except ValueError as exc:
-                    renderer.console.print(f"[red]SSH connect cancelled: {exc}[/red]")
+                    renderer.console.print(f"[red]SSH connect cancelled: {escape(str(exc))}[/red]")
                 continue
             result = await session.run_turn(task)
             trace.write_summary(

@@ -106,6 +106,79 @@ async def test_agent_loop_blocks_final_while_task_active(fake_runtime) -> None:
 
 
 @pytest.mark.asyncio
+async def test_agent_loop_allows_final_after_failed_command_by_default(fake_runtime) -> None:
+    model = FakeModelProvider([FinalDecision(type="final", summary="done")])
+    context = _context()
+    context.last_command_exit_code = 1
+    loop = AgentLoop(model, _registry(fake_runtime))
+
+    result = await loop.run("inspect failure", context)
+
+    assert result.final_state == AgentState.COMPLETED
+    assert result.tool_error_count == 0
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_can_block_final_after_failed_command_when_configured(
+    fake_runtime,
+) -> None:
+    model = FakeModelProvider(
+        [
+            FinalDecision(type="final", summary="too early"),
+            FinalDecision(type="final", summary="still too early"),
+        ]
+    )
+    context = _context()
+    context.last_command_exit_code = 1
+    loop = AgentLoop(
+        model,
+        _registry(fake_runtime),
+        config=AgentConfig(
+            block_final_on_failed_command=True,
+            max_consecutive_tool_errors=2,
+        ),
+    )
+
+    result = await loop.run("inspect failure", context)
+
+    assert result.final_state == AgentState.FAILED
+    assert result.error_code == "CONSECUTIVE_ERROR_LIMIT"
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_fails_after_repeated_final_guard_blocks(fake_runtime) -> None:
+    model = FakeModelProvider(
+        [
+            ToolDecision(
+                type="tool",
+                tool_name="run_command",
+                arguments={"argv": ["python", "-m", "pytest", "-q"]},
+                reason_summary="Verify tests.",
+            ),
+            FinalDecision(type="final", summary="too early"),
+            FinalDecision(type="final", summary="still too early"),
+        ]
+    )
+    sink = InMemoryEventSink()
+    loop = AgentLoop(
+        model,
+        _registry(fake_runtime),
+        config=AgentConfig(max_iterations=30, max_consecutive_tool_errors=2),
+        event_sink=sink,
+    )
+
+    result = await loop.run("fix tests", _context())
+
+    assert result.final_state == AgentState.FAILED
+    assert result.error_code == "CONSECUTIVE_ERROR_LIMIT"
+    assert result.iterations == 3
+    failed_events = [event for event in sink.events if event.event_type.value == "tool.failed"]
+    assert failed_events[-1].payload["metadata"]["guard"] == "final"
+    assert failed_events[-1].payload["metadata"]["reason"] == "active_task"
+    assert failed_events[-1].payload["metadata"]["attempted_final_summary"] == "still too early"
+
+
+@pytest.mark.asyncio
 async def test_agent_loop_fails_on_max_iterations(fake_runtime) -> None:
     model = FakeModelProvider(
         [
@@ -286,6 +359,18 @@ def test_agent_context_terminal_input_prompt_uses_input_only_not_run_directly() 
     assert "input_only=true" in rendered
     assert "password prompts" in rendered
     assert "all data is submitted by default" in rendered
+
+
+def test_agent_context_describes_task_terminal_boundaries() -> None:
+    context = AgentContext(AgentConfig(), _context())
+
+    rendered = "\n".join(message.content for message in context.build_messages([]))
+
+    assert "Runtime tasks and terminal sessions are separate" in rendered
+    assert "task_id values" in rendered
+    assert "session_id values" in rendered
+    assert "run_terminal_command submits a command" in rendered
+    assert "inside the active terminal session" in rendered
 
 
 def test_agent_context_auto_compacts_when_turn_threshold_is_exceeded() -> None:

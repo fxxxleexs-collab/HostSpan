@@ -43,6 +43,7 @@ from mini_harness.tools.schemas import (
     ObserveTerminalInput,
     OpenTerminalInput,
     ReadFileInput,
+    RequestHumanTerminalInput,
     RequestSSHConnectionInput,
     RunCommandInput,
     RunInSessionInput,
@@ -1643,7 +1644,7 @@ class ActivateTerminalSessionTool(RuntimeTool):
             "activate_terminal_session",
             (
                 "Make an existing ACTIVE Runtime terminal session the current session for "
-                "observe_terminal, send_terminal_input, and run_in_session."
+                "observe_terminal, send_terminal_input, and run_terminal_command."
             ),
             ActivateTerminalSessionInput,
         )
@@ -1960,6 +1961,110 @@ class SendTerminalInputTool(RuntimeTool):
         )
 
 
+class RequestHumanTerminalInputTool(RuntimeTool):
+    def __init__(self, runtime: HarnessRuntimeClient) -> None:
+        super().__init__(
+            runtime,
+            "request_human_terminal_input",
+            (
+                "Ask the user for hidden input and submit it to the active terminal session. "
+                "Use after observe_terminal shows a password, one-time code, or other "
+                "sensitive prompt. The user input is not returned to the model. By default "
+                "the tool appends Enter before sending it."
+            ),
+            RequestHumanTerminalInput,
+        )
+
+    def permission_requests(
+        self,
+        arguments: dict[str, Any],
+        context: WorkContext,
+    ) -> list[PermissionRequest]:
+        data = RequestHumanTerminalInput.model_validate(arguments)
+        return [
+            PermissionRequest.for_target(
+                tool_name=self.definition.name,
+                capability="terminal.human_input",
+                target=context.active_session_target or context.default_terminal_target(),
+                operation="human_input",
+                resource=data.session_ref or context.session_ref(),
+                metadata={"hidden": True, "submit": data.submit},
+            )
+        ]
+
+    async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
+        data = (
+            parsed
+            if isinstance(parsed, RequestHumanTerminalInput)
+            else RequestHumanTerminalInput.model_validate(parsed)
+        )
+        handler = context.approval_handler
+        prompt_secret = getattr(handler, "prompt_secret", None)
+        if prompt_secret is None:
+            return ToolResult(
+                ok=False,
+                summary="human terminal input requires an interactive secret prompt",
+                error_code=ErrorCode.PERMISSION_DENIED.value,
+                recoverable=True,
+                metadata={"secret_prompt_available": False},
+            )
+        session_id = _resolve_session_id(data.session_ref, context)
+        session = await asyncio.to_thread(self.runtime.get_session, session_id)
+        if not _is_interactive_session(session):
+            return _inactive_session_result(
+                session,
+                context,
+                attempted_tool=self.definition.name,
+                recommended_tool="inspect_terminal_session",
+            )
+        _apply_session_record_to_context(
+            session,
+            context,
+            activate=bool(data.session_ref and context.active_session_id != session_id),
+        )
+        secret = await prompt_secret(data.prompt)
+        if secret is None:
+            return ToolResult(
+                ok=False,
+                summary="human terminal input was cancelled",
+                error_code=ErrorCode.PERMISSION_DENIED.value,
+                recoverable=True,
+                resource_ref=f"session:{session_id}",
+                metadata={"cancelled": True, "secret_prompt_available": True},
+            )
+        payload = _normalize_human_terminal_input(secret, submit=data.submit)
+        await asyncio.to_thread(self.runtime.write_terminal, session_id, payload)
+        context.last_terminal_input = payload
+        context.terminal_input_pending = data.submit
+        _record_session_brief_from_record(
+            session,
+            context,
+            updated_by=self.definition.name,
+            brief=(
+                "Hidden human input submitted; output is pending"
+                if data.submit
+                else "Hidden human input sent without submit"
+            ),
+            last_command="[HIDDEN HUMAN INPUT]" if data.submit else None,
+            pending=context.terminal_input_pending,
+            history_only=False,
+        )
+        return ToolResult(
+            ok=True,
+            summary=f"submitted hidden human input to session:{session_id}",
+            resource_ref=f"session:{session_id}",
+            state="ACTIVE",
+            recoverable=True,
+            metadata={
+                "session_id": session_id,
+                "hidden_input": True,
+                "submitted": data.submit,
+                "bytes": len(payload.encode("utf-8")),
+                "terminal_input_pending": context.terminal_input_pending,
+            },
+        )
+
+
 class SendTerminalControlTool(RuntimeTool):
     def __init__(self, runtime: HarnessRuntimeClient) -> None:
         super().__init__(
@@ -2052,11 +2157,17 @@ class SendTerminalControlTool(RuntimeTool):
 
 
 class RunInSessionTool(RuntimeTool):
-    def __init__(self, runtime: HarnessRuntimeClient) -> None:
+    def __init__(self, runtime: HarnessRuntimeClient, name: str = "run_in_session") -> None:
         super().__init__(
             runtime,
-            "run_in_session",
-            "Run a shell command inside the active terminal session and observe its output.",
+            name,
+            (
+                "Submit a shell command into the active interactive terminal session "
+                "and observe terminal output. This is terminal input, not a clean task: "
+                "it inherits that terminal's cwd, env, venv, login, and sudo/root state. "
+                "Use only when the command depends on active terminal state or interaction; "
+                "otherwise use run_command."
+            ),
             RunInSessionInput,
         )
 
@@ -2185,6 +2296,8 @@ class RunInSessionTool(RuntimeTool):
             recoverable=True,
             metadata={
                 "session_id": session_id,
+                "command": command,
+                "tool_semantics": "terminal_session_command",
                 "frame_count": frame_count,
                 "wait_seconds": data.wait_seconds,
                 "idle_seconds": data.idle_seconds,
@@ -2269,7 +2382,9 @@ def build_runtime_tools(runtime: HarnessRuntimeClient) -> list[AgentTool]:
         ActivateTerminalSessionTool(runtime),
         ObserveTerminalTool(runtime),
         SendTerminalInputTool(runtime),
+        RequestHumanTerminalInputTool(runtime),
         SendTerminalControlTool(runtime),
+        RunInSessionTool(runtime, "run_terminal_command"),
         RunInSessionTool(runtime),
         CloseTerminalTool(runtime),
     ]
@@ -3130,7 +3245,7 @@ def _clean_task_session_guard(
     return ToolResult(
         ok=False,
         summary=(
-            f"{reason} Use run_in_session for commands that require this state, "
+            f"{reason} Use run_terminal_command for commands that require this state, "
             "or set force_clean=true to deliberately run a clean task."
         ),
         error_code=ErrorCode.RUNTIME_OPERATION_FAILED.value,
@@ -3142,7 +3257,7 @@ def _clean_task_session_guard(
             "session_privilege": context.active_session_privilege,
             "session_stateful": context.active_session_stateful,
             "session_reason": context.active_session_reason,
-            "recommended_tool": "run_in_session",
+            "recommended_tool": "run_terminal_command",
             "clean_task_override": {"force_clean": True},
         },
     )
@@ -3379,6 +3494,14 @@ def _normalize_terminal_input(data: str, run_directly: bool, input_only: bool = 
     if run_directly and not data.endswith(("\n", "\r")):
         return data + "\n"
     return data
+
+
+def _normalize_human_terminal_input(data: str, *, submit: bool) -> str:
+    if not submit:
+        return data
+    if data.endswith(("\n", "\r")):
+        return data
+    return data + "\n"
 
 
 def _is_plain_terminal_echo(content: str, expected_input: str | None) -> bool:
