@@ -9,7 +9,16 @@ from mini_harness.config import SSHRuntimeConfig
 class HarnessRuntimeClient(Protocol):
     def ensure_local(self, name: str, root: str) -> dict[str, Any]: ...
 
-    def ensure_ssh(self, name: str, ssh: SSHRuntimeConfig) -> dict[str, Any]: ...
+    def put_secret(self, value: str, purpose: str = "runtime") -> str: ...
+
+    def delete_secret(self, secret_ref: str) -> bool: ...
+
+    def ensure_ssh(
+        self,
+        name: str,
+        ssh: SSHRuntimeConfig,
+        password_secret_ref: str | None = None,
+    ) -> dict[str, Any]: ...
 
     def list_files(self, endpoint_id: str, path: str, recursive: bool = False) -> list[str]: ...
 
@@ -83,7 +92,18 @@ class SDKRuntimeClient:
     def ensure_local(self, name: str, root: str) -> dict[str, Any]:
         return self.client.environments.ensure_local(name, root)
 
-    def ensure_ssh(self, name: str, ssh: SSHRuntimeConfig) -> dict[str, Any]:
+    def put_secret(self, value: str, purpose: str = "runtime") -> str:
+        return self.client.secrets.put(value, purpose=purpose)
+
+    def delete_secret(self, secret_ref: str) -> bool:
+        return self.client.secrets.delete(secret_ref)
+
+    def ensure_ssh(
+        self,
+        name: str,
+        ssh: SSHRuntimeConfig,
+        password_secret_ref: str | None = None,
+    ) -> dict[str, Any]:
         if not ssh.hostname or not ssh.username or not ssh.known_hosts_file:
             raise ValueError("ssh runtime requires hostname, username, and known_hosts_file")
         return self.client.environments.ensure_ssh(
@@ -92,7 +112,9 @@ class SDKRuntimeClient:
             username=ssh.username,
             known_hosts_file=ssh.known_hosts_file,
             port=ssh.port,
+            auth_method=ssh.auth_method,
             identity_file=ssh.identity_file,
+            password_secret_ref=password_secret_ref,
             use_ssh_agent=ssh.use_ssh_agent,
             proxy_jump=ssh.proxy_jump,
             connect_timeout=ssh.connect_timeout,

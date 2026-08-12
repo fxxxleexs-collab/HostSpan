@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -15,8 +16,12 @@ if TYPE_CHECKING:
 class SSHTransportProvider:
     """AsyncSSH transport with strict host-key checking by default."""
 
-    def __init__(self) -> None:
+    def __init__(self, secret_resolver: Callable[[str], str] | None = None) -> None:
+        self._secret_resolver = secret_resolver
         self._connections: dict[str, SSHClientConnection] = {}
+
+    def set_secret_resolver(self, resolver: Callable[[str], str] | None) -> None:
+        self._secret_resolver = resolver
 
     async def connect(self, endpoint: Endpoint) -> SSHClientConnection:
         config = self._load_config(endpoint)
@@ -32,13 +37,39 @@ class SSHTransportProvider:
             raise ValidationError(f"known_hosts_file does not exist: {known_hosts}")
 
         client_keys: list[str] | None = None
+        password: str | None = None
+        agent_path = () if config.use_ssh_agent else None
         if config.identity_file:
             key_path = Path(config.identity_file).expanduser()
             if not key_path.exists():
                 raise ValidationError(f"identity_file does not exist: {key_path}")
             client_keys = [str(key_path)]
-        elif not config.use_ssh_agent:
-            raise ValidationError("identity_file is required when use_ssh_agent is false")
+        if config.password_secret_ref:
+            if self._secret_resolver is None:
+                raise ValidationError("SSH password secret resolver is not available")
+            password = self._secret_resolver(config.password_secret_ref)
+        if config.auth_method == "key" and client_keys is None:
+            raise ValidationError("identity_file is required when auth_method is key")
+        if config.auth_method == "password" and password is None:
+            raise ValidationError("password is required when auth_method is password")
+        if config.auth_method == "agent":
+            if not config.use_ssh_agent:
+                raise ValidationError("use_ssh_agent must be true when auth_method is agent")
+            client_keys = None
+            password = None
+            agent_path = ()
+        if config.auth_method == "password":
+            client_keys = None
+            agent_path = None
+        if (
+            config.auth_method == "auto"
+            and client_keys is None
+            and not config.use_ssh_agent
+            and password is None
+        ):
+            raise ValidationError(
+                "identity_file, password_secret_ref, or use_ssh_agent is required for SSH authentication"
+            )
 
         try:
             connection = await asyncssh.connect(
@@ -46,7 +77,8 @@ class SSHTransportProvider:
                 port=config.port,
                 username=config.username,
                 client_keys=client_keys,
-                agent_path=() if config.use_ssh_agent else None,
+                password=password,
+                agent_path=agent_path,
                 known_hosts=str(known_hosts),
                 login_timeout=config.connect_timeout,
                 keepalive_interval=config.keepalive_interval,

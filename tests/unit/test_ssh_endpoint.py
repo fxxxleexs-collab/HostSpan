@@ -34,6 +34,28 @@ async def test_add_ssh_endpoint_persists_config_and_capabilities(runtime, tmp_pa
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_add_ssh_endpoint_supports_password_auth(runtime, tmp_path) -> None:
+    known_hosts = tmp_path / "known_hosts"
+    known_hosts.write_text("example.test ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA==\n")
+
+    endpoint = await EndpointService(runtime).add_ssh(
+        name="ssh-demo",
+        hostname="example.test",
+        username="envrt",
+        auth_method="password",
+        password_secret_ref="secret:test",
+        use_ssh_agent=False,
+        known_hosts_file=str(known_hosts),
+    )
+
+    assert endpoint.config["auth_method"] == "password"
+    assert endpoint.config["password_secret_ref"] == "secret:test"
+    assert "password" not in endpoint.config
+    assert endpoint.config["use_ssh_agent"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_add_ssh_rejects_no_identity_when_agent_disabled(runtime, tmp_path) -> None:
     known_hosts = tmp_path / "known_hosts"
     known_hosts.write_text("example.test ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA==\n")
@@ -44,6 +66,22 @@ async def test_add_ssh_rejects_no_identity_when_agent_disabled(runtime, tmp_path
             hostname="example.test",
             username="envrt",
             use_ssh_agent=False,
+            known_hosts_file=str(known_hosts),
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_add_ssh_rejects_missing_password_for_password_auth(runtime, tmp_path) -> None:
+    known_hosts = tmp_path / "known_hosts"
+    known_hosts.write_text("example.test ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA==\n")
+
+    with pytest.raises(ValidationError):
+        await EndpointService(runtime).add_ssh(
+            name="ssh-demo",
+            hostname="example.test",
+            username="envrt",
+            auth_method="password",
             known_hosts_file=str(known_hosts),
         )
 

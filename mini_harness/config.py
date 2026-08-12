@@ -5,7 +5,7 @@ import tomllib
 from pathlib import Path
 from typing import Literal, cast
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from mini_harness.permissions import PermissionsConfig
 from mini_harness.sync.config import SyncConfig
@@ -21,7 +21,7 @@ class AgentConfig(BaseModel):
     recent_tool_turns: int = Field(default=12, ge=1)
     auto_compact_turns: int = Field(default=8, ge=2)
     auto_compact_tool_turns: int = Field(default=24, ge=2)
-    tool_timeout_seconds: float = Field(default=30.0, gt=0)
+    tool_timeout_seconds: float = Field(default=300.0, gt=0)
     task_observe_poll_seconds: float = Field(default=0.5, ge=0)
     allow_unguarded_write: bool = True
 
@@ -56,17 +56,21 @@ class ModelConfig(BaseModel):
 
 
 RuntimeMode = Literal["local", "ssh"]
+SSHAuthMethod = Literal["auto", "agent", "key", "password"]
 
 
 class SSHRuntimeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     hostname: str | None = None
     username: str | None = None
     port: int = Field(default=22, ge=1, le=65_535)
     known_hosts_file: str | None = None
+    auth_method: SSHAuthMethod = "auto"
     identity_file: str | None = None
     use_ssh_agent: bool = True
     proxy_jump: str | None = None
-    connect_timeout: float = Field(default=15.0, gt=0)
+    connect_timeout: float = Field(default=300.0, gt=0)
     keepalive_interval: float = Field(default=20.0, gt=0)
     remote_root: str = "."
     prefer_tmux: bool = True
@@ -108,6 +112,7 @@ def load_harness_config(
     ssh_host_override: str | None = None,
     ssh_user_override: str | None = None,
     ssh_port_override: int | None = None,
+    ssh_auth_method_override: str | None = None,
     ssh_key_override: str | None = None,
     ssh_known_hosts_override: str | None = None,
     remote_root_override: str | None = None,
@@ -124,6 +129,8 @@ def load_harness_config(
             "hostname": ssh_host_override or runtime.ssh.hostname,
             "username": ssh_user_override or runtime.ssh.username,
             "port": ssh_port_override or runtime.ssh.port,
+            "auth_method": normalize_ssh_auth_method(ssh_auth_method_override)
+            or runtime.ssh.auth_method,
             "identity_file": ssh_key_override or runtime.ssh.identity_file,
             "known_hosts_file": ssh_known_hosts_override or runtime.ssh.known_hosts_file,
             "remote_root": remote_root_override or runtime.ssh.remote_root,
@@ -177,6 +184,14 @@ def normalize_runtime_mode(value: str | None) -> RuntimeMode | None:
     raise ValueError("runtime mode must be one of: local, ssh")
 
 
+def normalize_ssh_auth_method(value: str | None) -> SSHAuthMethod | None:
+    if value is None:
+        return None
+    if value in {"auto", "agent", "key", "password"}:
+        return cast(SSHAuthMethod, value)
+    raise ValueError("ssh auth method must be one of: auto, agent, key, password")
+
+
 def _resolve_config_path(config_path: str | None, project_root: str | None) -> Path | None:
     if config_path:
         return Path(config_path).expanduser().resolve()
@@ -204,6 +219,8 @@ def _runtime_from_env(config: RuntimeConfig) -> RuntimeConfig:
             "port": int(os.getenv("MINI_AGENT_SSH_PORT") or config.ssh.port),
             "known_hosts_file": os.getenv("MINI_AGENT_SSH_KNOWN_HOSTS")
             or config.ssh.known_hosts_file,
+            "auth_method": normalize_ssh_auth_method(os.getenv("MINI_AGENT_SSH_AUTH_METHOD"))
+            or config.ssh.auth_method,
             "identity_file": os.getenv("MINI_AGENT_SSH_KEY") or config.ssh.identity_file,
             "remote_root": os.getenv("MINI_AGENT_REMOTE_ROOT") or config.ssh.remote_root,
         }

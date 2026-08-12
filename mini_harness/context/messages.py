@@ -35,6 +35,9 @@ argv ["bash", "-l"] for a remote shell.
 When sync is enabled in SSH runtime mode, call sync_status before relying on the
 remote mirror and call sync_push before remote commands that need fresh local
 files. sync_status reports the local-to-remote manifest diff summary.
+If an SSH connection must be configured during chat, use request_ssh_connection
+or ask the user to enter /connect-ssh. Never ask the user to paste SSH passwords
+into normal chat, config files, command arguments, or tool arguments.
 Before sending terminal commands, check the active terminal target, OS, and shell
 in the work context and use the matching command syntax.
 If you opened root privileges or changed shell state inside a terminal, keep
@@ -275,6 +278,9 @@ class AgentContext:
             f"Environment: {self.work_context.environment_id}\n"
             f"Endpoint: {self.work_context.endpoint_id}\n"
             f"Runtime mode: {self.work_context.runtime_mode}\n"
+            f"Remote connection: host={self.work_context.remote_address_summary()}, "
+            f"configured={str(self.work_context.remote_hostname is not None).lower()}, "
+            f"connected={str(self.work_context.remote_target() is not None).lower()}\n"
             f"{self.work_context.target_summary()}\n"
             f"{self.work_context.sandbox_summary()}\n"
             f"{self.work_context.sync_summary()}\n"

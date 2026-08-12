@@ -29,6 +29,7 @@ from environment_runtime.persistence.repositories import (
 from environment_runtime.providers.registry import ProviderRegistry
 from environment_runtime.providers.session.base import SessionHandle
 from environment_runtime.services.recovery import RecoveryService
+from environment_runtime.services.secrets import InMemorySecretStore
 
 
 @dataclass
@@ -57,6 +58,7 @@ class RuntimeContext:
     inputs: SqlAlchemyRepository[InputRequest]
     leases: SqlAlchemyRepository[WriterLease]
     active: ActiveRuntimeState = field(default_factory=ActiveRuntimeState)
+    secrets: InMemorySecretStore = field(default_factory=InMemorySecretStore)
 
 
 async def build_runtime(settings: RuntimeSettings) -> RuntimeContext:
@@ -94,6 +96,9 @@ async def build_runtime(settings: RuntimeSettings) -> RuntimeContext:
         ),
         leases=SqlAlchemyRepository(session_factory, "writer_lease", WriterLease.model_validate, "lease_id"),
     )
+    ssh_transport = context.providers.transport.get("ssh")
+    if hasattr(ssh_transport, "set_secret_resolver"):
+        ssh_transport.set_secret_resolver(context.secrets.get)
     # A freshly built context has no live handles, so any persisted task/session
     # claiming to be active is stale (its handle died with the previous process).
     # Reconcile before serving so the DB no longer lies. See RecoveryService.

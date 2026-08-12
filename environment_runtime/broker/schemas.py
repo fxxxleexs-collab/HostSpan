@@ -9,6 +9,15 @@ class EmptyParams(BaseModel):
     pass
 
 
+class PutSecretParams(BaseModel):
+    value: str = Field(min_length=1)
+    purpose: str = "runtime"
+
+
+class SecretRefParams(BaseModel):
+    secret_ref: str
+
+
 class AddLocalEndpointParams(BaseModel):
     name: str
     root: str
@@ -20,10 +29,12 @@ class AddSSHEndpointParams(BaseModel):
     username: str
     known_hosts_file: str
     port: int = Field(default=22, ge=1, le=65535)
+    auth_method: Literal["auto", "agent", "key", "password"] = "auto"
     identity_file: str | None = None
+    password_secret_ref: str | None = None
     use_ssh_agent: bool = True
     proxy_jump: str | None = None
-    connect_timeout: float = Field(default=15.0, gt=0)
+    connect_timeout: float = Field(default=300.0, gt=0)
     keepalive_interval: float = Field(default=20.0, gt=0)
 
 
@@ -48,10 +59,12 @@ class EnsureSSHEnvironmentParams(BaseModel):
     username: str
     known_hosts_file: str
     port: int = Field(default=22, ge=1, le=65535)
+    auth_method: Literal["auto", "agent", "key", "password"] = "auto"
     identity_file: str | None = None
+    password_secret_ref: str | None = None
     use_ssh_agent: bool = True
     proxy_jump: str | None = None
-    connect_timeout: float = Field(default=15.0, gt=0)
+    connect_timeout: float = Field(default=300.0, gt=0)
     keepalive_interval: float = Field(default=20.0, gt=0)
 
 

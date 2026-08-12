@@ -104,7 +104,12 @@ class WorkContext:
     target_id: str
     project_root: str
     runtime_mode: Literal["local", "ssh"] = "local"
+    runtime_name: str = "mini-harness"
     remote_root: str | None = None
+    remote_hostname: str | None = None
+    remote_username: str | None = None
+    remote_port: int | None = None
+    remote_auth_method: str | None = None
     local_endpoint_id: str | None = None
     local_environment_id: str | None = None
     local_target_id: str | None = None
@@ -323,6 +328,9 @@ class WorkContext:
 
     def target_summary(self) -> str:
         local = self.local_target()
+        remote_configured = self.remote_hostname is not None
+        remote_connected = self.remote_target() is not None
+        remote_address = self.remote_address_summary()
         lines = [
             (
                 "Local target: "
@@ -330,6 +338,13 @@ class WorkContext:
                 f"os={self.local_os}, shell={self.local_shell}, root={self.project_root}"
             )
         ]
+        lines.append(
+            "Remote connection: "
+            f"configured={str(remote_configured).lower()}, "
+            f"connected={str(remote_connected).lower()}, "
+            f"host={remote_address}, "
+            f"auth={self.remote_auth_method or 'n/a'}"
+        )
         remote = self.remote_target()
         lines.append(
             "Remote target: "
@@ -339,6 +354,13 @@ class WorkContext:
         )
         lines.append(f"Default command target: {self.default_terminal_target()}")
         return "\n".join(lines)
+
+    def remote_address_summary(self) -> str:
+        if not self.remote_hostname:
+            return "n/a"
+        user_prefix = f"{self.remote_username}@" if self.remote_username else ""
+        port_suffix = f":{self.remote_port}" if self.remote_port else ""
+        return f"{user_prefix}{self.remote_hostname}{port_suffix}"
 
     def sandbox_summary(self) -> str:
         policy = self._workspace_policy()
@@ -455,6 +477,13 @@ class WorkContext:
         self.terminal_cursor = None
         self.terminal_input_pending = False
         self.last_terminal_input = None
+
+    def refresh_workspace_policy(self) -> None:
+        self.workspace_policy = WorkspacePolicy(
+            local_root=self.project_root,
+            remote_root=self.remote_root,
+            config=self.sandbox_config,
+        )
 
     def _normalized_remote_root(self) -> str:
         root = self._workspace_policy().root_for("remote").replace("\\", "/").strip()

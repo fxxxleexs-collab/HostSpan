@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Literal
 
 import typer
 
@@ -63,10 +64,12 @@ def endpoint_add_ssh(
     username: str,
     known_hosts_file: str,
     port: int = 22,
+    auth_method: Literal["auto", "agent", "key", "password"] = "auto",
     identity_file: str | None = None,
+    password_secret_ref: str | None = None,
     use_ssh_agent: bool = True,
     proxy_jump: str | None = None,
-    connect_timeout: float = 15.0,
+    connect_timeout: float = 300.0,
     keepalive_interval: float = 20.0,
 ) -> None:
     async def _run(runtime):
@@ -76,7 +79,9 @@ def endpoint_add_ssh(
             username=username,
             known_hosts_file=known_hosts_file,
             port=port,
+            auth_method=auth_method,
             identity_file=identity_file,
+            password_secret_ref=password_secret_ref,
             use_ssh_agent=use_ssh_agent,
             proxy_jump=proxy_jump,
             connect_timeout=connect_timeout,

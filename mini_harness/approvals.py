@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from mini_harness.permissions import PermissionDecision, PermissionRequest
+
+if TYPE_CHECKING:
+    from mini_harness.config import RuntimeConfig
 
 
 @dataclass(frozen=True)
@@ -54,3 +57,10 @@ class ApprovalHandler(Protocol):
     async def approve(self, request: ToolApprovalRequest) -> bool: ...
 
     async def prompt_secret(self, prompt: str) -> str | None: ...
+
+    async def prompt_ssh_connection(
+        self,
+        *,
+        reason: str,
+        default_name: str,
+    ) -> RuntimeConfig | None: ...

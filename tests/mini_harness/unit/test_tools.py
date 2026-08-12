@@ -48,6 +48,26 @@ class FakeInteractiveApprovalHandler:
         self.secret_prompts.append(prompt)
         return self.secret
 
+    async def prompt_ssh_connection(
+        self,
+        *,
+        reason: str,
+        default_name: str,
+    ) -> RuntimeConfig | None:
+        self.secret_prompts.append(f"ssh_connection:{reason}:{default_name}")
+        return RuntimeConfig(
+            mode="ssh",
+            name=default_name,
+            ssh=SSHRuntimeConfig(
+                hostname="example.test",
+                username="envrt",
+                known_hosts_file="known_hosts",
+                auth_method="password",
+                use_ssh_agent=False,
+                remote_root="/srv/app",
+            ),
+        )
+
 
 @pytest.mark.asyncio
 async def test_runtime_tools_map_to_runtime_client(fake_runtime) -> None:
@@ -1331,11 +1351,96 @@ async def test_controller_configures_ssh_runtime_before_loop(fake_runtime) -> No
     assert result.final_state == AgentState.COMPLETED
     assert fake_runtime.requests[:2] == [
         ("ensure_local", {"name": "mini-harness-local", "root": project_root}),
-        ("ensure_ssh", {"name": "remote-test", "hostname": "example.test"}),
+        (
+            "ensure_ssh",
+            {
+                "name": "remote-test",
+                "hostname": "example.test",
+                "auth_method": "auto",
+                "has_password_secret_ref": False,
+            },
+        ),
     ]
     assert fake_runtime.requests[2:3] == [
         ("ensure_dir", {"endpoint_id": "endpoint_ssh", "path": "/srv/app"}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_controller_prompts_for_ssh_password_secret(fake_runtime) -> None:
+    approval = FakeInteractiveApprovalHandler(secret="runtime-password")
+    controller = AgentController(
+        fake_runtime,
+        FakeModelProvider([FinalDecision(type="final", summary="ok")]),
+        runtime_config=RuntimeConfig(
+            mode="ssh",
+            name="remote-test",
+            ssh=SSHRuntimeConfig(
+                hostname="example.test",
+                username="envrt",
+                known_hosts_file="known_hosts",
+                auth_method="password",
+                use_ssh_agent=False,
+                remote_root="/srv/app",
+            ),
+        ),
+        approval_handler=approval,
+    )
+
+    result = await controller.run("say hello", "/local/project")
+
+    assert result.final_state == AgentState.COMPLETED
+    assert approval.secret_prompts == ["SSH password for envrt@example.test"]
+    assert ("put_secret", {"purpose": "ssh-password", "has_value": True}) in fake_runtime.requests
+    assert (
+        "ensure_ssh",
+        {
+            "name": "remote-test",
+            "hostname": "example.test",
+            "auth_method": "password",
+            "has_password_secret_ref": True,
+        },
+    ) in fake_runtime.requests
+
+
+@pytest.mark.asyncio
+async def test_request_ssh_connection_opens_interactive_setup(fake_runtime) -> None:
+    approval = FakeInteractiveApprovalHandler(secret="runtime-password")
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = WorkContext(
+        endpoint_id="endpoint_1",
+        environment_id="env_1",
+        target_id="target_1",
+        project_root="/local/project",
+        runtime_name="remote-test",
+        approval_handler=approval,
+    )
+
+    result = await registry.execute(
+        "request_ssh_connection",
+        {"reason": "remote dependencies are needed"},
+        context,
+    )
+
+    assert result.ok
+    assert context.runtime_mode == "ssh"
+    assert context.endpoint_id == "endpoint_ssh"
+    assert approval.secret_prompts == [
+        "ssh_connection:remote dependencies are needed:remote-test",
+        "SSH password for envrt@example.test",
+    ]
+    assert ("put_secret", {"purpose": "ssh-password", "has_value": True}) in fake_runtime.requests
+    assert (
+        "ensure_ssh",
+        {
+            "name": "remote-test",
+            "hostname": "example.test",
+            "auth_method": "password",
+            "has_password_secret_ref": True,
+        },
+    ) in fake_runtime.requests
 
 
 @pytest.mark.asyncio
