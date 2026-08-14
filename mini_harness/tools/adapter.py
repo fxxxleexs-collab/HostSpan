@@ -2360,34 +2360,9 @@ class CloseTerminalTool(RuntimeTool):
 
 
 def build_runtime_tools(runtime: HarnessRuntimeClient) -> list[AgentTool]:
-    return [
-        ListFilesTool(runtime),
-        ReadFileTool(runtime),
-        WriteFileTool(runtime),
-        EditFileTool(runtime),
-        RunCommandTool(runtime),
-        StartTaskTool(runtime),
-        ObserveTaskTool(runtime),
-        CancelTaskTool(runtime),
-        ListTasksTool(runtime),
-        EnsureRemoteToolTool(runtime),
-        SyncStatusTool(runtime),
-        SyncPushTool(runtime),
-        RequestSSHConnectionTool(runtime),
-        OpenTerminalTool(runtime),
-        OpenTerminalTool(runtime, "open_local_terminal", fixed_target="local"),
-        OpenTerminalTool(runtime, "open_remote_terminal", fixed_target="remote"),
-        ListTerminalSessionsTool(runtime),
-        InspectTerminalSessionTool(runtime),
-        ActivateTerminalSessionTool(runtime),
-        ObserveTerminalTool(runtime),
-        SendTerminalInputTool(runtime),
-        RequestHumanTerminalInputTool(runtime),
-        SendTerminalControlTool(runtime),
-        RunInSessionTool(runtime, "run_terminal_command"),
-        RunInSessionTool(runtime),
-        CloseTerminalTool(runtime),
-    ]
+    from mini_harness.tools.runtime.builder import build_runtime_tools as build
+
+    return build(runtime)
 
 
 def _sync_engine(
