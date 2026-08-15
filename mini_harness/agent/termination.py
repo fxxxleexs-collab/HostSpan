@@ -13,13 +13,17 @@ def validate_final(
     *,
     block_failed_command: bool = False,
 ) -> ToolResult | None:
-    if context.active_task_id:
+    active_task_tracked = context.active_task_is_tracked()
+    if context.active_task_id and not active_task_tracked:
         return ToolResult(
             ok=False,
-            summary="A task is still active. Call observe_task before finalizing.",
+            summary=(
+                "A task is still active but is not in the managed task inventory. "
+                "Call task action=\"observe\" or task action=\"list\" before finalizing."
+            ),
             error_code=ErrorCode.TASK_STILL_RUNNING.value,
             recoverable=True,
-            metadata=_final_guard_metadata(decision, "active_task", context),
+            metadata=_final_guard_metadata(decision, "untracked_active_task", context),
         )
     if context.terminal_input_pending and context.active_session_id:
         return ToolResult(
@@ -61,6 +65,8 @@ def _final_guard_metadata(
         "attempted_final_summary": decision.summary,
         "attempted_final_details": decision.details,
         "active_task": context.task_ref(),
+        "active_task_tracked": context.active_task_is_tracked(),
+        "managed_tasks": context.managed_task_inventory(active_only=True),
         "active_session": context.session_ref(),
         "terminal_input_pending": context.terminal_input_pending,
         "last_command_exit_code": context.last_command_exit_code,

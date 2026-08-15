@@ -24,11 +24,7 @@ _SANDBOX_APPROVAL_ERROR_CODES = {
     ErrorCode.SANDBOX_DENIED.value,
 }
 
-_TERMINAL_OPEN_TOOLS = {
-    "open_terminal",
-    "open_local_terminal",
-    "open_remote_terminal",
-}
+_TERMINAL_OPEN_TOOLS = {"open_terminal"}
 
 
 class ToolRegistry:
@@ -129,7 +125,7 @@ class ToolRegistry:
                             name, permission_decision, permission_requests
                         )
                     permission_overridden = True
-            if self.approve_terminal_open and name in _TERMINAL_OPEN_TOOLS:
+            if self.approve_terminal_open and _is_terminal_open_call(name, arguments):
                 approval_request = _terminal_open_approval_request(
                     name, arguments, permission_requests
                 )
@@ -439,6 +435,12 @@ def _terminal_open_approval_request(
         ),
         permission_requests=permission_requests,
     )
+
+
+def _is_terminal_open_call(name: str, arguments: dict[str, Any]) -> bool:
+    if name in _TERMINAL_OPEN_TOOLS:
+        return True
+    return name == "terminal" and arguments.get("action") == "open"
 
 
 def _sandbox_warning_metadata(

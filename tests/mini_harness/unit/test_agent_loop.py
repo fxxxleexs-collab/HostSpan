@@ -5,6 +5,7 @@ import pytest
 from mini_harness.agent.events import InMemoryEventSink
 from mini_harness.agent.loop import AgentLoop
 from mini_harness.agent.state import AgentState
+from mini_harness.agent.termination import validate_final
 from mini_harness.config import AgentConfig
 from mini_harness.context.messages import AgentContext
 from mini_harness.models.fake import FakeModelProvider
@@ -31,20 +32,34 @@ def _registry(fake_runtime) -> ToolRegistry:
     return registry
 
 
+def test_final_guard_blocks_untracked_active_task() -> None:
+    context = _context()
+    context.active_task_id = "external_task"
+
+    guard = validate_final(FinalDecision(type="final", summary="done"), context, "start server")
+
+    assert guard is not None
+    assert guard.error_code == "TASK_STILL_RUNNING"
+    assert guard.metadata["reason"] == "untracked_active_task"
+    assert guard.metadata["active_task_tracked"] is False
+    assert guard.metadata["managed_tasks"] == []
+
+
 @pytest.mark.asyncio
 async def test_agent_loop_completes_with_fake_model(fake_runtime) -> None:
     model = FakeModelProvider(
         [
             ToolDecision(
                 type="tool",
-                tool_name="read_file",
-                arguments={"path": "calculator.py"},
+                tool_name="file",
+                arguments={"action": "read", "path": "calculator.py"},
                 reason_summary="Inspect implementation.",
             ),
             ToolDecision(
                 type="tool",
-                tool_name="write_file",
+                tool_name="file",
                 arguments={
+                    "action": "write",
                     "path": "calculator.py",
                     "content": "def add(a, b):\n    return a + b\n",
                 },
@@ -52,14 +67,14 @@ async def test_agent_loop_completes_with_fake_model(fake_runtime) -> None:
             ),
             ToolDecision(
                 type="tool",
-                tool_name="run_command",
-                arguments={"argv": ["python", "-m", "pytest", "-q"]},
+                tool_name="command",
+                arguments={"action": "run", "argv": ["python", "-m", "pytest", "-q"]},
                 reason_summary="Verify tests.",
             ),
             ToolDecision(
                 type="tool",
-                tool_name="observe_task",
-                arguments={"wait_seconds": 0},
+                tool_name="task",
+                arguments={"action": "observe", "wait_seconds": 0},
                 reason_summary="Observe verification.",
             ),
             FinalDecision(type="final", summary="done"),
@@ -76,20 +91,20 @@ async def test_agent_loop_completes_with_fake_model(fake_runtime) -> None:
 
 
 @pytest.mark.asyncio
-async def test_agent_loop_blocks_final_while_task_active(fake_runtime) -> None:
+async def test_agent_loop_blocks_test_final_until_task_is_observed(fake_runtime) -> None:
     model = FakeModelProvider(
         [
             ToolDecision(
                 type="tool",
-                tool_name="run_command",
-                arguments={"argv": ["python", "-m", "pytest", "-q"]},
+                tool_name="command",
+                arguments={"action": "run", "argv": ["python", "-m", "pytest", "-q"]},
                 reason_summary="Verify tests.",
             ),
             FinalDecision(type="final", summary="too early"),
             ToolDecision(
                 type="tool",
-                tool_name="observe_task",
-                arguments={"wait_seconds": 0},
+                tool_name="task",
+                arguments={"action": "observe", "wait_seconds": 0},
                 reason_summary="Observe active task.",
             ),
             FinalDecision(type="final", summary="done"),
@@ -103,6 +118,37 @@ async def test_agent_loop_blocks_final_while_task_active(fake_runtime) -> None:
 
     assert result.final_state == AgentState.COMPLETED
     assert result.tool_error_count == 1
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_allows_final_with_tracked_background_task(fake_runtime) -> None:
+    model = FakeModelProvider(
+        [
+            ToolDecision(
+                type="tool",
+                tool_name="task",
+                arguments={
+                    "action": "start",
+                    "argv": ["python", "-m", "http.server", "8000"],
+                    "wait_seconds": 0,
+                },
+                reason_summary="Start a background dev server.",
+            ),
+            FinalDecision(type="final", summary="server started"),
+        ]
+    )
+    context = _context()
+    loop = AgentLoop(model, _registry(fake_runtime))
+
+    result = await loop.run("start a dev server", context)
+
+    assert result.final_state == AgentState.COMPLETED
+    assert result.tool_error_count == 0
+    assert context.active_task_id == "task_1"
+    assert context.active_task_is_tracked()
+    inventory = context.managed_task_inventory(active_only=True)
+    assert inventory[0]["task_id"] == "task_1"
+    assert inventory[0]["pid"] == 12345
 
 
 @pytest.mark.asyncio
@@ -151,8 +197,8 @@ async def test_agent_loop_fails_after_repeated_final_guard_blocks(fake_runtime) 
         [
             ToolDecision(
                 type="tool",
-                tool_name="run_command",
-                arguments={"argv": ["python", "-m", "pytest", "-q"]},
+                tool_name="command",
+                arguments={"action": "run", "argv": ["python", "-m", "pytest", "-q"]},
                 reason_summary="Verify tests.",
             ),
             FinalDecision(type="final", summary="too early"),
@@ -174,7 +220,7 @@ async def test_agent_loop_fails_after_repeated_final_guard_blocks(fake_runtime) 
     assert result.iterations == 3
     failed_events = [event for event in sink.events if event.event_type.value == "tool.failed"]
     assert failed_events[-1].payload["metadata"]["guard"] == "final"
-    assert failed_events[-1].payload["metadata"]["reason"] == "active_task"
+    assert failed_events[-1].payload["metadata"]["reason"] == "verification_missing"
     assert failed_events[-1].payload["metadata"]["attempted_final_summary"] == "still too early"
 
 
@@ -184,8 +230,8 @@ async def test_agent_loop_fails_on_max_iterations(fake_runtime) -> None:
         [
             ToolDecision(
                 type="tool",
-                tool_name="read_file",
-                arguments={"path": "calculator.py"},
+                tool_name="file",
+                arguments={"action": "read", "path": "calculator.py"},
                 reason_summary="Repeat.",
             )
         ]
@@ -202,8 +248,8 @@ async def test_agent_loop_fails_on_max_iterations(fake_runtime) -> None:
 async def test_agent_loop_repeated_action_warning_uses_legal_state_path(fake_runtime) -> None:
     repeated = ToolDecision(
         type="tool",
-        tool_name="read_file",
-        arguments={"path": "calculator.py"},
+        tool_name="file",
+        arguments={"action": "read", "path": "calculator.py"},
         reason_summary="Repeat.",
     )
     model = FakeModelProvider(
@@ -213,8 +259,8 @@ async def test_agent_loop_repeated_action_warning_uses_legal_state_path(fake_run
             repeated,
             ToolDecision(
                 type="tool",
-                tool_name="read_file",
-                arguments={"path": "test_calculator.py"},
+                tool_name="file",
+                arguments={"action": "read", "path": "test_calculator.py"},
                 reason_summary="Choose a different action.",
             ),
             FinalDecision(type="final", summary="done"),
@@ -350,6 +396,34 @@ def test_agent_context_includes_runtime_activity_summary() -> None:
     assert "interactive shell waiting for input" in rendered
 
 
+def test_agent_context_exposes_safe_tool_metadata_to_model() -> None:
+    context = AgentContext(AgentConfig(), _context())
+    context.add_tool_result(
+        "file",
+        {"action": "read", "path": "calculator.py"},
+        ToolResult(
+            ok=True,
+            summary="2 lines read from calculator.py lines 1-2",
+            content="1 | def add(a, b):\n2 |     return a + b",
+            metadata={
+                "path": "calculator.py",
+                "sha256": "abc123",
+                "size": 42,
+                "line_count": 2,
+                "selected_line_count": 2,
+                "encoding": "utf-8",
+                "secret_ref": "secret_should_not_be_rendered",
+            },
+        ),
+    )
+
+    rendered = "\n".join(message.content for message in context.build_messages([]))
+
+    assert '"sha256": "abc123"' in rendered
+    assert '"line_count": 2' in rendered
+    assert "secret_should_not_be_rendered" not in rendered
+
+
 def test_agent_context_terminal_input_prompt_uses_input_only_not_run_directly() -> None:
     context = AgentContext(AgentConfig(), _context())
 
@@ -369,8 +443,8 @@ def test_agent_context_describes_task_terminal_boundaries() -> None:
     assert "Runtime tasks and terminal sessions are separate" in rendered
     assert "task_id values" in rendered
     assert "session_id values" in rendered
-    assert "run_terminal_command submits a command" in rendered
-    assert "inside the active terminal session" in rendered
+    assert 'use terminal action="command" in that same session' in rendered
+    assert "not a task" in rendered
 
 
 def test_agent_context_auto_compacts_when_turn_threshold_is_exceeded() -> None:

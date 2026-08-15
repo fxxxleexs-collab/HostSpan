@@ -6,7 +6,7 @@ from mini_harness.approvals import ToolApprovalRequest
 from mini_harness.permissions import CapabilitySetPermissionPolicy
 from mini_harness.runtime.work_context import WorkContext
 from mini_harness.sync.config import SyncConfig
-from mini_harness.tools.adapter import build_runtime_tools
+from mini_harness.tools.runtime.builder import build_internal_runtime_tools as build_runtime_tools
 from mini_harness.tools.registry import ToolRegistry
 
 
@@ -160,7 +160,7 @@ async def test_permission_policy_denies_local_terminal_target(fake_runtime) -> N
         fake_runtime,
     )
 
-    result = await registry.execute("open_local_terminal", {}, _context())
+    result = await registry.execute("open_terminal", {"target": "local"}, _context())
 
     assert not result.ok
     assert result.error_code == "PERMISSION_DENIED"
@@ -181,11 +181,11 @@ async def test_terminal_open_requires_user_approval_when_configured(fake_runtime
         fake_runtime,
     )
 
-    result = await registry.execute("open_local_terminal", {}, _context())
+    result = await registry.execute("open_terminal", {"target": "local"}, _context())
 
     assert result.ok
     assert result.metadata["terminal_open_approved"] is True
-    assert approval.requests[0].tool_name == "open_local_terminal"
+    assert approval.requests[0].tool_name == "open_terminal"
     assert "interactive terminal" in approval.requests[0].decision.reason
     assert "open_terminal" in [name for name, _ in fake_runtime.requests]
 
@@ -202,7 +202,7 @@ async def test_terminal_open_stays_blocked_when_user_rejects(fake_runtime) -> No
         fake_runtime,
     )
 
-    result = await registry.execute("open_local_terminal", {}, _context())
+    result = await registry.execute("open_terminal", {"target": "local"}, _context())
 
     assert not result.ok
     assert result.error_code == "PERMISSION_DENIED"
@@ -229,20 +229,20 @@ async def test_permission_policy_denies_terminal_control(fake_runtime) -> None:
 
 
 @pytest.mark.asyncio
-async def test_permission_policy_denies_run_in_session(fake_runtime) -> None:
+async def test_permission_policy_denies_terminal_command(fake_runtime) -> None:
     registry = _register_runtime_tools(
-        _registry(CapabilitySetPermissionPolicy(denied={"session.run:*"})),
+        _registry(CapabilitySetPermissionPolicy(denied={"terminal.send_input:*"})),
         fake_runtime,
     )
     context = _context()
     context.active_session_id = "session_1"
     context.mark_session_state(target="local", os_name="linux", shell="bash")
 
-    result = await registry.execute("run_in_session", {"command": "id"}, context)
+    result = await registry.execute("terminal_command", {"data": "id"}, context)
 
     assert not result.ok
     assert result.error_code == "PERMISSION_DENIED"
-    assert result.metadata["missing_capabilities"] == ["session.run:local"]
+    assert result.metadata["missing_capabilities"] == ["terminal.send_input:local"]
     assert "write_terminal" not in [name for name, _ in fake_runtime.requests]
 
 
@@ -340,15 +340,15 @@ async def test_permission_policy_can_approve_shell_file_write_in_session(fake_ru
     context.mark_session_state(target="remote", os_name="linux", shell="bash")
 
     result = await registry.execute(
-        "run_in_session",
-        {"command": "cat > port_monitor.py <<'PY'\nprint('ok')\nPY", "wait_seconds": 0},
+        "terminal_command",
+        {"data": "cat > port_monitor.py <<'PY'\nprint('ok')\nPY"},
         context,
     )
 
     assert result.ok
     assert approval.requests[0].permission_requests[1].capability_key == "file.write:remote"
     assert "port_monitor.py" in str(approval.requests[0].permission_requests[1].resource)
-    assert fake_runtime.requests[-2] == (
+    assert fake_runtime.requests[-1] == (
         "write_terminal",
         {"session_id": "session_1", "data": "cat > port_monitor.py <<'PY'\nprint('ok')\nPY\n"},
     )
@@ -371,8 +371,8 @@ async def test_root_escalation_approval_uses_specific_warning(fake_runtime) -> N
     context.mark_session_state(target="remote", os_name="linux", shell="bash")
 
     result = await registry.execute(
-        "run_in_session",
-        {"command": "sudo -i", "wait_seconds": 0},
+        "terminal_command",
+        {"data": "sudo -i"},
         context,
     )
 
@@ -404,8 +404,8 @@ async def test_root_escalation_can_disable_approval_path(fake_runtime) -> None:
     context.mark_session_state(target="remote", os_name="linux", shell="bash")
 
     result = await registry.execute(
-        "run_in_session",
-        {"command": "sudo -i", "wait_seconds": 0},
+        "terminal_command",
+        {"data": "sudo -i"},
         context,
     )
 

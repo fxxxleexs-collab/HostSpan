@@ -278,38 +278,43 @@ def default_fake_model() -> FakeModelProvider:
         [
             ToolDecision(
                 type="tool",
-                tool_name="list_files",
-                arguments={"path": ".", "recursive": False},
+                tool_name="file",
+                arguments={"action": "list", "path": ".", "recursive": False},
                 reason_summary="First inspect the project files.",
             ),
             ToolDecision(
                 type="tool",
-                tool_name="read_file",
-                arguments={"path": "test_calculator.py"},
+                tool_name="file",
+                arguments={"action": "read", "path": "test_calculator.py"},
                 reason_summary="Read the failing test to understand expected behavior.",
             ),
             ToolDecision(
                 type="tool",
-                tool_name="read_file",
-                arguments={"path": "calculator.py"},
+                tool_name="file",
+                arguments={"action": "read", "path": "calculator.py"},
                 reason_summary="Read the implementation before editing it.",
             ),
             ToolDecision(
                 type="tool",
-                tool_name="run_command",
-                arguments={"argv": [*_test_python_argv(), "-m", "pytest", "-q"], "cwd": "."},
+                tool_name="command",
+                arguments={
+                    "action": "run",
+                    "argv": [*_test_python_argv(), "-m", "pytest", "-q"],
+                    "cwd": ".",
+                },
                 reason_summary="Run the tests through the runtime task API.",
             ),
             ToolDecision(
                 type="tool",
-                tool_name="observe_task",
-                arguments={"wait_seconds": 10.0},
+                tool_name="task",
+                arguments={"action": "observe", "wait_seconds": 10.0},
                 reason_summary="Observe the pytest task and collect logs.",
             ),
             ToolDecision(
                 type="tool",
-                tool_name="write_file",
+                tool_name="file",
                 arguments={
+                    "action": "write",
                     "path": "calculator.py",
                     "content": "def add(a: int, b: int) -> int:\n    return a + b\n",
                 },
@@ -317,14 +322,18 @@ def default_fake_model() -> FakeModelProvider:
             ),
             ToolDecision(
                 type="tool",
-                tool_name="run_command",
-                arguments={"argv": [*_test_python_argv(), "-m", "pytest", "-q"], "cwd": "."},
+                tool_name="command",
+                arguments={
+                    "action": "run",
+                    "argv": [*_test_python_argv(), "-m", "pytest", "-q"],
+                    "cwd": ".",
+                },
                 reason_summary="Rerun tests after the fix.",
             ),
             ToolDecision(
                 type="tool",
-                tool_name="observe_task",
-                arguments={"wait_seconds": 10.0},
+                tool_name="task",
+                arguments={"action": "observe", "wait_seconds": 10.0},
                 reason_summary="Confirm the verification task completed.",
             ),
             FinalDecision(

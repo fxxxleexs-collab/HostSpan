@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from mini_harness.runtime.client import HarnessRuntimeClient
 from mini_harness.tools.base import AgentTool
+from mini_harness.tools.runtime.facade import build_facade_tools
 from mini_harness.tools.runtime.file import build_file_tools
 from mini_harness.tools.runtime.remote import build_remote_tools
 from mini_harness.tools.runtime.sync import build_sync_tools
@@ -9,7 +10,7 @@ from mini_harness.tools.runtime.task import build_task_tools
 from mini_harness.tools.runtime.terminal import build_terminal_tools
 
 
-def build_runtime_tools(runtime: HarnessRuntimeClient) -> list[AgentTool]:
+def build_internal_runtime_tools(runtime: HarnessRuntimeClient) -> list[AgentTool]:
     remote_tools = build_remote_tools(runtime)
     ensure_remote_tool, request_ssh_connection_tool = remote_tools
     return [
@@ -22,4 +23,8 @@ def build_runtime_tools(runtime: HarnessRuntimeClient) -> list[AgentTool]:
     ]
 
 
-__all__ = ["build_runtime_tools"]
+def build_runtime_tools(runtime: HarnessRuntimeClient) -> list[AgentTool]:
+    return build_facade_tools(build_internal_runtime_tools(runtime))
+
+
+__all__ = ["build_internal_runtime_tools", "build_runtime_tools"]

@@ -27,7 +27,6 @@ from mini_harness.tools.schemas import (
     ObserveTerminalInput,
     OpenTerminalInput,
     RequestHumanTerminalInput,
-    RunInSessionInput,
     SendTerminalControlInput,
     SendTerminalInput,
     ToolResult,
@@ -346,7 +345,7 @@ class ActivateTerminalSessionTool(RuntimeTool):
             "activate_terminal_session",
             (
                 "Make an existing ACTIVE Runtime terminal session the current session for "
-                "observe_terminal, send_terminal_input, and run_terminal_command."
+                "observe_terminal and terminal_command."
             ),
             ActivateTerminalSessionInput,
         )
@@ -561,12 +560,15 @@ class ObserveTerminalTool(RuntimeTool):
         )
 
 
-class SendTerminalInputTool(RuntimeTool):
+class TerminalCommandTool(RuntimeTool):
     def __init__(self, runtime: HarnessRuntimeClient) -> None:
         super().__init__(
             runtime,
-            "send_terminal_input",
-            "Send input to the active terminal session.",
+            "terminal_command",
+            (
+                "Send text to the active terminal session. By default this submits the "
+                "text with Enter; set input_only=true only for partial typing."
+            ),
             SendTerminalInput,
         )
 
@@ -860,158 +862,6 @@ class SendTerminalControlTool(RuntimeTool):
         )
 
 
-class RunInSessionTool(RuntimeTool):
-    def __init__(self, runtime: HarnessRuntimeClient, name: str = "run_in_session") -> None:
-        super().__init__(
-            runtime,
-            name,
-            (
-                "Submit a shell command into the active interactive terminal session "
-                "and observe terminal output. This is terminal input, not a clean task: "
-                "it inherits that terminal's cwd, env, venv, login, and sudo/root state. "
-                "Use only when the command depends on active terminal state or interaction; "
-                "otherwise use run_command."
-            ),
-            RunInSessionInput,
-        )
-
-    def permission_requests(
-        self,
-        arguments: dict[str, Any],
-        context: WorkContext,
-    ) -> list[PermissionRequest]:
-        data = RunInSessionInput.model_validate(arguments)
-        target = context.active_session_target or context.default_terminal_target()
-        requests = [
-            PermissionRequest.for_target(
-                tool_name=self.definition.name,
-                capability="session.run",
-                target=target,
-                operation="run_in_session",
-                resource=data.session_ref or context.session_ref(),
-                argv=(data.command,),
-            )
-        ]
-        requests.extend(
-            _command_write_permission_requests(
-                tool_name=self.definition.name,
-                target=target,
-                command=data.command,
-                resource=data.session_ref or context.session_ref(),
-            )
-        )
-        return requests
-
-    async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
-        data = (
-            parsed
-            if isinstance(parsed, RunInSessionInput)
-            else RunInSessionInput.model_validate(parsed)
-        )
-        session_id = _resolve_session_id(data.session_ref, context)
-        session = await asyncio.to_thread(self.runtime.get_session, session_id)
-        if not _is_interactive_session(session):
-            return _inactive_session_result(
-                session,
-                context,
-                attempted_tool=self.definition.name,
-                recommended_tool="inspect_terminal_session",
-            )
-        _apply_session_record_to_context(
-            session,
-            context,
-            activate=bool(data.session_ref and context.active_session_id != session_id),
-        )
-        command = _normalize_terminal_input(data.command, run_directly=True, input_only=False)
-        context.authorize_session_command(command)
-        await asyncio.to_thread(self.runtime.write_terminal, session_id, command)
-        context.last_terminal_input = command
-        context.terminal_input_pending = True
-        _update_session_state_from_input(command, context)
-        _record_session_brief_from_record(
-            session,
-            context,
-            updated_by=self.definition.name,
-            brief="Command running in terminal session; waiting for output",
-            last_command=command,
-            pending=True,
-            history_only=False,
-        )
-
-        deadline = time.monotonic() + data.wait_seconds
-        chunks: list[str] = []
-        frame_count = 0
-        last_output_at: float | None = None
-        meaningful_output_seen = False
-        while True:
-            observation = await asyncio.to_thread(
-                self.runtime.observe_terminal,
-                session_id,
-                context.terminal_cursor,
-                data.max_output_chars,
-            )
-            frames = observation.get("frames", [])
-            if isinstance(frames, list) and frames:
-                content = "".join(str(frame.get("data", "")) for frame in frames)
-                chunks.append(content)
-                frame_count += len(frames)
-                last_output_at = time.monotonic()
-                meaningful_output_seen = meaningful_output_seen or not _is_plain_terminal_echo(
-                    content, command
-                )
-            context.terminal_cursor = (
-                int(observation["cursor"]) if observation.get("cursor") is not None else None
-            )
-            now = time.monotonic()
-            if data.wait_seconds <= 0 or now >= deadline:
-                break
-            if (
-                meaningful_output_seen
-                and last_output_at is not None
-                and now - last_output_at >= data.idle_seconds
-            ):
-                break
-            await asyncio.sleep(min(0.1, max(0.0, deadline - now)))
-
-        output = "".join(chunks)
-        if meaningful_output_seen:
-            context.terminal_input_pending = False
-            _update_session_state_from_output(output, context)
-        _record_session_brief_from_record(
-            session,
-            context,
-            updated_by=self.definition.name,
-            brief=_session_output_brief(output, default="Ran command in terminal session"),
-            last_command=command,
-            pending=context.terminal_input_pending,
-            history_only=False,
-        )
-        truncated = len(output) > data.max_output_chars
-        if truncated:
-            output = output[-data.max_output_chars :]
-        return ToolResult(
-            ok=True,
-            summary=f"ran command in session:{session_id}",
-            content=output or None,
-            resource_ref=f"session:{session_id}",
-            state="ACTIVE",
-            cursor=context.terminal_cursor,
-            truncated=truncated,
-            recoverable=True,
-            metadata={
-                "session_id": session_id,
-                "command": command,
-                "tool_semantics": "terminal_session_command",
-                "frame_count": frame_count,
-                "wait_seconds": data.wait_seconds,
-                "idle_seconds": data.idle_seconds,
-                "session_privilege": context.active_session_privilege,
-                "session_stateful": context.active_session_stateful,
-                "session_reason": context.active_session_reason,
-            },
-        )
-
-
 class CloseTerminalTool(RuntimeTool):
     def __init__(self, runtime: HarnessRuntimeClient) -> None:
         super().__init__(
@@ -1066,17 +916,13 @@ class CloseTerminalTool(RuntimeTool):
 def build_terminal_tools(runtime: HarnessRuntimeClient) -> list[AgentTool]:
     return [
         OpenTerminalTool(runtime),
-        OpenTerminalTool(runtime, "open_local_terminal", fixed_target="local"),
-        OpenTerminalTool(runtime, "open_remote_terminal", fixed_target="remote"),
         ListTerminalSessionsTool(runtime),
         InspectTerminalSessionTool(runtime),
         ActivateTerminalSessionTool(runtime),
         ObserveTerminalTool(runtime),
-        SendTerminalInputTool(runtime),
+        TerminalCommandTool(runtime),
         RequestHumanTerminalInputTool(runtime),
         SendTerminalControlTool(runtime),
-        RunInSessionTool(runtime, "run_terminal_command"),
-        RunInSessionTool(runtime),
         CloseTerminalTool(runtime),
     ]
 
@@ -1615,8 +1461,7 @@ __all__ = [
     "ObserveTerminalTool",
     "OpenTerminalTool",
     "RequestHumanTerminalInputTool",
-    "RunInSessionTool",
     "SendTerminalControlTool",
-    "SendTerminalInputTool",
+    "TerminalCommandTool",
     "build_terminal_tools",
 ]

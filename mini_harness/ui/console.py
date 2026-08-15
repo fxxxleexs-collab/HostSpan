@@ -244,7 +244,7 @@ def _tool_name_from_payload(payload: dict[str, Any]) -> str:
         if "frame_count" in metadata:
             return "observe_terminal"
         if "bytes" in metadata:
-            return "send_terminal_control" if "control" in metadata else "send_terminal_input"
+            return "send_terminal_control" if "control" in metadata else "terminal_command"
         if "tool" in metadata:
             return "ensure_remote_tool"
     return ""
@@ -264,16 +264,18 @@ def _is_failed_task_observation(payload: dict[str, Any]) -> bool:
 def _tool_label(name: str, arguments: Any) -> str:
     if not isinstance(arguments, dict):
         return name
+    if name in {"file", "command", "task", "remote", "sync", "terminal"}:
+        return _facade_tool_label(name, arguments)
     if name in {"read_file", "write_file", "edit_file", "list_files"}:
         path = arguments.get("path", ".")
         return f"{name} {path}"
     if name == "run_command":
         return f"run_command {_command_text(arguments.get('argv'))}"
-    if name == "send_terminal_input":
+    if name == "terminal_command":
         input_only = bool(arguments.get("input_only", False))
         run_directly = bool(arguments.get("run_directly", True)) and not input_only
         return (
-            "send_terminal_input "
+            "terminal_command "
             f"{_terminal_input_display(str(arguments.get('data', '')), run_directly)}"
         )
     if name == "send_terminal_control":
@@ -293,9 +295,11 @@ def _result_label(name: str, summary: str, metadata: Any) -> str:
         return f"{summary} ({metadata.get('path', '')})"
     if name == "read_file":
         return f"{summary} ({metadata.get('path', '')})"
-    if name == "run_command":
+    if name in {"run_command", "command"}:
         return f"{summary}: {_command_text(metadata.get('argv'))}"
-    if name == "observe_task":
+    if name == "observe_task" or (
+        name == "task" and metadata.get("inner_tool") == "observe_task"
+    ):
         exit_code = metadata.get("exit_code")
         return summary if exit_code is None else f"{summary} exit={exit_code}"
     if name == "final_guard":
@@ -304,6 +308,37 @@ def _result_label(name: str, summary: str, metadata: Any) -> str:
     if name == "open_terminal" and metadata.get("fallback_from"):
         return f"{summary} fallback_error={metadata.get('fallback_error')}"
     return summary
+
+
+def _facade_tool_label(name: str, arguments: dict[str, Any]) -> str:
+    action = str(arguments.get("action") or "")
+    if name == "file":
+        return f"file {action} {arguments.get('path', '.')}"
+    if name == "command":
+        return f"command run target={arguments.get('target', 'current')} {_command_text(arguments.get('argv'))}"
+    if name == "task":
+        if action == "start":
+            return f"task start target={arguments.get('target', 'current')} {_command_text(arguments.get('argv'))}"
+        return f"task {action} {arguments.get('task_ref', '')}".rstrip()
+    if name == "remote":
+        if action == "ensure_tool":
+            return f"remote ensure_tool {arguments.get('tool', '')}"
+        return f"remote {action}"
+    if name == "sync":
+        return f"sync {action}"
+    if name == "terminal":
+        if action == "command":
+            input_only = bool(arguments.get("input_only", False))
+            return (
+                "terminal command "
+                f"{_terminal_input_display(str(arguments.get('data', '')), not input_only)}"
+            )
+        if action == "control":
+            return f"terminal control {arguments.get('control', '')}"
+        if action == "open":
+            return f"terminal open target={arguments.get('target', 'current')}"
+        return f"terminal {action} {arguments.get('session_ref', '')}".rstrip()
+    return name
 
 
 def _result_details(
@@ -321,16 +356,20 @@ def _result_details(
     if cursor is not None:
         rows.append(("cursor", str(cursor)))
     if isinstance(metadata, dict):
-        if name == "run_command":
+        if name in {"run_command", "command"}:
             if metadata.get("cwd"):
                 rows.append(("cwd", str(metadata["cwd"])))
             if metadata.get("task_id"):
                 rows.append(("task", str(metadata["task_id"])))
-        if name == "open_terminal":
+        if name == "open_terminal" or (
+            name == "terminal" and metadata.get("inner_tool") == "open_terminal"
+        ):
             for key in ("backend", "fallback_from", "recommended_action"):
                 if metadata.get(key):
                     rows.append((key, str(metadata[key])))
-        if name == "ensure_remote_tool":
+        if name == "ensure_remote_tool" or (
+            name == "remote" and metadata.get("inner_tool") == "ensure_remote_tool"
+        ):
             for key in ("tool", "present", "installed", "missing", "recommended_action"):
                 if metadata.get(key) is not None:
                     rows.append((key, str(metadata[key])))

@@ -30,11 +30,10 @@ from mini_harness.tools.runtime.terminal import OpenTerminalTool as OpenTerminal
 from mini_harness.tools.runtime.terminal import (
     RequestHumanTerminalInputTool as RequestHumanTerminalInputTool,
 )
-from mini_harness.tools.runtime.terminal import RunInSessionTool as RunInSessionTool
 from mini_harness.tools.runtime.terminal import (
     SendTerminalControlTool as SendTerminalControlTool,
 )
-from mini_harness.tools.runtime.terminal import SendTerminalInputTool as SendTerminalInputTool
+from mini_harness.tools.runtime.terminal import TerminalCommandTool as TerminalCommandTool
 
 
 def build_runtime_tools(runtime: HarnessRuntimeClient) -> list[AgentTool]:
@@ -60,9 +59,8 @@ __all__ = [
     "RequestHumanTerminalInputTool",
     "RequestSSHConnectionTool",
     "RunCommandTool",
-    "RunInSessionTool",
     "SendTerminalControlTool",
-    "SendTerminalInputTool",
+    "TerminalCommandTool",
     "StartTaskTool",
     "SyncPushTool",
     "SyncStatusTool",

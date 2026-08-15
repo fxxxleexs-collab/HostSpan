@@ -61,12 +61,12 @@ def test_runtime_activity_summary_includes_active_tasks_and_sessions() -> None:
         last_command="sudo -i",
         privilege="root",
         pending=True,
-        updated_by="send_terminal_input",
+        updated_by="terminal_command",
     )
 
     summary = context.runtime_activity_summary()
 
-    assert "Managed tasks:" in summary
+    assert "Managed tasks tracked for this conversation:" in summary
     assert "task:task_1" in summary
     assert "pid=12345" in summary
     assert "python app.py" in summary
@@ -75,6 +75,40 @@ def test_runtime_activity_summary_includes_active_tasks_and_sessions() -> None:
     assert "session:session_1" in summary
     assert "privilege=root" in summary
     assert "pending=true" in summary
+
+
+def test_managed_task_inventory_lists_active_task_pid() -> None:
+    context = _context()
+    context.active_task_id = "task_1"
+    context.record_task_brief(
+        "task_1",
+        argv=["python", "-m", "http.server", "8000"],
+        cwd="/project",
+        state="RUNNING",
+        pid=12345,
+        persistent=True,
+        started_by="start_task",
+    )
+
+    inventory = context.managed_task_inventory(active_only=True)
+
+    assert context.active_task_is_tracked()
+    assert inventory == [
+        {
+            "task_id": "task_1",
+            "argv": ["python", "-m", "http.server", "8000"],
+            "cwd": "/project",
+            "state": "RUNNING",
+            "pid": 12345,
+            "persistent": True,
+            "log_tail": None,
+            "exit_code": None,
+            "started_by": "start_task",
+            "active": True,
+            "touched_at": inventory[0]["touched_at"],
+            "touch_index": 1,
+        }
+    ]
 
 
 def test_runtime_activity_summary_does_not_redact_docker_ps_output() -> None:
