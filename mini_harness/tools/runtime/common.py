@@ -15,6 +15,8 @@ from mini_harness.runtime.work_context import ResolvedTerminalTarget, WorkContex
 from mini_harness.tools.base import AgentTool
 from mini_harness.tools.schemas import ToolDefinition, ToolResult
 
+TERMINAL_TASK_STATES = {"SUCCEEDED", "FAILED", "CANCELLED", "LOST"}
+
 
 class RuntimeTool(AgentTool):
     input_model: type[BaseModel]
@@ -217,6 +219,7 @@ def _unique_paths(paths: list[str]) -> list[str]:
 
 __all__ = [
     "RuntimeTool",
+    "TERMINAL_TASK_STATES",
     "_command_write_permission_requests",
     "_likely_written_paths",
     "_normalize_terminal_text",

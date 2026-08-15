@@ -2,48 +2,32 @@ from __future__ import annotations
 
 from mini_harness.runtime.client import HarnessRuntimeClient
 from mini_harness.tools.base import AgentTool
+from mini_harness.tools.runtime.file import build_file_tools
+from mini_harness.tools.runtime.sync import build_sync_tools
+from mini_harness.tools.runtime.task import build_task_tools
 
 
 def build_runtime_tools(runtime: HarnessRuntimeClient) -> list[AgentTool]:
     from mini_harness.tools.adapter import (
         ActivateTerminalSessionTool,
-        CancelTaskTool,
         CloseTerminalTool,
-        EditFileTool,
         EnsureRemoteToolTool,
         InspectTerminalSessionTool,
-        ListFilesTool,
-        ListTasksTool,
         ListTerminalSessionsTool,
-        ObserveTaskTool,
         ObserveTerminalTool,
         OpenTerminalTool,
-        ReadFileTool,
         RequestHumanTerminalInputTool,
         RequestSSHConnectionTool,
-        RunCommandTool,
         RunInSessionTool,
         SendTerminalControlTool,
         SendTerminalInputTool,
-        StartTaskTool,
-        SyncPushTool,
-        SyncStatusTool,
-        WriteFileTool,
     )
 
     return [
-        ListFilesTool(runtime),
-        ReadFileTool(runtime),
-        WriteFileTool(runtime),
-        EditFileTool(runtime),
-        RunCommandTool(runtime),
-        StartTaskTool(runtime),
-        ObserveTaskTool(runtime),
-        CancelTaskTool(runtime),
-        ListTasksTool(runtime),
+        *build_file_tools(runtime),
+        *build_task_tools(runtime),
         EnsureRemoteToolTool(runtime),
-        SyncStatusTool(runtime),
-        SyncPushTool(runtime),
+        *build_sync_tools(runtime),
         RequestSSHConnectionTool(runtime),
         OpenTerminalTool(runtime),
         OpenTerminalTool(runtime, "open_local_terminal", fixed_target="local"),
