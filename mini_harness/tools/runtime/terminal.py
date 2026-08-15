@@ -14,8 +14,8 @@ from mini_harness.permissions import PermissionRequest
 from mini_harness.runtime.client import HarnessRuntimeClient
 from mini_harness.runtime.work_context import ResolvedTerminalTarget, TargetBinding, WorkContext
 from mini_harness.tools.base import AgentTool
-from mini_harness.tools.runtime.common import (
-    RuntimeTool,
+from mini_harness.tools.runtime.common import RuntimeTool
+from mini_harness.tools.runtime.shell_analysis import (
     _command_write_permission_requests,
     _normalize_terminal_text,
 )
