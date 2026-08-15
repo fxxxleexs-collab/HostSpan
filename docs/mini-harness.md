@@ -31,28 +31,16 @@ Long chat histories are compacted deterministically inside `AgentContext`: older
 
 The current version exposes:
 
-- `list_files`
-- `read_file`
-- `write_file`
-- `run_command`
-- `observe_task`
-- `cancel_task`
-- `ensure_remote_tool`
-- `sync_status`
-- `sync_push`
-- `open_terminal`
-- `open_local_terminal`
-- `open_remote_terminal`
-- `list_terminal_sessions`
-- `inspect_terminal_session`
-- `activate_terminal_session`
-- `observe_terminal`
-- `send_terminal_input`
-- `send_terminal_control`
-- `run_in_session`
-- `close_terminal`
+- `file` with actions `list`, `read`, `write`, and `edit`
+- `command` with action `run`
+- `task` with actions `start`, `observe`, `list`, and `cancel`
+- `remote` with actions `ensure_tool` and `request_ssh_connection`
+- `sync` with actions `status` and `push`
+- `terminal` with actions `open`, `list`, `inspect`, `activate`, `observe`, `command`, `human_input`, `control`, and `close`
 
 Tool schemas hide endpoint, environment, target, broker, process, persistence, SSH, and tmux details from the model. `WorkContext` injects stable Runtime resource IDs and maps relative paths to either the local project root or the configured SSH `remote_root`.
+
+`command` action `run` and `task` action `start` accept `target="local" | "remote"`. Use `local` for machine-local commands such as packaging or Windows PowerShell work, and `remote` for the configured SSH host.
 
 ## Tool Permissions
 
@@ -66,7 +54,7 @@ allow = ["*"]
 deny = [
   "file.write:*",
   "terminal.open:remote",
-  "session.run:remote",
+  "terminal.send_input:remote",
 ]
 approve_sandbox_denials = true
 approve_terminal_open = true
@@ -81,7 +69,6 @@ Covered permission request families:
 - Task tools request `task.run`, `task.observe`, or `task.cancel`.
 - Terminal tools request `terminal.open`, `terminal.observe`, `terminal.send_input`, or `terminal.close` with a local/remote target.
 - Session discovery tools request `terminal.list`, `terminal.inspect`, or `terminal.activate`. Use these to discover Runtime-managed sessions; do not rely on `tmux ls` from a separate shell because tmux visibility depends on user/socket context.
-- `run_in_session` requests `session.run` with the active terminal target.
 - Shell commands which look like they create or overwrite files, such as `>`, `>>`, `tee`, `touch`, `mkdir`, `cp`, or `mv`, also request `file.write` for the target.
 - Sync tools request `sync.status` or `sync.push` with the remote target.
 
@@ -132,8 +119,8 @@ The `mini_harness.sync` package is initialized as an independent module for work
 
 The module is exposed through:
 
-- `sync_status`: scans the local workspace and returns a manifest diff summary without writing remote files.
-- `sync_push`: applies the local-to-remote push plan, writes the remote manifest, and updates local sync state.
+- `sync` action `status`: scans the local workspace and returns a manifest diff summary without writing remote files.
+- `sync` action `push`: applies the local-to-remote push plan, writes the remote manifest, and updates local sync state.
 
 Enable the first push-mode implementation with:
 
@@ -301,21 +288,21 @@ MINI_AGENT_REMOTE_ROOT=...
 Remote behavior:
 
 - File tools use SFTP and map relative paths under `remote_root`.
-- `run_command` uses SDK `commands.run` as a clean task. It does not inherit terminal state such as root shell, `cd`, exported env vars, activated venv, nested login, or tmux shell state.
-- `observe_task` uses cursor-based SDK observation.
-- Interactive work uses `open_terminal`, `open_local_terminal`, `open_remote_terminal`, `observe_terminal`, `send_terminal_input`, and `close_terminal`.
-- `open_terminal` uses the default command target. In local mode that target is local; in SSH mode that target is remote.
-- In SSH runtime mode, Mini Harness also prepares a local target so the model can use `open_local_terminal` for local packaging, local PowerShell work, or other machine-local interaction.
+- `command` action `run` uses SDK `commands.run` as a clean task. It does not inherit terminal state such as root shell, `cd`, exported env vars, activated venv, nested login, or tmux shell state.
+- `command` action `run` and `task` action `start` can select `target="local"` or `target="remote"` when both targets are available.
+- `task` action `observe` uses cursor-based SDK observation.
+- Interactive work uses `terminal` actions `open`, `observe`, `command`, and `close`.
+- `terminal` action `open` uses `target="current"` by default. In local mode that target is local; in SSH mode that target is remote.
+- In SSH runtime mode, Mini Harness also prepares a local target so the model can use `terminal` action `open` with `target="local"` for local packaging, local PowerShell work, or other machine-local interaction.
 - Terminal tool results and the work context expose the terminal target, OS, shell, and backend so the model can choose matching command syntax.
-- If a terminal session has important state, use `run_in_session` for dependent commands. For example, after opening a root shell with `sudo -i`, install commands should run with `run_in_session`, not `run_command`.
-- When a privileged or stateful terminal session is active, `run_command` returns a recoverable warning unless `force_clean=true` is explicitly set.
-- `observe_terminal` supports `wait_seconds` and `idle_seconds`; for a terminal command expected to run for 10 seconds, observe with a window such as `wait_seconds=12`.
-- `send_terminal_input.data` is the exact terminal input bytes. Use `""` or `"\n"` to press Enter, and include a trailing `"\n"` to submit a shell command.
-- `send_terminal_input.run_directly=true` appends Enter when `data` does not already end with one, so `{"data": "id", "run_directly": true}` executes `id` immediately.
-- In SSH runtime mode, `open_remote_terminal` already starts the process on the configured remote host. Do not pass `ssh remote` as `argv`; leave `argv` unset or use `["bash", "-l"]` for an interactive remote shell.
+- If a terminal session has important state, use `terminal` action `command` for dependent commands. For example, after opening a root shell with `sudo -i`, install commands should run with `terminal` action `command`, not `command` action `run`.
+- When a privileged or stateful terminal session is active, `command` action `run` returns a recoverable warning unless `force_clean=true` is explicitly set.
+- `terminal` action `observe` supports `wait_seconds` and `idle_seconds`; for a terminal command expected to run for 10 seconds, observe with a window such as `wait_seconds=12`.
+- `terminal` action `command` `data` is the exact terminal input text. Use `""` or `"\n"` to press Enter. By default, Mini Harness appends Enter when `data` does not already end with one, so `{"action": "command", "data": "id"}` executes `id` immediately. Set `input_only=true` only when typing without submitting.
+- In SSH runtime mode, `terminal` action `open` with `target="remote"` already starts the process on the configured remote host. Do not pass `ssh remote` as `argv`; leave `argv` unset or use `["bash", "-l"]` for an interactive remote shell.
 - SSH terminals default to `ssh_tmux`; if tmux startup fails and fallback is enabled, the SDK retries with `ssh_pty`.
-- If `open_terminal` falls back from `ssh_tmux` to `ssh_pty`, the result includes `fallback_from`, `fallback_error`, and a recommended action.
-- `ensure_remote_tool` can check for `tmux` and optionally attempt non-interactive installation with the remote package manager.
+- If terminal open falls back from `ssh_tmux` to `ssh_pty`, the result includes `fallback_from`, `fallback_error`, and a recommended action.
+- `remote` action `ensure_tool` can check for `tmux` and optionally attempt non-interactive installation with the remote package manager.
 
 Password SSH authentication is not wired through Runtime endpoint creation yet. Use an identity file or SSH agent for this first version.
 

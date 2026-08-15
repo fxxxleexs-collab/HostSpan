@@ -42,6 +42,7 @@ class PreparedTextChange:
     expected_sha256: str | None
     expected_source: str | None
     existed_before: bool
+    ignored_expected_sha256: str | None = None
 
     @property
     def hash_guarded(self) -> bool:
@@ -501,8 +502,18 @@ def _prepare_text_change_from_current(
 ) -> PreparedTextChange | ToolResult:
     before_snapshot = snapshot_text(path, current_text)
     cached_snapshot = context.file_snapshot(path)
+    ignored_expected_sha256: str | None = None
     expected_source = "argument" if expected_sha256 else None
     if expected_sha256 is None and cached_snapshot is not None:
+        expected_sha256 = cached_snapshot.sha256
+        expected_source = "recent_read_snapshot"
+    elif (
+        expected_sha256 is not None
+        and before_snapshot.sha256 != expected_sha256
+        and cached_snapshot is not None
+        and before_snapshot.sha256 == cached_snapshot.sha256
+    ):
+        ignored_expected_sha256 = expected_sha256
         expected_sha256 = cached_snapshot.sha256
         expected_source = "recent_read_snapshot"
     if expected_sha256 is not None and before_snapshot.sha256 != expected_sha256:
@@ -533,6 +544,7 @@ def _prepare_text_change_from_current(
         expected_sha256=expected_sha256,
         expected_source=expected_source,
         existed_before=existed_before,
+        ignored_expected_sha256=ignored_expected_sha256,
     )
 
 
@@ -540,6 +552,7 @@ def _prepared_change_metadata(prepared: PreparedTextChange) -> dict[str, Any]:
     return {
         "expected_sha256": prepared.expected_sha256,
         "expected_source": prepared.expected_source,
+        "ignored_expected_sha256": prepared.ignored_expected_sha256,
         "hash_guarded": prepared.hash_guarded,
         "unguarded_write": prepared.unguarded_write,
         "existed_before": prepared.existed_before,

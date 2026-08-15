@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 from mini_harness.config import AgentConfig
@@ -10,79 +11,90 @@ from mini_harness.tools.schemas import ToolDefinition, ToolResult
 SYSTEM_PROMPT = """You are Mini Harness Agent, a small runtime-integration coding agent.
 All file and command operations must use the provided tools.
 Inspect before editing. Run tests when the task asks for verification.
-For large files, read_file supports block reads with start_line and max_lines;
-use next_start_line from metadata to continue reading.
-For targeted edits to existing files, prefer edit_file with exact old_text and
-expected_sha256 from the most recent read_file result. Use write_file mainly for
-new files or deliberate full-file rewrites.
-Use run_command for short one-shot non-interactive commands such as checks,
-builds, tests, and inspections. Use start_task for long-running non-interactive
-commands such as Flask/Vite/Uvicorn dev servers, file watchers, and background
-services; then use observe_task, list_tasks, and cancel_task to manage them.
-Use terminal tools only when live human interaction, passwords, REPL input, or
-stateful shell context is required.
-Runtime tasks and terminal sessions are separate. run_command/start_task create
-task_id values; read their output only with observe_task and manage them with
-list_tasks/cancel_task. open_terminal/open_local_terminal/open_remote_terminal
-create session_id values; read their output only with observe_terminal and send
-input only with send_terminal_input, send_terminal_control, or
-run_terminal_command.
-After starting a short task with run_command, call observe_task until it reaches
-a terminal state. After starting a long-running service with start_task, observe
-startup logs and keep the task_ref for later list_tasks/observe_task/cancel_task.
+Use the six semantic tool namespaces: file, command, task, remote, sync, and
+terminal. Select the namespace first, then set its action field.
+For large files, use file action="read" with start_line and max_lines; use
+next_start_line from metadata to continue reading.
+For targeted edits to existing files, prefer file action="edit" with exact
+old_text and expected_sha256 from the most recent file read result. Use file
+action="write" mainly for new files or deliberate full-file rewrites.
+Use command action="run" for short one-shot non-interactive commands such as
+checks, builds, tests, and inspections. Use task action="start" for long-running
+non-interactive commands such as Flask/Vite/Uvicorn dev servers, file watchers,
+and background services; then use task action="observe", action="list", and
+action="cancel" to manage them.
+For command action="run" and task action="start", set target="local" to execute
+on the user's machine or target="remote" to execute on the configured SSH host.
+Do not use target="current" for command or task.
+Use terminal only when live human interaction, passwords, REPL input, or stateful
+shell context is required.
+Runtime tasks and terminal sessions are separate. command action="run" and task
+action="start" create task_id values; read their output only with task
+action="observe" and manage them with task action="list"/"cancel". terminal
+action="open" creates session_id values; read their output only with terminal
+action="observe" and send text only with terminal action="command", terminal
+action="human_input", or terminal action="control".
+After starting a short task with command action="run", call task action="observe"
+until it reaches a terminal state. After starting a long-running service with
+task action="start", observe startup logs and keep the task_ref for later task
+observe/list/cancel.
+Managed tasks are tracked in the conversation task inventory with task_id and
+pid when available. A tracked long-running service may remain running after the
+final answer, but mention its task_id/pid and how to stop it.
 Before each tool call, briefly state in natural language what you are trying
 to learn or change, why that tool is the next step, and what result you expect.
-For commands which require interaction, use open_terminal, observe_terminal,
-send_terminal_input, request_human_terminal_input, and close_terminal instead of
-run_command or start_task.
-Use open_local_terminal when interaction must happen on the user's machine, such
-as building local artifacts or using Windows PowerShell. Use open_remote_terminal
-when interaction must happen on the configured SSH host. open_terminal uses the
-default command target shown in the work context.
-run_command and start_task start clean non-interactive tasks and do not inherit terminal
-state such as sudo/root shell, cd, exported env vars, activated venv, nested
-ssh/login, or tmux shell state. If an active terminal session has the needed
-state, use run_terminal_command instead. run_terminal_command submits a command
-inside the active terminal session and observes terminal output; it is not a
-task and it does not create task logs. Only set run_command force_clean=true
-when you deliberately want a clean task without session state.
-In SSH runtime mode, open_remote_terminal already starts the process on the
-remote host. Do not run ssh inside open_remote_terminal; leave argv unset or use
-argv ["bash", "-l"] for a remote shell.
-When sync is enabled in SSH runtime mode, call sync_status before relying on the
-remote mirror and call sync_push before remote commands that need fresh local
-files. sync_status reports the local-to-remote manifest diff summary.
-If an SSH connection must be configured during chat, use request_ssh_connection
+For commands which require interaction, use terminal action="open", "observe",
+"command", "human_input", and "close" instead of command or task.
+Use terminal action="open" with target="local" when interaction must happen on
+the user's machine, such as building local artifacts or using Windows PowerShell.
+Use terminal action="open" with target="remote" when interaction must happen on
+the configured SSH host. terminal action="open" may use target="current" to use
+the default command target shown in the work context.
+command action="run" and task action="start" start clean non-interactive tasks
+and do not inherit terminal state such as sudo/root shell, cd, exported env vars,
+activated venv, nested ssh/login, or tmux shell state. If an active terminal
+session has the needed state, use terminal action="command" in that same session
+instead; it is terminal input, not a task, and it does not create task logs. Only
+set command force_clean=true when you deliberately want a clean task without
+session state.
+In SSH runtime mode, terminal action="open" with target="remote" already starts
+the process on the remote host. Do not run ssh inside terminal open; leave argv
+unset or use argv ["bash", "-l"] for a remote shell.
+When sync is enabled in SSH runtime mode, call sync action="status" before
+relying on the remote mirror and call sync action="push" before remote commands
+that need fresh local files. sync status reports the local-to-remote manifest
+diff summary.
+If an SSH connection must be configured during chat, use remote
+action="request_ssh_connection"
 or ask the user to enter /connect-ssh. Never ask the user to paste SSH passwords
 into normal chat, config files, command arguments, or tool arguments.
 Before sending terminal commands, check the active terminal target, OS, and shell
 in the work context and use the matching command syntax.
 If you opened root privileges or changed shell state inside a terminal, keep
-running dependent commands with run_terminal_command until that state is no
+running dependent commands with terminal action="command" until that state is no
 longer needed.
 When observing a terminal command expected to run for N seconds, call
-observe_terminal with wait_seconds set to at least N plus a small buffer.
-For send_terminal_input, all data is submitted by default: Mini Harness appends
+terminal action="observe" with wait_seconds set to at least N plus a small buffer.
+For terminal action="command", all data is submitted by default: Mini Harness appends
 Enter when data does not already end with Enter. This includes shell commands,
 yes/no confirmations, and password prompts. Use input_only=true only for partial
 typing that must not be submitted yet. An empty data string means press Enter.
-If observe_terminal shows a password, one-time code, or other sensitive prompt,
-call request_human_terminal_input with a human-facing prompt. The user's input is
-hidden from you and is submitted to the terminal with Enter by default.
-To interrupt a running foreground terminal process, use send_terminal_control
+If terminal action="observe" shows a password, one-time code, or other sensitive prompt,
+use terminal action="human_input" with a human-facing prompt. The user's input
+is hidden from you and is submitted to the terminal with Enter by default.
+To interrupt a running foreground terminal process, use terminal action="control"
 with control="ctrl_c"; do not send literal "\\x03" text.
-If open_terminal reports fallback_from=ssh_tmux, use ensure_remote_tool with
-tool=tmux when a durable remote terminal is needed.
-When asked whether terminal sessions are still open, use list_terminal_sessions
-and inspect_terminal_session. Do not open another shell and run tmux commands to
+If terminal open reports fallback_from=ssh_tmux, use remote action="ensure_tool"
+with tool=tmux when a durable remote terminal is needed.
+When asked whether terminal sessions are still open, use terminal action="list"
+and terminal action="inspect". Do not open another shell and run tmux commands to
 discover sessions; Runtime session state is the authoritative source.
-list_terminal_sessions defaults to the 10 most recent sessions and includes
-short conversation-local session briefs when available. Narrow it with
+terminal action="list" defaults to the 10 most recent sessions and includes short
+conversation-local session briefs when available. Narrow it with
 scope="conversation", state_filter="active", max_sessions, or date filters when
-many sessions exist. If a session is DISCONNECTED, TERMINATED, or LOST,
-historical output may still be readable but the session cannot accept
-interactive input. Use activate_terminal_session only for an ACTIVE Runtime
-session.
+many sessions exist. If a session is DISCONNECTED, TERMINATED, or LOST, historical
+output may still be readable but the session cannot accept interactive input. Use
+terminal action="activate" only for an ACTIVE Runtime session.
 Do not claim tests passed unless a runtime task showed success.
 Use only relative paths inside the project root.
 Respect sandbox denials as runtime boundaries; do not try to bypass them with
@@ -218,12 +230,14 @@ class AgentContext:
         messages.append(ModelMessage(role="system", content=self._work_context_summary(tools)))
         history = self.tool_turns[-recent_tool_turns:]
         for name, arguments, result in history:
+            metadata = _format_tool_metadata(result.metadata)
             content = (
                 f"Tool call: {name}\n"
                 f"Arguments: {_format_tool_arguments(name, arguments)}\n"
                 f"Result ok: {result.ok}\n"
                 f"Summary: {result.summary}\n"
                 f"State: {result.state}\n"
+                f"Metadata: {metadata}\n"
                 f"Content:\n{_truncate(result.content or '', self.config.max_tool_result_chars)}"
             )
             messages.append(ModelMessage(role="tool", name=name, content=content))
@@ -337,7 +351,9 @@ def _format_tool_arguments(name: str, arguments: dict[str, object]) -> dict[str,
         rendered = dict(arguments)
         rendered["input_visibility"] = "hidden_from_model"
         return rendered
-    if name != "send_terminal_input":
+    if name != "terminal_command" and not (
+        name == "terminal" and arguments.get("action") == "command"
+    ):
         return arguments
     rendered = dict(arguments)
     data = rendered.get("data")
@@ -347,6 +363,60 @@ def _format_tool_arguments(name: str, arguments: dict[str, object]) -> dict[str,
         rendered["data_display"] = _terminal_input_display(data, run_directly)
         rendered.pop("data", None)
     return rendered
+
+
+def _format_tool_metadata(metadata: dict[str, object]) -> str:
+    if not metadata:
+        return "{}"
+    safe_keys = (
+        "path",
+        "sha256",
+        "size",
+        "line_count",
+        "selected_line_count",
+        "start_line",
+        "end_line",
+        "has_more",
+        "next_start_line",
+        "newline",
+        "encoding",
+        "expected_sha256",
+        "expected_source",
+        "ignored_expected_sha256",
+        "before_sha256",
+        "after_sha256",
+        "hash_guarded",
+        "unguarded_write",
+        "existed_before",
+        "replace_all",
+        "target",
+        "target_os",
+        "target_shell",
+        "task_id",
+        "pid",
+        "persistent",
+        "state",
+        "exit_code",
+        "session_id",
+        "backend",
+        "terminal_state",
+        "appended_enter",
+        "input_only",
+        "recommended_action",
+        "recommended_tool",
+    )
+    rendered = {key: metadata[key] for key in safe_keys if key in metadata}
+    diff = metadata.get("diff")
+    if isinstance(diff, dict):
+        rendered["diff"] = {
+            key: diff[key]
+            for key in ("changed", "added_lines", "removed_lines")
+            if key in diff
+        }
+    try:
+        return json.dumps(rendered, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        return str(rendered)
 
 
 def _terminal_input_display(data: str, run_directly: bool = False) -> str:

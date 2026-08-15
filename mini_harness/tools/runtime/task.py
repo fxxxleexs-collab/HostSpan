@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from mini_harness.errors import ErrorCode, MiniHarnessError
 from mini_harness.permissions import PermissionRequest
 from mini_harness.runtime.client import HarnessRuntimeClient
-from mini_harness.runtime.work_context import WorkContext
+from mini_harness.runtime.work_context import ResolvedTerminalTarget, WorkContext
 from mini_harness.tools.base import AgentTool
 from mini_harness.tools.runtime.common import TERMINAL_TASK_STATES, RuntimeTool
 from mini_harness.tools.runtime.shell_analysis import _command_write_permission_requests
@@ -46,13 +46,13 @@ class RunCommandTool(RuntimeTool):
         context: WorkContext,
     ) -> list[PermissionRequest]:
         data = RunCommandInput.model_validate(arguments)
+        binding = context.terminal_target(data.target)
         cwd = context.normalize_cwd(data.cwd)
-        target = context.default_terminal_target()
         requests = [
             PermissionRequest.for_target(
                 tool_name=self.definition.name,
                 capability="task.run",
-                target=target,
+                target=binding.location,
                 operation="run",
                 resource=cwd,
                 argv=data.argv,
@@ -61,7 +61,7 @@ class RunCommandTool(RuntimeTool):
         requests.extend(
             _command_write_permission_requests(
                 tool_name=self.definition.name,
-                target=target,
+                target=binding.location,
                 command=" ".join(data.argv),
                 resource=cwd,
             )
@@ -74,15 +74,21 @@ class RunCommandTool(RuntimeTool):
             if isinstance(parsed, RunCommandInput)
             else RunCommandInput.model_validate(parsed)
         )
-        guard = _clean_task_session_guard(data.argv, context, data.force_clean)
+        binding = context.terminal_target(data.target)
+        guard = _clean_task_session_guard(
+            data.argv,
+            context,
+            data.force_clean,
+            binding.location,
+        )
         if guard is not None:
             return guard
-        cwd = context.runtime_cwd(data.cwd)
-        sandboxed = context.sandbox_task(data.argv, cwd)
+        cwd = context.runtime_cwd_for(data.cwd, binding.location)
+        sandboxed = context.sandbox_task(data.argv, cwd, binding.location)
         task = await asyncio.to_thread(
             self.runtime.run_command,
-            context.environment_id,
-            context.target_id,
+            binding.environment_id,
+            binding.target_id,
             sandboxed.argv,
             sandboxed.cwd,
         )
@@ -111,6 +117,9 @@ class RunCommandTool(RuntimeTool):
                 "persistent": brief.persistent,
                 "argv": sandboxed.argv,
                 "cwd": sandboxed.cwd,
+                "target": binding.location,
+                "target_os": binding.os_name,
+                "target_shell": binding.shell,
                 "sandbox_engine": sandboxed.engine,
             },
         )
@@ -137,13 +146,13 @@ class StartTaskTool(RuntimeTool):
         context: WorkContext,
     ) -> list[PermissionRequest]:
         data = StartTaskInput.model_validate(arguments)
+        binding = context.terminal_target(data.target)
         cwd = context.normalize_cwd(data.cwd)
-        target = context.default_terminal_target()
         requests = [
             PermissionRequest.for_target(
                 tool_name=self.definition.name,
                 capability="task.run",
-                target=target,
+                target=binding.location,
                 operation="start",
                 resource=cwd,
                 argv=data.argv,
@@ -152,7 +161,7 @@ class StartTaskTool(RuntimeTool):
         requests.extend(
             _command_write_permission_requests(
                 tool_name=self.definition.name,
-                target=target,
+                target=binding.location,
                 command=" ".join(data.argv),
                 resource=cwd,
             )
@@ -161,12 +170,13 @@ class StartTaskTool(RuntimeTool):
 
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = parsed if isinstance(parsed, StartTaskInput) else StartTaskInput.model_validate(parsed)
-        cwd = context.runtime_cwd(data.cwd)
-        sandboxed = context.sandbox_task(data.argv, cwd)
+        binding = context.terminal_target(data.target)
+        cwd = context.runtime_cwd_for(data.cwd, binding.location)
+        sandboxed = context.sandbox_task(data.argv, cwd, binding.location)
         task = await asyncio.to_thread(
             self.runtime.start_task,
-            context.environment_id,
-            context.target_id,
+            binding.environment_id,
+            binding.target_id,
             sandboxed.argv,
             sandboxed.cwd,
             True,
@@ -227,6 +237,9 @@ class StartTaskTool(RuntimeTool):
                 "persistent": True,
                 "argv": sandboxed.argv,
                 "cwd": sandboxed.cwd,
+                "target": binding.location,
+                "target_os": binding.os_name,
+                "target_shell": binding.shell,
                 "log_tail": brief.log_tail,
                 "exit_code": brief.exit_code,
                 "sandbox_engine": sandboxed.engine,
@@ -458,13 +471,11 @@ def _clean_task_session_guard(
     argv: list[str],
     context: WorkContext,
     force_clean: bool,
+    target: ResolvedTerminalTarget,
 ) -> ToolResult | None:
     if force_clean or not context.active_session_id:
         return None
-    if (
-        context.active_session_target is not None
-        and context.active_session_target != context.default_terminal_target()
-    ):
+    if context.active_session_target is not None and context.active_session_target != target:
         return None
     if not context.active_session_stateful and context.active_session_privilege != "root":
         return None
@@ -482,7 +493,7 @@ def _clean_task_session_guard(
     return ToolResult(
         ok=False,
         summary=(
-            f"{reason} Use run_terminal_command for commands that require this state, "
+            f"{reason} Use terminal action=\"command\" for commands that require this state, "
             "or set force_clean=true to deliberately run a clean task."
         ),
         error_code=ErrorCode.RUNTIME_OPERATION_FAILED.value,
@@ -494,7 +505,8 @@ def _clean_task_session_guard(
             "session_privilege": context.active_session_privilege,
             "session_stateful": context.active_session_stateful,
             "session_reason": context.active_session_reason,
-            "recommended_tool": "run_terminal_command",
+            "recommended_tool": "terminal",
+            "recommended_action": "command",
             "clean_task_override": {"force_clean": True},
         },
     )

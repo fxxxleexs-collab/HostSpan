@@ -73,6 +73,14 @@ class EditFileInput(BaseModel):
 
 
 class RunCommandInput(BaseModel):
+    target: Literal["current", "local", "remote"] = Field(
+        default="current",
+        description=(
+            "Execution target. current uses the default runtime target; local runs on "
+            "the user's machine when a local target is available; remote runs on the "
+            "configured SSH host."
+        ),
+    )
     argv: list[str] = Field(min_length=1)
     cwd: str = "."
     timeout_seconds: int | None = Field(default=300, ge=1, le=3_600)
@@ -87,6 +95,14 @@ class RunCommandInput(BaseModel):
 
 
 class StartTaskInput(BaseModel):
+    target: Literal["current", "local", "remote"] = Field(
+        default="current",
+        description=(
+            "Execution target. current uses the default runtime target; local runs on "
+            "the user's machine when a local target is available; remote runs on the "
+            "configured SSH host."
+        ),
+    )
     argv: list[str] = Field(
         min_length=1,
         description=(
@@ -303,23 +319,6 @@ class SendTerminalControlInput(BaseModel):
         )
     )
     session_ref: str | None = None
-
-
-class RunInSessionInput(BaseModel):
-    command: str = Field(
-        min_length=1,
-        max_length=20_000,
-        description=(
-            "Shell command to execute inside the active terminal session. This inherits "
-            "session state such as root shell, cwd, activated venv, exported env vars, "
-            "and login state."
-        ),
-        examples=["apt-get install -y tmux", "pytest -q", "id"],
-    )
-    session_ref: str | None = None
-    wait_seconds: float = Field(default=12.0, ge=0, le=300)
-    idle_seconds: float = Field(default=1.5, ge=0.1, le=30)
-    max_output_chars: int = Field(default=12_000, ge=1, le=200_000)
 
 
 class CloseTerminalInput(BaseModel):

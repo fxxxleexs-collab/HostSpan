@@ -236,12 +236,16 @@ class WorkContext:
             return relative
         return self._workspace_policy().runtime_path(relative, target="remote").runtime_path
 
-    def sandbox_task(self, argv: list[str], cwd: str) -> SandboxedCommand:
+    def sandbox_task(
+        self,
+        argv: list[str],
+        cwd: str,
+        target: TerminalTarget = "current",
+    ) -> SandboxedCommand:
+        resolved_target = self.resolve_terminal_target(target)
         if self.sandbox_approval_active():
             return self._approved_sandbox_command(argv, cwd)
-        return self._workspace_policy().sandbox_task(
-            argv, cwd, target=self.default_terminal_target()
-        )
+        return self._workspace_policy().sandbox_task(argv, cwd, target=resolved_target)
 
     def sandbox_terminal(
         self,
@@ -281,6 +285,24 @@ class WorkContext:
 
     def task_ref(self) -> str | None:
         return f"task:{self.active_task_id}" if self.active_task_id else None
+
+    def active_task_brief(self) -> TaskBrief | None:
+        if not self.active_task_id:
+            return None
+        return self.task_briefs.get(self.active_task_id)
+
+    def active_task_is_tracked(self) -> bool:
+        return self.active_task_brief() is not None
+
+    def managed_task_inventory(self, *, active_only: bool = False) -> list[dict[str, object]]:
+        tasks = sorted(
+            self.task_briefs.values(),
+            key=lambda item: item.touch_index,
+            reverse=True,
+        )
+        if active_only:
+            tasks = [task for task in tasks if task.active or task.task_id == self.active_task_id]
+        return [task.as_dict() for task in tasks]
 
     def session_ref(self) -> str | None:
         return f"session:{self.active_session_id}" if self.active_session_id else None
@@ -458,7 +480,7 @@ class WorkContext:
         task_lines = self._task_activity_lines(max_tasks=max_tasks)
         session_lines = self._session_activity_lines(max_sessions=max_sessions)
         if task_lines:
-            lines.append("Managed tasks:")
+            lines.append("Managed tasks tracked for this conversation:")
             lines.extend(task_lines)
         else:
             lines.append("Managed tasks: none")

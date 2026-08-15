@@ -16,8 +16,9 @@ from mini_harness.models.schemas import FinalDecision, ToolDecision
 from mini_harness.permissions import PermissionsConfig
 from mini_harness.runtime.work_context import WorkContext
 from mini_harness.sync.config import SyncConfig
-from mini_harness.tools.adapter import build_runtime_tools
+from mini_harness.tools.adapter import build_runtime_tools as build_facade_runtime_tools
 from mini_harness.tools.registry import ToolRegistry
+from mini_harness.tools.runtime.builder import build_internal_runtime_tools as build_runtime_tools
 from mini_harness.workspace import SandboxConfig, SandboxTargetConfig
 
 
@@ -31,6 +32,13 @@ def _context() -> WorkContext:
             local=SandboxTargetConfig(allow_root_shell=True, allow_package_install=True)
         ),
     )
+
+
+def _facade_registry(fake_runtime) -> ToolRegistry:
+    registry = ToolRegistry()
+    for tool in build_facade_runtime_tools(fake_runtime):
+        registry.register(tool)
+    return registry
 
 
 class FakeInteractiveApprovalHandler:
@@ -131,6 +139,100 @@ async def test_runtime_tools_map_to_runtime_client(fake_runtime) -> None:
 
 
 @pytest.mark.asyncio
+async def test_facade_tools_are_default_runtime_tools(fake_runtime) -> None:
+    registry = _facade_registry(fake_runtime)
+    context = _context()
+
+    read = await registry.execute(
+        "file",
+        {"action": "read", "path": "calculator.py"},
+        context,
+    )
+    command = await registry.execute(
+        "command",
+        {"action": "run", "argv": ["python", "-m", "pytest", "-q"]},
+        context,
+    )
+    observed = await registry.execute(
+        "task",
+        {"action": "observe", "wait_seconds": 0},
+        context,
+    )
+
+    assert read.ok
+    assert read.metadata["inner_tool"] == "read_file"
+    assert command.ok
+    assert command.metadata["inner_tool"] == "run_command"
+    assert observed.ok
+    assert observed.metadata["inner_tool"] == "observe_task"
+
+
+@pytest.mark.asyncio
+async def test_terminal_facade_opens_sends_and_observes(fake_runtime) -> None:
+    registry = _facade_registry(fake_runtime)
+    context = _context()
+
+    opened = await registry.execute("terminal", {"action": "open"}, context)
+    sent = await registry.execute("terminal", {"action": "command", "data": "echo ok"}, context)
+    observed = await registry.execute("terminal", {"action": "observe"}, context)
+
+    assert opened.ok
+    assert opened.metadata["inner_tool"] == "open_terminal"
+    assert sent.ok
+    assert sent.metadata["inner_tool"] == "terminal_command"
+    assert observed.ok
+    assert observed.metadata["inner_tool"] == "observe_terminal"
+    assert (
+        "write_terminal",
+        {"session_id": "session_1", "data": "echo ok\n"},
+    ) in fake_runtime.requests
+
+
+@pytest.mark.asyncio
+async def test_file_facade_preserves_diff_preview_tool_name(fake_runtime) -> None:
+    approval = FakeInteractiveApprovalHandler(approved=True)
+    registry = ToolRegistry(approval_handler=approval)
+    for tool in build_facade_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+
+    result = await registry.execute(
+        "file",
+        {"action": "write", "path": "calculator.py", "content": "print('ok')\n"},
+        context,
+    )
+
+    assert result.ok
+    assert approval.requests[0].tool_name == "file"
+    assert approval.requests[0].arguments["action"] == "write"
+    assert approval.requests[0].preview_kind == "diff"
+
+
+@pytest.mark.asyncio
+async def test_file_facade_read_then_edit_uses_recent_snapshot(fake_runtime) -> None:
+    registry = _facade_registry(fake_runtime)
+    context = _context()
+
+    read = await registry.execute("file", {"action": "read", "path": "calculator.py"}, context)
+    edited = await registry.execute(
+        "file",
+        {
+            "action": "edit",
+            "path": "calculator.py",
+            "old_text": "return a - b",
+            "new_text": "return a + b",
+        },
+        context,
+    )
+
+    assert read.ok
+    assert edited.ok
+    assert edited.metadata["expected_source"] == "recent_read_snapshot"
+    assert edited.metadata["expected_sha256"] == read.metadata["sha256"]
+    assert "return a + b" in fake_runtime.files["calculator.py"]
+
+
+@pytest.mark.asyncio
 async def test_start_task_records_managed_long_running_task(fake_runtime) -> None:
     registry = ToolRegistry()
     for tool in build_runtime_tools(fake_runtime):
@@ -190,7 +292,7 @@ async def test_runtime_tools_map_remote_paths_and_terminal_tools(fake_runtime) -
     )
     opened = await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
     observed = await registry.execute("observe_terminal", {}, context)
-    sent = await registry.execute("send_terminal_input", {"data": "echo ok\n"}, context)
+    sent = await registry.execute("terminal_command", {"data": "echo ok\n"}, context)
     closed = await registry.execute("close_terminal", {}, context)
 
     assert listed.ok
@@ -387,6 +489,33 @@ async def test_write_file_rejects_when_expected_sha256_is_stale(fake_runtime) ->
     assert result.metadata["actual_sha256"] != "0" * 64
     assert result.metadata["recommended_action"] == "read_file"
     assert "write_text" not in [name for name, _ in fake_runtime.requests]
+
+
+@pytest.mark.asyncio
+async def test_write_file_falls_back_to_recent_snapshot_when_argument_hash_is_wrong(
+    fake_runtime,
+) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+
+    read = await registry.execute("read_file", {"path": "calculator.py"}, context)
+    result = await registry.execute(
+        "write_file",
+        {
+            "path": "calculator.py",
+            "content": "def add(a: int, b: int) -> int:\n    return a + b\n",
+            "expected_sha256": "0" * 64,
+        },
+        context,
+    )
+
+    assert read.ok
+    assert result.ok
+    assert result.metadata["expected_source"] == "recent_read_snapshot"
+    assert result.metadata["expected_sha256"] == read.metadata["sha256"]
+    assert result.metadata["ignored_expected_sha256"] == "0" * 64
 
 
 @pytest.mark.asyncio
@@ -667,7 +796,7 @@ async def test_edit_file_rejects_stale_recent_read_snapshot(fake_runtime) -> Non
 
 
 @pytest.mark.asyncio
-async def test_open_local_terminal_is_available_in_ssh_runtime(fake_runtime) -> None:
+async def test_open_terminal_can_target_local_in_ssh_runtime(fake_runtime) -> None:
     registry = ToolRegistry()
     for tool in build_runtime_tools(fake_runtime):
         registry.register(tool)
@@ -687,7 +816,7 @@ async def test_open_local_terminal_is_available_in_ssh_runtime(fake_runtime) -> 
         remote_shell="bash",
     )
 
-    opened = await registry.execute("open_local_terminal", {}, context)
+    opened = await registry.execute("open_terminal", {"target": "local"}, context)
 
     assert opened.ok
     assert opened.metadata["target"] == "local"
@@ -704,6 +833,45 @@ async def test_open_local_terminal_is_available_in_ssh_runtime(fake_runtime) -> 
             "cwd": str(Path("/local/project").resolve()),
             "cols": 120,
             "rows": 30,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_command_facade_can_target_local_in_ssh_runtime(fake_runtime) -> None:
+    registry = _facade_registry(fake_runtime)
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root="/local/project",
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+        local_endpoint_id="endpoint_1",
+        local_environment_id="env_1",
+        local_target_id="target_1",
+        local_os="windows",
+        local_shell="powershell",
+        remote_os="linux",
+        remote_shell="bash",
+    )
+
+    result = await registry.execute(
+        "command",
+        {"action": "run", "target": "local", "argv": ["python", "--version"]},
+        context,
+    )
+
+    assert result.ok
+    assert result.metadata["target"] == "local"
+    assert result.metadata["inner_tool"] == "run_command"
+    assert fake_runtime.requests[-1] == (
+        "run_command",
+        {
+            "environment_id": "env_1",
+            "target_id": "target_1",
+            "argv": ["python", "--version"],
+            "cwd": str(Path("/local/project").resolve()),
         },
     )
 
@@ -808,7 +976,7 @@ async def test_list_terminal_sessions_conversation_scope_includes_brief(fake_run
 
     opened = await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
     assert opened.ok
-    ran = await registry.execute("run_in_session", {"command": "id -u"}, context)
+    ran = await registry.execute("terminal_command", {"data": "id -u"}, context)
     assert ran.ok
     fake_runtime.sessions["session_other"] = {
         "session_id": "session_other",
@@ -835,7 +1003,7 @@ async def test_list_terminal_sessions_conversation_scope_includes_brief(fake_run
     session = result.metadata["sessions"][0]
     assert session["session_id"] == "session_1"
     assert session["last_command"] == "id -u"
-    assert "Latest terminal output" in str(session["brief"])
+    assert "Command/input sent" in str(session["brief"])
 
 
 @pytest.mark.asyncio
@@ -874,8 +1042,8 @@ async def test_inspect_disconnected_ssh_pty_reports_history_only(fake_runtime) -
         context,
     )
     ran = await registry.execute(
-        "run_in_session",
-        {"session_ref": "session:session_old", "command": "id", "wait_seconds": 0},
+        "terminal_command",
+        {"session_ref": "session:session_old", "data": "id"},
         context,
     )
 
@@ -925,7 +1093,7 @@ async def test_observe_terminal_waits_past_plain_command_echo(fake_runtime) -> N
     fake_runtime.observe_terminal = observe_terminal
 
     await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
-    await registry.execute("send_terminal_input", {"data": "measure-cpu\n"}, context)
+    await registry.execute("terminal_command", {"data": "measure-cpu\n"}, context)
     observed = await registry.execute(
         "observe_terminal",
         {"wait_seconds": 0.4, "idle_seconds": 0.1},
@@ -940,14 +1108,14 @@ async def test_observe_terminal_waits_past_plain_command_echo(fake_runtime) -> N
 
 
 @pytest.mark.asyncio
-async def test_send_terminal_input_treats_empty_data_as_enter(fake_runtime) -> None:
+async def test_terminal_command_treats_empty_data_as_enter(fake_runtime) -> None:
     registry = ToolRegistry()
     for tool in build_runtime_tools(fake_runtime):
         registry.register(tool)
     context = _context()
 
     await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
-    result = await registry.execute("send_terminal_input", {"data": ""}, context)
+    result = await registry.execute("terminal_command", {"data": ""}, context)
 
     assert result.ok
     assert result.summary.endswith("<ENTER>")
@@ -959,7 +1127,7 @@ async def test_send_terminal_input_treats_empty_data_as_enter(fake_runtime) -> N
 
 
 @pytest.mark.asyncio
-async def test_send_terminal_input_appends_enter_by_default(fake_runtime) -> None:
+async def test_terminal_command_appends_enter_by_default(fake_runtime) -> None:
     registry = ToolRegistry()
     for tool in build_runtime_tools(fake_runtime):
         registry.register(tool)
@@ -967,7 +1135,7 @@ async def test_send_terminal_input_appends_enter_by_default(fake_runtime) -> Non
 
     await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
     result = await registry.execute(
-        "send_terminal_input",
+        "terminal_command",
         {"data": "id"},
         context,
     )
@@ -983,9 +1151,9 @@ async def test_send_terminal_input_appends_enter_by_default(fake_runtime) -> Non
     )
 
 
-def test_send_terminal_input_tool_schema_hides_deprecated_run_directly(fake_runtime) -> None:
+def test_terminal_command_tool_schema_hides_deprecated_run_directly(fake_runtime) -> None:
     definitions = {tool.definition.name: tool.definition for tool in build_runtime_tools(fake_runtime)}
-    schema = definitions["send_terminal_input"].input_schema
+    schema = definitions["terminal_command"].input_schema
     properties = schema["properties"]
 
     assert "run_directly" not in properties
@@ -993,7 +1161,7 @@ def test_send_terminal_input_tool_schema_hides_deprecated_run_directly(fake_runt
 
 
 @pytest.mark.asyncio
-async def test_send_terminal_input_run_directly_keeps_existing_enter(fake_runtime) -> None:
+async def test_terminal_command_run_directly_keeps_existing_enter(fake_runtime) -> None:
     registry = ToolRegistry()
     for tool in build_runtime_tools(fake_runtime):
         registry.register(tool)
@@ -1001,7 +1169,7 @@ async def test_send_terminal_input_run_directly_keeps_existing_enter(fake_runtim
 
     await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
     result = await registry.execute(
-        "send_terminal_input",
+        "terminal_command",
         {"data": "id\n", "run_directly": True},
         context,
     )
@@ -1015,7 +1183,7 @@ async def test_send_terminal_input_run_directly_keeps_existing_enter(fake_runtim
 
 
 @pytest.mark.asyncio
-async def test_send_terminal_input_input_only_does_not_append_enter(fake_runtime) -> None:
+async def test_terminal_command_input_only_does_not_append_enter(fake_runtime) -> None:
     registry = ToolRegistry()
     for tool in build_runtime_tools(fake_runtime):
         registry.register(tool)
@@ -1023,7 +1191,7 @@ async def test_send_terminal_input_input_only_does_not_append_enter(fake_runtime
 
     await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
     result = await registry.execute(
-        "send_terminal_input",
+        "terminal_command",
         {"data": "partial", "input_only": True},
         context,
     )
@@ -1067,7 +1235,7 @@ async def test_run_command_warns_when_root_session_is_active(fake_runtime) -> No
 
     await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
     await registry.execute(
-        "send_terminal_input",
+        "terminal_command",
         {"data": "sudo -i", "run_directly": True},
         context,
     )
@@ -1079,7 +1247,8 @@ async def test_run_command_warns_when_root_session_is_active(fake_runtime) -> No
 
     assert not result.ok
     assert result.recoverable
-    assert result.metadata["recommended_tool"] == "run_terminal_command"
+    assert result.metadata["recommended_tool"] == "terminal"
+    assert result.metadata["recommended_action"] == "command"
     assert result.metadata["session_privilege"] == "root"
     assert "will not inherit that root shell" in result.summary
     assert "run_command" not in [name for name, _ in fake_runtime.requests]
@@ -1137,7 +1306,7 @@ async def test_run_command_denies_package_download_by_default(fake_runtime) -> N
 
 
 @pytest.mark.asyncio
-async def test_run_in_session_uses_active_terminal_state(fake_runtime) -> None:
+async def test_terminal_command_uses_active_terminal_state(fake_runtime) -> None:
     registry = ToolRegistry()
     for tool in build_runtime_tools(fake_runtime):
         registry.register(tool)
@@ -1145,27 +1314,34 @@ async def test_run_in_session_uses_active_terminal_state(fake_runtime) -> None:
 
     await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
     await registry.execute(
-        "send_terminal_input",
+        "terminal_command",
         {"data": "sudo -i", "run_directly": True},
         context,
     )
     result = await registry.execute(
-        "run_in_session",
-        {"command": "apt-get install -y tmux", "wait_seconds": 0},
+        "terminal_command",
+        {"data": "apt-get install -y tmux"},
         context,
     )
 
     assert result.ok
     assert result.resource_ref == "session:session_1"
-    assert result.metadata["session_privilege"] == "root"
-    assert fake_runtime.requests[-2] == (
+    assert fake_runtime.requests[-1] == (
         "write_terminal",
         {"session_id": "session_1", "data": "apt-get install -y tmux\n"},
     )
 
 
+def test_run_in_session_and_run_terminal_command_are_not_registered(fake_runtime) -> None:
+    names = {tool.definition.name for tool in build_runtime_tools(fake_runtime)}
+
+    assert "run_in_session" not in names
+    assert "run_terminal_command" not in names
+    assert "terminal_command" in names
+
+
 @pytest.mark.asyncio
-async def test_run_terminal_command_alias_uses_active_terminal_state(fake_runtime) -> None:
+async def test_terminal_command_submits_command_to_active_session(fake_runtime) -> None:
     registry = ToolRegistry()
     for tool in build_runtime_tools(fake_runtime):
         registry.register(tool)
@@ -1173,15 +1349,15 @@ async def test_run_terminal_command_alias_uses_active_terminal_state(fake_runtim
 
     await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
     result = await registry.execute(
-        "run_terminal_command",
-        {"command": "id", "wait_seconds": 0},
+        "terminal_command",
+        {"data": "id"},
         context,
     )
 
     assert result.ok
     assert result.resource_ref == "session:session_1"
-    assert result.metadata["command"] == "id\n"
-    assert fake_runtime.requests[-2] == (
+    assert result.metadata["display"] == "id<ENTER>"
+    assert fake_runtime.requests[-1] == (
         "write_terminal",
         {"session_id": "session_1", "data": "id\n"},
     )
@@ -1608,8 +1784,12 @@ async def test_controller_applies_permissions_config(fake_runtime) -> None:
             [
                 ToolDecision(
                     type="tool",
-                    tool_name="write_file",
-                    arguments={"path": "calculator.py", "content": "blocked\n"},
+                    tool_name="file",
+                    arguments={
+                        "action": "write",
+                        "path": "calculator.py",
+                        "content": "blocked\n",
+                    },
                     reason_summary="Try to write a file.",
                 ),
                 FinalDecision(type="final", summary="done"),
