@@ -412,6 +412,38 @@ def test_agent_context_exposes_safe_tool_metadata_to_model() -> None:
     assert "secret_should_not_be_rendered" not in rendered
 
 
+def test_agent_context_saves_long_tool_results_as_artifacts(tmp_path) -> None:
+    work_context = WorkContext(
+        endpoint_id="endpoint_1",
+        environment_id="env_1",
+        target_id="target_1",
+        project_root=str(tmp_path),
+    )
+    config = AgentConfig(max_tool_result_chars=1_000, tool_result_artifact_chars=1_000)
+    context = AgentContext(config, work_context)
+    long_content = "A" * 1_200 + "\nimportant middle\n" + "B" * 1_200
+
+    context.add_tool_result(
+        "command",
+        {"action": "run", "argv": ["python", "-m", "pytest", "-q"]},
+        ToolResult(ok=True, summary="command output", content=long_content),
+    )
+
+    stored_result = context.tool_turns[0][2]
+    artifact_path = stored_result.metadata["artifact_path"]
+    assert stored_result.truncated is True
+    assert stored_result.content is not None
+    assert len(stored_result.content) <= config.max_tool_result_chars
+    assert (tmp_path / str(artifact_path)).read_text(encoding="utf-8") == long_content
+
+    rendered = "\n".join(message.content for message in context.build_messages([]))
+    assert "artifact_path" in rendered
+    assert "full tool output saved" in rendered
+    assert "important middle" not in rendered
+    assert rendered.count("A") < 1_200
+    assert rendered.count("B") < 1_200
+
+
 def test_agent_context_terminal_input_prompt_uses_input_only_not_run_directly() -> None:
     context = AgentContext(AgentConfig(), _context())
 

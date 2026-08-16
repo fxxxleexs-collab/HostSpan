@@ -18,6 +18,8 @@ class AgentConfig(BaseModel):
     repeated_action_limit: int = Field(default=3, ge=2)
     max_context_chars: int = Field(default=120_000, ge=1_000)
     max_tool_result_chars: int = Field(default=20_000, ge=1_000)
+    tool_result_artifact_chars: int = Field(default=20_000, ge=1_000)
+    tool_result_artifact_dir: str = ".mini-harness/artifacts/tool-results"
     recent_tool_turns: int = Field(default=12, ge=1)
     auto_compact_turns: int = Field(default=8, ge=2)
     auto_compact_tool_turns: int = Field(default=24, ge=2)

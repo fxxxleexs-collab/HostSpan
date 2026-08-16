@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from mini_harness.config import AgentConfig
 from mini_harness.models.schemas import FinalDecision, ModelMessage
 from mini_harness.runtime.work_context import WorkContext
 from mini_harness.tools.schemas import ToolDefinition, ToolResult
+
+_ARTIFACT_PREVIEW_MAX_CHARS = 8_000
 
 SYSTEM_PROMPT = """You are Mini Harness Agent, a small runtime-integration coding agent.
 All file and command operations must use the provided tools.
@@ -15,6 +19,10 @@ Use the six semantic tool namespaces: file, command, task, remote, sync, and
 terminal. Select the namespace first, then set its action field.
 For large files, use file action="read" with start_line and max_lines; use
 next_start_line from metadata to continue reading.
+When a tool result is too long, Mini Harness may save the full content under an
+artifact_path in metadata and show only a head/tail preview. Use file
+action="read" with that artifact_path, start_line, and max_lines when you need
+the full saved output.
 For targeted edits to existing files, prefer file action="edit" with exact
 old_text and expected_sha256 from the most recent file read result. Use file
 action="write" mainly for new files or deliberate full-file rewrites.
@@ -178,7 +186,7 @@ class AgentContext:
         arguments: dict[str, object],
         result: ToolResult,
     ) -> None:
-        self.tool_turns.append((name, arguments, result))
+        self.tool_turns.append((name, arguments, self._store_large_tool_result(name, result)))
 
     def build_messages(self, tools: list[ToolDefinition]) -> list[ModelMessage]:
         self.compacted = False
@@ -318,6 +326,19 @@ class AgentContext:
             summary_chars=len(self.compacted_summary or ""),
         )
 
+    def _store_large_tool_result(self, name: str, result: ToolResult) -> ToolResult:
+        content = result.content
+        if content is None or len(content) <= self.config.tool_result_artifact_chars:
+            return result
+        return _artifact_tool_result(
+            result,
+            tool_name=name,
+            index=len(self.tool_turns) + 1,
+            project_root=self.work_context.project_root,
+            artifact_dir=self.config.tool_result_artifact_dir,
+            max_preview_chars=min(self.config.max_tool_result_chars, _ARTIFACT_PREVIEW_MAX_CHARS),
+        )
+
     def _work_context_summary(self, tools: list[ToolDefinition]) -> str:
         active = self.work_context.task_ref() or "none"
         active_session = self.work_context.session_state_summary()
@@ -350,6 +371,136 @@ def _truncate(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[-max_chars:] + "\n[truncated]"
+
+
+def _artifact_tool_result(
+    result: ToolResult,
+    *,
+    tool_name: str,
+    index: int,
+    project_root: str,
+    artifact_dir: str,
+    max_preview_chars: int,
+) -> ToolResult:
+    content = result.content or ""
+    metadata = dict(result.metadata)
+    metadata.update(
+        {
+            "content_saved_to_artifact": True,
+            "artifact_kind": "tool_result_content",
+            "artifact_chars": len(content),
+            "artifact_lines": _line_count(content),
+        }
+    )
+    artifact_path = _write_tool_result_artifact(
+        content,
+        tool_name=tool_name,
+        index=index,
+        project_root=project_root,
+        artifact_dir=artifact_dir,
+    )
+    if artifact_path is None:
+        metadata["artifact_error"] = "artifact_write_unavailable"
+        artifact_ref = "unavailable"
+    else:
+        metadata["artifact_path"] = artifact_path
+        metadata["artifact_ref"] = f"artifact:{artifact_path}"
+        artifact_ref = artifact_path
+    preview = _artifact_preview(
+        content,
+        artifact_ref=artifact_ref,
+        chars=len(content),
+        lines=metadata["artifact_lines"],
+        max_chars=max_preview_chars,
+    )
+    metadata["artifact_preview_chars"] = len(preview)
+    summary = result.summary
+    if artifact_path is not None:
+        summary = f"{summary} Full content saved to {artifact_path}."
+    else:
+        summary = f"{summary} Full content was too large; artifact write unavailable."
+    return result.model_copy(
+        update={
+            "summary": summary,
+            "content": preview,
+            "truncated": True,
+            "metadata": metadata,
+        }
+    )
+
+
+def _write_tool_result_artifact(
+    content: str,
+    *,
+    tool_name: str,
+    index: int,
+    project_root: str,
+    artifact_dir: str,
+) -> str | None:
+    root = Path(project_root)
+    if not root.exists() or not root.is_dir():
+        return None
+    relative_dir = Path(artifact_dir)
+    if relative_dir.is_absolute() or any(part == ".." for part in relative_dir.parts):
+        relative_dir = Path(".mini-harness") / "artifacts" / "tool-results"
+    artifact_root = root / relative_dir
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    filename = f"{index:04d}-{_safe_artifact_name(tool_name)}.txt"
+    path = artifact_root / filename
+    path.write_text(content, encoding="utf-8", newline="")
+    return path.relative_to(root).as_posix()
+
+
+def _safe_artifact_name(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-._")
+    return (cleaned or "tool-result")[:80]
+
+
+def _line_count(text: str) -> int:
+    if text == "":
+        return 0
+    return text.count("\n") + (0 if text.endswith("\n") else 1)
+
+
+def _artifact_preview(
+    text: str,
+    *,
+    artifact_ref: str,
+    chars: int,
+    lines: object,
+    max_chars: int,
+) -> str:
+    header = (
+        f"[full tool output saved to {artifact_ref}; "
+        f"chars={chars}; lines={lines}]\n"
+    )
+    omitted = "\n...[omitted {omitted_chars} chars; read artifact_path in line windows if needed]...\n"
+    if max_chars <= len(header) + 100:
+        return _hard_truncate(header, max_chars)
+    available = max_chars - len(header) - len(omitted.format(omitted_chars=0))
+    if available <= 0:
+        return _hard_truncate(header, max_chars)
+    head_chars = available // 2
+    tail_chars = available - head_chars
+    omitted_chars = max(0, len(text) - head_chars - tail_chars)
+    body = (
+        text[:head_chars]
+        + omitted.format(omitted_chars=omitted_chars)
+        + text[-tail_chars:]
+    )
+    preview = header + body
+    if len(preview) <= max_chars:
+        return preview
+    return _hard_truncate(preview, max_chars)
+
+
+def _hard_truncate(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    suffix = "\n[truncated]"
+    if max_chars <= len(suffix):
+        return text[:max_chars]
+    return text[: max_chars - len(suffix)] + suffix
 
 
 def _one_line(text: str, max_chars: int = 500) -> str:
@@ -417,6 +568,14 @@ def _format_tool_metadata(metadata: dict[str, object]) -> str:
         "input_only",
         "recommended_action",
         "recommended_tool",
+        "content_saved_to_artifact",
+        "artifact_kind",
+        "artifact_path",
+        "artifact_ref",
+        "artifact_chars",
+        "artifact_lines",
+        "artifact_preview_chars",
+        "artifact_error",
     )
     rendered = {key: metadata[key] for key in safe_keys if key in metadata}
     diff = metadata.get("diff")
