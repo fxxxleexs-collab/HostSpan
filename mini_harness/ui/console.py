@@ -273,10 +273,9 @@ def _tool_label(name: str, arguments: Any) -> str:
         return f"run_command {_command_text(arguments.get('argv'))}"
     if name == "terminal_command":
         input_only = bool(arguments.get("input_only", False))
-        run_directly = bool(arguments.get("run_directly", True)) and not input_only
         return (
             "terminal_command "
-            f"{_terminal_input_display(str(arguments.get('data', '')), run_directly)}"
+            f"{_terminal_input_display(str(arguments.get('data', '')), append_enter=not input_only)}"
         )
     if name == "send_terminal_control":
         return f"send_terminal_control {arguments.get('control', '')}"
@@ -414,7 +413,7 @@ def _clip(text: str, max_chars: int) -> str:
     return text[-max_chars:] + "\n[truncated]"
 
 
-def _terminal_input_display(data: str, run_directly: bool = False) -> str:
+def _terminal_input_display(data: str, append_enter: bool = False) -> str:
     if data == "":
         return "<ENTER>"
     if data == "\n":
@@ -422,7 +421,7 @@ def _terminal_input_display(data: str, run_directly: bool = False) -> str:
     if data == "\r":
         return "<CR>"
     normalized = data
-    if run_directly and not normalized.endswith(("\n", "\r")):
+    if append_enter and not normalized.endswith(("\n", "\r")):
         normalized += "\n"
     value = normalized.replace("\r\n", "<ENTER>").replace("\n", "<ENTER>").replace("\r", "<CR>")
     return _clip(value, 80)

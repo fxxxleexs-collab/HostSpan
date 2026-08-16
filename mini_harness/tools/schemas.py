@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
-from pydantic.json_schema import SkipJsonSchema
 
 
 class ToolDefinition(BaseModel):
@@ -53,7 +52,8 @@ class WriteFileInput(BaseModel):
         default=None,
         description=(
             "Optional sha256 of the file version this write is based on. If omitted, "
-            "Mini Harness uses the most recent read_file snapshot for this path when available."
+            "Mini Harness uses the most recent file action=\"read\" snapshot for this "
+            "path when available."
         ),
     )
 
@@ -66,7 +66,8 @@ class EditFileInput(BaseModel):
         default=None,
         description=(
             "Optional sha256 of the file version this edit is based on. If omitted, "
-            "Mini Harness uses the most recent read_file snapshot for this path when available."
+            "Mini Harness uses the most recent file action=\"read\" snapshot for this "
+            "path when available."
         ),
     )
     replace_all: bool = False
@@ -89,7 +90,7 @@ class RunCommandInput(BaseModel):
         le=3_600,
         description=(
             "Maximum seconds to wait for command output and completion before returning "
-            "a RUNNING task_id that can be observed later."
+            "a RUNNING task_id that can be observed later with task action=\"observe\"."
         ),
     )
     max_output_chars: int = Field(default=12_000, ge=1, le=200_000)
@@ -134,7 +135,10 @@ class StartTaskInput(BaseModel):
         default=1.0,
         ge=0,
         le=30,
-        description="Initial time to wait for startup logs after starting the task.",
+        description=(
+            "Initial time to wait for startup logs after starting the task. Use "
+            "task action=\"observe\" later for more logs."
+        ),
     )
     max_output_chars: int = Field(default=12_000, ge=1, le=200_000)
     brief: str | None = Field(
@@ -282,11 +286,6 @@ class ListTerminalSessionsInput(BaseModel):
             "2026-08-11T18:00:00Z. Sessions without timestamps are excluded when set."
         ),
     )
-    include_inactive: bool | None = Field(
-        default=None,
-        description="Deprecated compatibility flag. Prefer state_filter.",
-    )
-
 
 class InspectTerminalSessionInput(BaseModel):
     session_ref: str
@@ -351,14 +350,6 @@ class SendTerminalInput(BaseModel):
             "submitting it."
         ),
         examples=["echo hello", "echo hello\n", "\n", "", "y\n"],
-    )
-    run_directly: SkipJsonSchema[bool] = Field(
-        default=True,
-        description=(
-            "Deprecated compatibility flag. Defaults to true. If true, append Enter "
-            "when data does not already end with Enter. Prefer input_only=true when "
-            "you need to type without submitting."
-        ),
     )
     input_only: bool = Field(
         default=False,
