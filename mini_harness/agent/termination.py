@@ -28,7 +28,10 @@ def validate_final(
     if context.terminal_input_pending and context.active_session_id:
         return ToolResult(
             ok=False,
-            summary="Terminal input may still be running. Call observe_terminal before finalizing.",
+            summary=(
+                "Terminal input may still be running. Use terminal action=\"observe\" "
+                "before finalizing."
+            ),
             error_code=ErrorCode.RUNTIME_OPERATION_FAILED.value,
             recoverable=True,
             metadata=_final_guard_metadata(decision, "terminal_input_pending", context),

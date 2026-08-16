@@ -84,7 +84,7 @@ class EnsureRemoteToolTool(RuntimeTool):
         )
         if manual is None:
             result.metadata["manual_elevation_available"] = True
-            result.metadata["recommended_action"] = "approve_temporary_tmux_install_elevation"
+            result.metadata["recommended_action"] = "approve remote action=\"ensure_tool\" temporary elevation"
             _record_remote_tool_status_from_result(context, data.tool, result)
             context.record_runtime_transition(
                 kind="remote",
@@ -634,7 +634,7 @@ def _remote_tool_result(
     elif data.install:
         summary = f"{data.tool} could not be installed automatically"
     elif missing:
-        summary = f"{data.tool} is missing; rerun ensure_remote_tool with install=true"
+        summary = f"{data.tool} is missing; rerun remote action=\"ensure_tool\" with install=true"
     else:
         summary = f"{data.tool} availability is unknown"
     metadata = {
@@ -647,7 +647,9 @@ def _remote_tool_result(
         "phase": phase,
         "task_id": execution.get("task_id"),
         "exit_code": exit_code,
-        "recommended_action": None if ok else "install_tmux_or_enable_ssh_pty_fallback",
+        "recommended_action": None
+        if ok
+        else 'remote action="ensure_tool" install=true or enable ssh_pty fallback',
     }
     for key in (
         "manual_elevation",
@@ -740,8 +742,8 @@ def _terminal_observation_text(observation: Mapping[str, Any]) -> str:
 
 def _tmux_elevation_approval_request() -> ToolApprovalRequest:
     return ToolApprovalRequest(
-        tool_name="ensure_remote_tool",
-        arguments={"tool": "tmux", "install": True, "elevation": "temporary"},
+        tool_name="remote",
+        arguments={"action": "ensure_tool", "tool": "tmux", "install": True, "elevation": "temporary"},
         decision=PermissionDecision.deny(
             "tmux installation requires temporary remote privilege elevation",
             missing_capabilities=("remote_tool.install.elevated:remote",),
@@ -759,7 +761,7 @@ def _tmux_elevation_approval_request() -> ToolApprovalRequest:
         ),
         permission_requests=[
             PermissionRequest.for_target(
-                tool_name="ensure_remote_tool",
+                tool_name="remote",
                 capability="remote_tool.install.elevated",
                 target="remote",
                 operation="install",

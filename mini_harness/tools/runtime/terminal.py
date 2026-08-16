@@ -146,7 +146,7 @@ class OpenTerminalTool(RuntimeTool):
         )
         recommended_action = None
         if fallback_from:
-            recommended_action = "run ensure_remote_tool with tool=tmux and install=true"
+            recommended_action = 'use remote action="ensure_tool" with tool=tmux and install=true'
             summary = (
                 f"opened {target.location} session:{session_id} using {backend} "
                 f"after {fallback_from} failed; "
@@ -1354,7 +1354,8 @@ def _inactive_session_result(
         ok=False,
         summary=(
             f"session:{session_id} is {state}; {attempted_tool} cannot send input to it. "
-            "Use inspect_terminal_session to read historical output or open_terminal to start a new session."
+            "Use terminal action=\"inspect\" to read historical output or "
+            "terminal action=\"open\" to start a new session."
         ),
         resource_ref=f"session:{session_id}" if session_id else None,
         state=state,
@@ -1364,9 +1365,18 @@ def _inactive_session_result(
             "session": _session_summary_item(session, context),
             "interactive": False,
             "history_only": True,
-            "recommended_tool": recommended_tool,
+            "recommended_tool": _terminal_recommended_tool_label(recommended_tool),
         },
     )
+
+
+def _terminal_recommended_tool_label(tool_name: str) -> str:
+    return {
+        "inspect_terminal_session": 'terminal action="inspect"',
+        "open_terminal": 'terminal action="open"',
+        "observe_terminal": 'terminal action="observe"',
+        "terminal_command": 'terminal action="command"',
+    }.get(tool_name, tool_name)
 
 
 def _starts_nested_ssh(argv: list[str]) -> bool:

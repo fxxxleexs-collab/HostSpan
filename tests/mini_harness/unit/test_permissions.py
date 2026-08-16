@@ -133,7 +133,9 @@ async def test_permission_policy_stays_denied_when_user_rejects(fake_runtime) ->
     assert result.metadata["approved_by_user"] is False
     assert len(approval.requests) == 1
     assert approval.requests[0].preview_kind == "diff"
-    assert approval.requests[0].decision.reason == "write_file will modify calculator.py"
+    assert approval.requests[0].decision.reason == (
+        'file action="write" will modify calculator.py'
+    )
     assert approval.requests[0].decision.missing_capabilities == ("file.write:local",)
     assert "permission denied by policy" in approval.requests[0].decision.metadata["risks"][-1]
     assert "write_text" not in [name for name, _ in fake_runtime.requests]
