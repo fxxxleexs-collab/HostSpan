@@ -348,6 +348,30 @@ def test_agent_context_includes_remote_connection_status() -> None:
     assert "configured=true" in rendered
     assert "connected=true" in rendered
     assert "auth=password" in rendered
+    assert "Remote tools: tmux=unknown reason=not probed" in rendered
+
+
+def test_agent_context_includes_remote_tool_status() -> None:
+    work_context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root="/project",
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+        remote_hostname="example.test",
+        remote_username="envrt",
+        remote_port=2222,
+        remote_auth_method="password",
+        remote_os="linux",
+        remote_shell="bash",
+    )
+    work_context.record_remote_tool_status("tmux", "present", version="tmux 3.4")
+    context = AgentContext(AgentConfig(), work_context)
+
+    rendered = "\n".join(message.content for message in context.build_messages([]))
+
+    assert "Remote tools: tmux=present version=tmux 3.4" in rendered
 
 
 def test_agent_context_includes_runtime_activity_summary() -> None:

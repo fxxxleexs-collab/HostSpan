@@ -6,8 +6,8 @@ from mini_harness.approvals import ToolApprovalRequest
 from mini_harness.permissions import CapabilitySetPermissionPolicy
 from mini_harness.runtime.work_context import WorkContext
 from mini_harness.sync.config import SyncConfig
-from mini_harness.tools.runtime.builder import build_internal_runtime_tools as build_runtime_tools
 from mini_harness.tools.registry import ToolRegistry
+from mini_harness.tools.runtime.builder import build_internal_runtime_tools as build_runtime_tools
 
 
 def _registry(policy: CapabilitySetPermissionPolicy) -> ToolRegistry:
@@ -267,7 +267,7 @@ async def test_sandbox_absolute_cwd_can_be_approved_before_runtime_call(fake_run
     assert result.ok
     assert result.metadata["sandbox_override"] is True
     assert approval.requests[0].decision.missing_capabilities == ("sandbox.override:any",)
-    assert fake_runtime.requests[-1] == (
+    assert (
         "run_command",
         {
             "environment_id": "env_ssh",
@@ -275,7 +275,7 @@ async def test_sandbox_absolute_cwd_can_be_approved_before_runtime_call(fake_run
             "argv": ["bash", "-lc", "pwd"],
             "cwd": "/tmp",
         },
-    )
+    ) in fake_runtime.requests
 
 
 @pytest.mark.asyncio

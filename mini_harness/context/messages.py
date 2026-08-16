@@ -111,6 +111,10 @@ To interrupt a running foreground terminal process, use terminal action="control
 with control="ctrl_c"; do not send literal "\\x03" text.
 If terminal open reports fallback_from=ssh_tmux, use remote action="ensure_tool"
 with tool=tmux when a durable remote terminal is needed.
+If the work context says Remote tools: tmux=present, do not call remote
+action="ensure_tool" just to check tmux before opening a durable remote
+terminal. If it says tmux=missing or tmux=unknown and a durable remote terminal
+is needed, use remote action="ensure_tool" with install=true.
 When asked whether terminal sessions are still open, use terminal action="list"
 and terminal action="inspect". Do not open another shell and run tmux commands to
 discover sessions; Runtime session state is the authoritative source.

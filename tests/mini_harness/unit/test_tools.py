@@ -1507,19 +1507,23 @@ async def test_ensure_remote_tool_reports_missing_and_can_install(fake_runtime) 
     )
 
     missing = await registry.execute("ensure_remote_tool", {"tool": "tmux"}, context)
+    assert not missing.ok
+    assert missing.recoverable
+    assert missing.metadata["recommended_action"] == "install_tmux_or_enable_ssh_pty_fallback"
+    assert "ENVRT_TOOL_MISSING tmux" in str(missing.content)
+    assert context.remote_tool_statuses["tmux"].status == "missing"
+
     installed = await registry.execute(
         "ensure_remote_tool",
         {"tool": "tmux", "install": True},
         context,
     )
 
-    assert not missing.ok
-    assert missing.recoverable
-    assert missing.metadata["recommended_action"] == "install_tmux_or_enable_ssh_pty_fallback"
-    assert "ENVRT_TOOL_MISSING tmux" in str(missing.content)
     assert installed.ok
     assert installed.metadata["installed"] is True
     assert "ENVRT_TOOL_INSTALLED tmux" in str(installed.content)
+    assert context.remote_tool_statuses["tmux"].status == "present"
+    assert context.remote_tool_statuses["tmux"].version == "tmux 3.4"
 
 
 @pytest.mark.asyncio
@@ -1771,6 +1775,12 @@ async def test_controller_configures_ssh_runtime_before_loop(fake_runtime) -> No
     assert fake_runtime.requests[2:3] == [
         ("ensure_dir", {"endpoint_id": "endpoint_ssh", "path": "/srv/app"}),
     ]
+    assert ("observe_task", {
+        "task_id": "task_1",
+        "cursor": 0,
+        "max_chars": 4000,
+        "wait_seconds": 5.0,
+    }) in fake_runtime.requests
 
 
 @pytest.mark.asyncio
@@ -1808,6 +1818,12 @@ async def test_controller_prompts_for_ssh_password_secret(fake_runtime) -> None:
             "has_password_secret_ref": True,
         },
     ) in fake_runtime.requests
+    assert ("observe_task", {
+        "task_id": "task_1",
+        "cursor": 0,
+        "max_chars": 4000,
+        "wait_seconds": 5.0,
+    }) in fake_runtime.requests
 
 
 @pytest.mark.asyncio
@@ -1834,6 +1850,7 @@ async def test_request_ssh_connection_opens_interactive_setup(fake_runtime) -> N
     assert result.ok
     assert context.runtime_mode == "ssh"
     assert context.endpoint_id == "endpoint_ssh"
+    assert context.remote_tool_statuses["tmux"].status == "missing"
     assert approval.secret_prompts == [
         "ssh_connection:remote dependencies are needed:remote-test",
         "SSH password for envrt@example.test",

@@ -135,6 +135,26 @@ class TaskBrief:
 
 
 @dataclass
+class RemoteToolStatus:
+    tool: str
+    status: Literal["present", "missing", "unknown"] = "unknown"
+    version: str | None = None
+    reason: str | None = None
+    checked_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    touch_index: int = 0
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "tool": self.tool,
+            "status": self.status,
+            "version": self.version,
+            "reason": self.reason,
+            "checked_at": self.checked_at,
+            "touch_index": self.touch_index,
+        }
+
+
+@dataclass
 class RuntimeTransition:
     kind: Literal["task", "terminal", "remote", "sync", "file"]
     action: str
@@ -204,9 +224,11 @@ class WorkContext:
     file_snapshots: dict[str, FileSnapshotSummary] = field(default_factory=dict)
     session_briefs: dict[str, SessionBrief] = field(default_factory=dict)
     task_briefs: dict[str, TaskBrief] = field(default_factory=dict)
+    remote_tool_statuses: dict[str, RemoteToolStatus] = field(default_factory=dict)
     runtime_transitions: list[RuntimeTransition] = field(default_factory=list)
     _session_touch_counter: int = 0
     _task_touch_counter: int = 0
+    _remote_tool_touch_counter: int = 0
     _runtime_transition_counter: int = 0
     _sandbox_approval_depth: int = 0
 
@@ -486,6 +508,42 @@ class WorkContext:
     def file_snapshot(self, path: str) -> FileSnapshotSummary | None:
         return self.file_snapshots.get(path)
 
+    def record_remote_tool_status(
+        self,
+        tool: str,
+        status: Literal["present", "missing", "unknown"],
+        *,
+        version: str | None = None,
+        reason: str | None = None,
+    ) -> RemoteToolStatus:
+        self._remote_tool_touch_counter += 1
+        item = self.remote_tool_statuses.get(tool) or RemoteToolStatus(tool=tool)
+        item.status = status
+        item.version = _compact_session_text(version, limit=120) if version else None
+        item.reason = _compact_session_text(reason, limit=180) if reason else None
+        item.checked_at = datetime.now(UTC).isoformat()
+        item.touch_index = self._remote_tool_touch_counter
+        self.remote_tool_statuses[tool] = item
+        return item
+
+    def remote_tools_summary(self) -> str:
+        if self.runtime_mode != "ssh" and not self.remote_tool_statuses:
+            return "Remote tools: n/a"
+        if not self.remote_tool_statuses:
+            return "Remote tools: tmux=unknown reason=not probed"
+        parts: list[str] = []
+        for status in sorted(
+            self.remote_tool_statuses.values(),
+            key=lambda item: item.tool,
+        ):
+            text = f"{status.tool}={status.status}"
+            if status.version:
+                text += f" version={status.version}"
+            if status.reason and status.status != "present":
+                text += f" reason={status.reason}"
+            parts.append(text)
+        return "Remote tools: " + "; ".join(parts)
+
     def target_summary(self) -> str:
         local = self.local_target()
         remote_configured = self.remote_hostname is not None
@@ -512,6 +570,8 @@ class WorkContext:
             f"os={self.remote_os}, shell={self.remote_shell}, "
             f"root={self.remote_root or 'n/a'}"
         )
+        if remote_configured or remote_connected:
+            lines.append(self.remote_tools_summary())
         lines.append(f"Default command target: {self.default_terminal_target()}")
         return "\n".join(lines)
 
