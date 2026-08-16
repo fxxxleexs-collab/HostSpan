@@ -14,7 +14,7 @@ from mini_harness.config import RuntimeConfig
 from mini_harness.errors import ErrorCode, MiniHarnessError
 from mini_harness.permissions import PermissionDecision, PermissionRequest
 from mini_harness.runtime.client import HarnessRuntimeClient
-from mini_harness.runtime.work_context import WorkContext
+from mini_harness.runtime.work_context import RemoteToolStatus, WorkContext
 from mini_harness.tools.base import AgentTool
 from mini_harness.tools.runtime.common import TERMINAL_TASK_STATES, RuntimeTool
 from mini_harness.tools.schemas import EnsureRemoteToolInput, RequestSSHConnectionInput, ToolResult
@@ -67,6 +67,7 @@ class EnsureRemoteToolTool(RuntimeTool):
             or not data.install
             or not _tmux_install_needs_manual_elevation(str(result.content or ""))
         ):
+            _record_remote_tool_status_from_result(context, data.tool, result)
             context.record_runtime_transition(
                 kind="remote",
                 action="ensure_tool",
@@ -84,6 +85,7 @@ class EnsureRemoteToolTool(RuntimeTool):
         if manual is None:
             result.metadata["manual_elevation_available"] = True
             result.metadata["recommended_action"] = "approve_temporary_tmux_install_elevation"
+            _record_remote_tool_status_from_result(context, data.tool, result)
             context.record_runtime_transition(
                 kind="remote",
                 action="ensure_tool",
@@ -94,6 +96,7 @@ class EnsureRemoteToolTool(RuntimeTool):
             )
             return result
         result = _remote_tool_result(data, manual, phase="manual_elevation")
+        _record_remote_tool_status_from_result(context, data.tool, result)
         context.record_runtime_transition(
             kind="remote",
             action="ensure_tool",
@@ -374,6 +377,7 @@ class RequestSSHConnectionTool(RuntimeTool):
         context.remote_os = "linux"
         context.remote_shell = "bash"
         context.refresh_workspace_policy()
+        await probe_remote_tool_status(self.runtime, context, tool="tmux")
         context.record_runtime_transition(
             kind="remote",
             action="request_ssh_connection",
@@ -404,6 +408,83 @@ def build_remote_tools(runtime: HarnessRuntimeClient) -> list[AgentTool]:
         EnsureRemoteToolTool(runtime),
         RequestSSHConnectionTool(runtime),
     ]
+
+
+async def probe_remote_tool_status(
+    runtime: HarnessRuntimeClient,
+    context: WorkContext,
+    *,
+    tool: str = "tmux",
+    wait_seconds: float = 5.0,
+    max_output_chars: int = 4_000,
+) -> RemoteToolStatus:
+    if context.runtime_mode != "ssh":
+        return context.record_remote_tool_status(
+            tool,
+            "unknown",
+            reason="remote runtime is not connected",
+        )
+    try:
+        command = _remote_tool_command(tool, install=False)
+        task = await asyncio.to_thread(
+            runtime.run_command,
+            context.environment_id,
+            context.target_id,
+            ["bash", "-lc", command],
+            context.runtime_cwd_for(".", "remote"),
+        )
+        task_id = str(task["task_id"])
+        observation = await asyncio.to_thread(
+            runtime.observe_task,
+            task_id,
+            0,
+            max_output_chars,
+            wait_seconds,
+        )
+        result = _remote_tool_result(
+            EnsureRemoteToolInput(
+                tool="tmux",
+                install=False,
+                wait_seconds=wait_seconds,
+                max_output_chars=max_output_chars,
+            ),
+            {
+                "task_id": task_id,
+                "state": str(
+                    observation.get("state")
+                    or observation.get("task", {}).get("state", "UNKNOWN")
+                ),
+                "exit_code": observation.get("exit_code"),
+                "output": str(observation.get("text", "")),
+                "resource_ref": f"task:{task_id}",
+            },
+            phase="probe",
+        )
+        status = _record_remote_tool_status_from_result(context, tool, result)
+        context.record_runtime_transition(
+            kind="remote",
+            action="probe_tool",
+            ref=tool,
+            summary=f"remote {tool} probe: {status.status}",
+            state=status.status.upper(),
+            active_after=context.remote_address_summary(),
+        )
+        return status
+    except Exception as exc:
+        status = context.record_remote_tool_status(
+            tool,
+            "unknown",
+            reason=f"probe failed: {exc}",
+        )
+        context.record_runtime_transition(
+            kind="remote",
+            action="probe_tool",
+            ref=tool,
+            summary=f"remote {tool} probe failed",
+            state="UNKNOWN",
+            active_after=context.remote_address_summary(),
+        )
+        return status
 
 
 async def _prepare_ssh_password_secret_for_tool(
@@ -591,6 +672,29 @@ def _remote_tool_result(
     )
 
 
+def _record_remote_tool_status_from_result(
+    context: WorkContext,
+    tool: str,
+    result: ToolResult,
+) -> RemoteToolStatus:
+    version = _remote_tool_version(tool, str(result.content or ""))
+    if result.metadata.get("present") or result.metadata.get("installed"):
+        return context.record_remote_tool_status(tool, "present", version=version)
+    if result.metadata.get("missing"):
+        return context.record_remote_tool_status(tool, "missing", reason=result.summary)
+    return context.record_remote_tool_status(tool, "unknown", reason=result.summary)
+
+
+def _remote_tool_version(tool: str, output: str) -> str | None:
+    if tool != "tmux":
+        return None
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("tmux "):
+            return stripped
+    return None
+
+
 def _tmux_install_needs_manual_elevation(output: str) -> bool:
     return any(
         marker in output
@@ -670,4 +774,5 @@ __all__ = [
     "EnsureRemoteToolTool",
     "RequestSSHConnectionTool",
     "build_remote_tools",
+    "probe_remote_tool_status",
 ]

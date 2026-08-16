@@ -22,6 +22,7 @@ from mini_harness.runtime.work_context import WorkContext
 from mini_harness.sync.config import SyncConfig
 from mini_harness.tools.adapter import build_runtime_tools
 from mini_harness.tools.registry import ToolRegistry
+from mini_harness.tools.runtime.remote import probe_remote_tool_status
 from mini_harness.workspace import SandboxConfig
 
 
@@ -184,6 +185,7 @@ class AgentController:
         work_context.remote_os = "linux"
         work_context.remote_shell = "bash"
         work_context.refresh_workspace_policy()
+        await probe_remote_tool_status(self.runtime_client, work_context, tool="tmux")
 
     async def _prepare_ssh_password_secret(self) -> str | None:
         if self.runtime_config.ssh.auth_method != "password":
