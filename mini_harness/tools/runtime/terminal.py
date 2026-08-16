@@ -132,7 +132,8 @@ class OpenTerminalTool(RuntimeTool):
             opened,
             context,
             updated_by=self.definition.name,
-            brief=(
+            brief=data.brief
+            or (
                 f"Opened {target.location} {target.os_name}/{target.shell} terminal "
                 f"via {backend}; cwd={sandboxed.cwd}"
             ),
@@ -319,7 +320,8 @@ class InspectTerminalSessionTool(RuntimeTool):
             session,
             context,
             updated_by=self.definition.name,
-            brief=_session_output_brief(
+            brief=data.brief
+            or _session_output_brief(
                 str(tail.get("text") or ""),
                 default="Inspected terminal session state and historical output",
             ),
@@ -388,7 +390,7 @@ class ActivateTerminalSessionTool(RuntimeTool):
                 session,
                 context,
                 updated_by=self.definition.name,
-                brief=f"Session is {state}; historical output only",
+                brief=data.brief or f"Session is {state}; historical output only",
                 pending=False,
                 history_only=True,
             )
@@ -410,6 +412,14 @@ class ActivateTerminalSessionTool(RuntimeTool):
                 },
             )
         _apply_session_record_to_context(session, context, activate=True)
+        _record_session_brief_from_record(
+            session,
+            context,
+            updated_by=self.definition.name,
+            brief=data.brief or f"Activated terminal session; state={state}",
+            pending=None,
+            history_only=False,
+        )
         context.record_runtime_transition(
             kind="terminal",
             action="activate",
@@ -535,7 +545,8 @@ class ObserveTerminalTool(RuntimeTool):
             session,
             context,
             updated_by=self.definition.name,
-            brief=_session_output_brief(
+            brief=data.brief
+            or _session_output_brief(
                 content,
                 default=(
                     "Observed terminal output"
@@ -667,7 +678,8 @@ class TerminalCommandTool(RuntimeTool):
             session,
             context,
             updated_by=self.definition.name,
-            brief=(
+            brief=data.brief
+            or (
                 "Command/input sent; output is pending"
                 if context.terminal_input_pending
                 else "Terminal input sent without executing a command"
@@ -781,7 +793,8 @@ class RequestHumanTerminalInputTool(RuntimeTool):
             session,
             context,
             updated_by=self.definition.name,
-            brief=(
+            brief=data.brief
+            or (
                 "Hidden human input submitted; output is pending"
                 if data.submit
                 else "Hidden human input sent without submit"
@@ -885,7 +898,8 @@ class SendTerminalControlTool(RuntimeTool):
             session,
             context,
             updated_by=self.definition.name,
-            brief=f"Sent terminal control {data.control}; session state may need observation",
+            brief=data.brief
+            or f"Sent terminal control {data.control}; session state may need observation",
             pending=context.terminal_input_pending,
             history_only=False,
         )
@@ -952,7 +966,7 @@ class CloseTerminalTool(RuntimeTool):
             merged_session,
             context,
             updated_by=self.definition.name,
-            brief="Closed terminal session",
+            brief=data.brief or "Closed terminal session",
             pending=False,
             history_only=True,
         )

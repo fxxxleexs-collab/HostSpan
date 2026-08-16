@@ -37,6 +37,14 @@ class CommandToolInput(BaseModel):
     timeout_seconds: int | None = Field(default=10, ge=1, le=3_600)
     max_output_chars: int = Field(default=12_000, ge=1, le=200_000)
     force_clean: bool = False
+    brief: str | None = Field(
+        default=None,
+        max_length=240,
+        description=(
+            "Optional one-sentence task summary if this command times out and remains "
+            "observable as a task. Do not include secrets or raw logs."
+        ),
+    )
 
 
 class TaskToolInput(BaseModel):
@@ -59,6 +67,15 @@ class TaskToolInput(BaseModel):
     scope: Literal["conversation"] = "conversation"
     state_filter: Literal["all", "active", "terminal"] = "all"
     max_tasks: int = Field(default=10, ge=1, le=100)
+    brief: str | None = Field(
+        default=None,
+        max_length=240,
+        description=(
+            "Optional one-sentence task state summary to keep in runtime activity. "
+            "Use after start/observe/cancel when the task purpose, status, or next "
+            "step changed. Do not include secrets or raw logs."
+        ),
+    )
 
 
 class RemoteToolInput(BaseModel):
@@ -125,6 +142,15 @@ class TerminalToolInput(BaseModel):
     max_sessions: int = Field(default=10, ge=1, le=500)
     created_after: str | None = None
     created_before: str | None = None
+    brief: str | None = Field(
+        default=None,
+        max_length=240,
+        description=(
+            "Optional one-sentence terminal/session state summary to keep in runtime "
+            "activity. Use when the session purpose, status, pending input, or next "
+            "step becomes clearer. Do not include secrets or raw logs."
+        ),
+    )
 
 
 class FacadeTool(AgentTool):
@@ -263,6 +289,7 @@ def build_facade_tools(internal_tools: list[AgentTool]) -> list[AgentTool]:
                         "timeout_seconds",
                         "max_output_chars",
                         "force_clean",
+                        "brief",
                     ),
                 )
             },
@@ -275,13 +302,13 @@ def build_facade_tools(internal_tools: list[AgentTool]) -> list[AgentTool]:
             {
                 "start": (
                     "start_task",
-                    ("target", "argv", "cwd", "wait_seconds", "max_output_chars"),
+                    ("target", "argv", "cwd", "wait_seconds", "max_output_chars", "brief"),
                 ),
                 "observe": (
                     "observe_task",
-                    ("task_ref", "wait_seconds", "max_output_chars"),
+                    ("task_ref", "wait_seconds", "max_output_chars", "brief"),
                 ),
-                "cancel": ("cancel_task", ("task_ref",)),
+                "cancel": ("cancel_task", ("task_ref", "brief")),
                 "list": ("list_tasks", ("scope", "state_filter", "max_tasks")),
             },
         ),
@@ -314,7 +341,7 @@ def build_facade_tools(internal_tools: list[AgentTool]) -> list[AgentTool]:
             TerminalToolInput,
             tools,
             {
-                "open": ("open_terminal", ("target", "argv", "cwd", "cols", "rows")),
+                "open": ("open_terminal", ("target", "argv", "cwd", "cols", "rows", "brief")),
                 "list": (
                     "list_terminal_sessions",
                     (
@@ -326,19 +353,19 @@ def build_facade_tools(internal_tools: list[AgentTool]) -> list[AgentTool]:
                         "created_before",
                     ),
                 ),
-                "inspect": ("inspect_terminal_session", ("session_ref", "tail_chars")),
-                "activate": ("activate_terminal_session", ("session_ref",)),
+                "inspect": ("inspect_terminal_session", ("session_ref", "tail_chars", "brief")),
+                "activate": ("activate_terminal_session", ("session_ref", "brief")),
                 "observe": (
                     "observe_terminal",
-                    ("session_ref", "wait_seconds", "idle_seconds", "max_output_chars"),
+                    ("session_ref", "wait_seconds", "idle_seconds", "max_output_chars", "brief"),
                 ),
-                "command": ("terminal_command", ("session_ref", "data", "input_only")),
-                "control": ("send_terminal_control", ("session_ref", "control")),
+                "command": ("terminal_command", ("session_ref", "data", "input_only", "brief")),
+                "control": ("send_terminal_control", ("session_ref", "control", "brief")),
                 "human_input": (
                     "request_human_terminal_input",
-                    ("session_ref", "prompt", "submit"),
+                    ("session_ref", "prompt", "submit", "brief"),
                 ),
-                "close": ("close_terminal", ("session_ref",)),
+                "close": ("close_terminal", ("session_ref", "brief")),
             },
         ),
     ]

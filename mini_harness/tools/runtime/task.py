@@ -128,6 +128,7 @@ class RunCommandTool(RuntimeTool):
             state=state,
             pid=pid,
             persistent=bool(task.get("persistent", False)),
+            brief=data.brief,
             log_tail=content,
             exit_code=context.last_command_exit_code,
             started_by=self.definition.name,
@@ -158,6 +159,7 @@ class RunCommandTool(RuntimeTool):
                 "task_id": task_id,
                 "pid": brief.pid,
                 "persistent": brief.persistent,
+                "brief": brief.brief,
                 "argv": sandboxed.argv,
                 "cwd": sandboxed.cwd,
                 "exit_code": context.last_command_exit_code,
@@ -265,6 +267,7 @@ class StartTaskTool(RuntimeTool):
             state=state,
             pid=pid,
             persistent=True,
+            brief=data.brief,
             log_tail=content,
             exit_code=exit_code,
             started_by=self.definition.name,
@@ -290,6 +293,7 @@ class StartTaskTool(RuntimeTool):
                 "task_id": task_id,
                 "pid": brief.pid,
                 "persistent": True,
+                "brief": brief.brief,
                 "argv": sandboxed.argv,
                 "cwd": sandboxed.cwd,
                 "target": binding.location,
@@ -369,6 +373,7 @@ class ObserveTaskTool(RuntimeTool):
             task_id,
             state=state,
             pid=pid,
+            brief=data.brief,
             log_tail=new_text,
             exit_code=context.last_command_exit_code,
         )
@@ -393,6 +398,7 @@ class ObserveTaskTool(RuntimeTool):
                 "task_id": task_id,
                 "pid": brief.pid,
                 "persistent": brief.persistent,
+                "brief": brief.brief,
                 "exit_code": context.last_command_exit_code,
                 "log_tail": brief.log_tail,
             },
@@ -441,6 +447,7 @@ class CancelTaskTool(RuntimeTool):
             task_id,
             state=state,
             pid=pid,
+            brief=data.brief,
             exit_code=exit_code,
         )
         context.record_runtime_transition(
@@ -460,6 +467,7 @@ class CancelTaskTool(RuntimeTool):
                 "task_id": task_id,
                 "pid": brief.pid,
                 "persistent": brief.persistent,
+                "brief": brief.brief,
                 "exit_code": brief.exit_code,
             },
         )
@@ -653,6 +661,9 @@ def _render_task_brief(task: Mapping[str, Any]) -> str:
         parts.append(f"exit={exit_code}")
     if command:
         parts.append(f"cmd={command}")
+    brief = str(task.get("brief") or "").strip()
+    if brief:
+        parts.append(f"brief={brief}")
     log_tail = str(task.get("log_tail") or "").strip()
     if log_tail:
         compact_tail = " ".join(log_tail.split())

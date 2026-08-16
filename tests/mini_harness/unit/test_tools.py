@@ -240,7 +240,12 @@ async def test_start_task_records_managed_long_running_task(fake_runtime) -> Non
 
     started = await registry.execute(
         "start_task",
-        {"argv": ["python", "app.py"], "cwd": ".", "wait_seconds": 0.1},
+        {
+            "argv": ["python", "app.py"],
+            "cwd": ".",
+            "wait_seconds": 0.1,
+            "brief": "Flask test server is starting and should be observed for readiness",
+        },
         context,
     )
     listed = await registry.execute("list_tasks", {"state_filter": "active"}, context)
@@ -255,7 +260,12 @@ async def test_start_task_records_managed_long_running_task(fake_runtime) -> Non
     assert listed.metadata["task_count"] == 1
     assert listed.metadata["tasks"][0]["pid"] == 12345
     assert listed.metadata["tasks"][0]["persistent"] is True
+    assert (
+        listed.metadata["tasks"][0]["brief"]
+        == "Flask test server is starting and should be observed for readiness"
+    )
     assert "python app.py" in str(listed.content)
+    assert "brief=Flask test server is starting" in str(listed.content)
     assert cancelled.ok
     assert cancelled.metadata["pid"] == 12345
     transitions = context.recent_runtime_transitions()
@@ -1031,6 +1041,31 @@ async def test_list_terminal_sessions_conversation_scope_includes_brief(fake_run
     assert session["session_id"] == "session_1"
     assert session["last_command"] == "id -u"
     assert "Command/input sent" in str(session["brief"])
+
+
+@pytest.mark.asyncio
+async def test_terminal_command_accepts_model_brief_and_keeps_last_command(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+
+    opened = await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
+    assert opened.ok
+    ran = await registry.execute(
+        "terminal_command",
+        {
+            "data": "sudo -i",
+            "brief": "terminal is entering a privileged shell flow and waiting for output",
+        },
+        context,
+    )
+
+    assert ran.ok
+    session = context.session_brief("session_1")
+    assert session is not None
+    assert session.brief == "terminal is entering a privileged shell flow and waiting for output"
+    assert session.last_command == "sudo -i"
 
 
 @pytest.mark.asyncio

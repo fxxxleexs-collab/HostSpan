@@ -101,6 +101,14 @@ class RunCommandInput(BaseModel):
             "login, or root state."
         ),
     )
+    brief: str | None = Field(
+        default=None,
+        max_length=240,
+        description=(
+            "Optional one-sentence task state summary to save if this command becomes "
+            "a tracked task. Do not include secrets or raw logs."
+        ),
+    )
 
 
 class StartTaskInput(BaseModel):
@@ -129,6 +137,15 @@ class StartTaskInput(BaseModel):
         description="Initial time to wait for startup logs after starting the task.",
     )
     max_output_chars: int = Field(default=12_000, ge=1, le=200_000)
+    brief: str | None = Field(
+        default=None,
+        max_length=240,
+        description=(
+            "Optional one-sentence task state summary to save in the runtime activity "
+            "context. Use when this call clarifies what the task is doing. Do not "
+            "include secrets or raw logs."
+        ),
+    )
 
 
 class ObserveTaskInput(BaseModel):
@@ -144,10 +161,24 @@ class ObserveTaskInput(BaseModel):
         ),
     )
     max_output_chars: int = Field(default=12_000, ge=1, le=200_000)
+    brief: str | None = Field(
+        default=None,
+        max_length=240,
+        description=(
+            "Optional one-sentence task state summary to save in the runtime activity "
+            "context. Use when logs reveal the task purpose, status, or next step. "
+            "Do not include secrets or raw logs."
+        ),
+    )
 
 
 class CancelTaskInput(BaseModel):
     task_ref: str | None = None
+    brief: str | None = Field(
+        default=None,
+        max_length=240,
+        description="Optional one-sentence final task summary. Do not include secrets.",
+    )
 
 
 class ListTasksInput(BaseModel):
@@ -207,6 +238,14 @@ class OpenTerminalInput(BaseModel):
     cwd: str = "."
     cols: int = Field(default=120, ge=20, le=400)
     rows: int = Field(default=30, ge=5, le=120)
+    brief: str | None = Field(
+        default=None,
+        max_length=240,
+        description=(
+            "Optional one-sentence terminal state summary to save in the runtime "
+            "activity context. Describe what this session is for. Do not include secrets."
+        ),
+    )
 
 
 class ListTerminalSessionsInput(BaseModel):
@@ -252,10 +291,23 @@ class ListTerminalSessionsInput(BaseModel):
 class InspectTerminalSessionInput(BaseModel):
     session_ref: str
     tail_chars: int = Field(default=4000, ge=0, le=100_000)
+    brief: str | None = Field(
+        default=None,
+        max_length=240,
+        description=(
+            "Optional one-sentence terminal state summary based on this inspection. "
+            "Do not include secrets or raw logs."
+        ),
+    )
 
 
 class ActivateTerminalSessionInput(BaseModel):
     session_ref: str
+    brief: str | None = Field(
+        default=None,
+        max_length=240,
+        description="Optional one-sentence terminal state summary. Do not include secrets.",
+    )
 
 
 class ObserveTerminalInput(BaseModel):
@@ -277,6 +329,15 @@ class ObserveTerminalInput(BaseModel):
         description="Return after this many quiet seconds once meaningful output has arrived.",
     )
     max_output_chars: int = Field(default=12_000, ge=1, le=200_000)
+    brief: str | None = Field(
+        default=None,
+        max_length=240,
+        description=(
+            "Optional one-sentence terminal state summary to save in runtime activity. "
+            "Use when output reveals what the session is doing, whether it is waiting, "
+            "or the next likely action. Do not include secrets or raw logs."
+        ),
+    )
 
 
 class SendTerminalInput(BaseModel):
@@ -308,6 +369,14 @@ class SendTerminalInput(BaseModel):
         ),
     )
     session_ref: str | None = None
+    brief: str | None = Field(
+        default=None,
+        max_length=240,
+        description=(
+            "Optional one-sentence terminal state summary after sending input. "
+            "Do not include secrets or raw logs."
+        ),
+    )
 
 
 class RequestHumanTerminalInput(BaseModel):
@@ -328,6 +397,14 @@ class RequestHumanTerminalInput(BaseModel):
             "password prompts, yes/no prompts, sudo, su, and most terminal interactions."
         ),
     )
+    brief: str | None = Field(
+        default=None,
+        max_length=240,
+        description=(
+            "Optional one-sentence terminal state summary after hidden user input. "
+            "Do not include the hidden input or any secret."
+        ),
+    )
 
 
 class SendTerminalControlInput(BaseModel):
@@ -338,7 +415,17 @@ class SendTerminalControlInput(BaseModel):
         )
     )
     session_ref: str | None = None
+    brief: str | None = Field(
+        default=None,
+        max_length=240,
+        description="Optional one-sentence terminal state summary. Do not include secrets.",
+    )
 
 
 class CloseTerminalInput(BaseModel):
     session_ref: str | None = None
+    brief: str | None = Field(
+        default=None,
+        max_length=240,
+        description="Optional one-sentence terminal closing summary. Do not include secrets.",
+    )
