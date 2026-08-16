@@ -624,12 +624,11 @@ class TerminalCommandTool(RuntimeTool):
                 target=target,
                 operation="send_input",
                 resource=data.session_ref or context.session_ref(),
-                metadata={"run_directly": data.run_directly, "input_only": data.input_only},
+                metadata={"input_only": data.input_only},
             )
         ]
         normalized = _normalize_terminal_input(
             data.data,
-            run_directly=data.run_directly,
             input_only=data.input_only,
         )
         if _should_authorize_terminal_input(normalized):
@@ -665,7 +664,6 @@ class TerminalCommandTool(RuntimeTool):
         )
         normalized = _normalize_terminal_input(
             data.data,
-            run_directly=data.run_directly,
             input_only=data.input_only,
         )
         if _should_authorize_terminal_input(normalized):
@@ -707,7 +705,6 @@ class TerminalCommandTool(RuntimeTool):
                 "bytes": len(normalized.encode("utf-8")),
                 "display": display,
                 "normalized_empty_to_enter": data.data == "",
-                "run_directly": data.run_directly,
                 "input_only": data.input_only,
                 "appended_enter": normalized != data.data and data.data != "",
             },
@@ -1035,8 +1032,6 @@ def _is_interactive_session(session: Mapping[str, Any]) -> bool:
 def _list_state_filter(
     data: ListTerminalSessionsInput,
 ) -> Literal["all", "active", "inactive"]:
-    if "include_inactive" in data.model_fields_set and "state_filter" not in data.model_fields_set:
-        return "all" if data.include_inactive else "active"
     return data.state_filter
 
 
@@ -1515,12 +1510,12 @@ def _should_authorize_terminal_input(data: str) -> bool:
     return bool(stripped) and ("\n" in data or "\r" in data)
 
 
-def _normalize_terminal_input(data: str, run_directly: bool, input_only: bool = False) -> str:
+def _normalize_terminal_input(data: str, input_only: bool = False) -> str:
     if data == "":
         return "\n"
     if input_only:
         return data
-    if run_directly and not data.endswith(("\n", "\r")):
+    if not data.endswith(("\n", "\r")):
         return data + "\n"
     return data
 

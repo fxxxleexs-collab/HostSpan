@@ -531,8 +531,7 @@ def _format_tool_arguments(name: str, arguments: dict[str, object]) -> dict[str,
     data = rendered.get("data")
     if isinstance(data, str):
         input_only = bool(rendered.get("input_only", False))
-        run_directly = bool(rendered.get("run_directly", True)) and not input_only
-        rendered["data_display"] = _terminal_input_display(data, run_directly)
+        rendered["data_display"] = _terminal_input_display(data, append_enter=not input_only)
         rendered.pop("data", None)
     return rendered
 
@@ -600,7 +599,7 @@ def _format_tool_metadata(metadata: dict[str, object]) -> str:
         return str(rendered)
 
 
-def _terminal_input_display(data: str, run_directly: bool = False) -> str:
+def _terminal_input_display(data: str, append_enter: bool = False) -> str:
     if data == "":
         return "<ENTER> (empty string normalized by tool)"
     if data == "\n":
@@ -608,7 +607,7 @@ def _terminal_input_display(data: str, run_directly: bool = False) -> str:
     if data == "\r":
         return "<CR>"
     normalized = data
-    if run_directly and not normalized.endswith(("\n", "\r")):
+    if append_enter and not normalized.endswith(("\n", "\r")):
         normalized += "\n"
     value = normalized.replace("\r\n", "<ENTER>").replace("\n", "<ENTER>").replace("\r", "<CR>")
     return value if len(value) <= 120 else value[:117] + "..."

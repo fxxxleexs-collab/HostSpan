@@ -1203,7 +1203,6 @@ async def test_terminal_command_appends_enter_by_default(fake_runtime) -> None:
     )
 
     assert result.ok
-    assert result.metadata["run_directly"] is True
     assert result.metadata["input_only"] is False
     assert result.metadata["appended_enter"] is True
     assert result.metadata["display"] == "id<ENTER>"
@@ -1213,7 +1212,7 @@ async def test_terminal_command_appends_enter_by_default(fake_runtime) -> None:
     )
 
 
-def test_terminal_command_tool_schema_hides_deprecated_run_directly(fake_runtime) -> None:
+def test_terminal_command_tool_schema_has_only_input_only_submit_control(fake_runtime) -> None:
     definitions = {tool.definition.name: tool.definition for tool in build_runtime_tools(fake_runtime)}
     schema = definitions["terminal_command"].input_schema
     properties = schema["properties"]
@@ -1223,7 +1222,7 @@ def test_terminal_command_tool_schema_hides_deprecated_run_directly(fake_runtime
 
 
 @pytest.mark.asyncio
-async def test_terminal_command_run_directly_keeps_existing_enter(fake_runtime) -> None:
+async def test_terminal_command_keeps_existing_enter(fake_runtime) -> None:
     registry = ToolRegistry()
     for tool in build_runtime_tools(fake_runtime):
         registry.register(tool)
@@ -1232,7 +1231,7 @@ async def test_terminal_command_run_directly_keeps_existing_enter(fake_runtime) 
     await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
     result = await registry.execute(
         "terminal_command",
-        {"data": "id\n", "run_directly": True},
+        {"data": "id\n"},
         context,
     )
 
@@ -1259,7 +1258,6 @@ async def test_terminal_command_input_only_does_not_append_enter(fake_runtime) -
     )
 
     assert result.ok
-    assert result.metadata["run_directly"] is True
     assert result.metadata["input_only"] is True
     assert result.metadata["appended_enter"] is False
     assert fake_runtime.requests[-1] == (
@@ -1298,7 +1296,7 @@ async def test_run_command_warns_when_root_session_is_active(fake_runtime) -> No
     await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
     await registry.execute(
         "terminal_command",
-        {"data": "sudo -i", "run_directly": True},
+        {"data": "sudo -i"},
         context,
     )
     result = await registry.execute(
@@ -1418,7 +1416,7 @@ async def test_terminal_command_uses_active_terminal_state(fake_runtime) -> None
     await registry.execute("open_terminal", {"argv": ["bash", "-l"]}, context)
     await registry.execute(
         "terminal_command",
-        {"data": "sudo -i", "run_directly": True},
+        {"data": "sudo -i"},
         context,
     )
     result = await registry.execute(
