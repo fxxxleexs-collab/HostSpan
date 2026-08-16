@@ -455,7 +455,7 @@ def _prepare_edit_change(
             resource_ref=f"file:{path}",
             error_code="EDIT_CONTEXT_NOT_FOUND",
             recoverable=True,
-            metadata={"path": path, "recommended_action": "read_file"},
+            metadata={"path": path, "recommended_action": _tool_action_label("read_file")},
         )
     count = current_text.count(old_text)
     if count == 0:
@@ -465,7 +465,11 @@ def _prepare_edit_change(
             resource_ref=f"file:{path}",
             error_code="EDIT_CONTEXT_NOT_FOUND",
             recoverable=True,
-            metadata={"path": path, "match_count": count, "recommended_action": "read_file"},
+            metadata={
+                "path": path,
+                "match_count": count,
+                "recommended_action": _tool_action_label("read_file"),
+            },
         )
     if count > 1 and not replace_all:
         return ToolResult(
@@ -529,7 +533,7 @@ def _prepare_text_change_from_current(
                 "actual_sha256": before_snapshot.sha256,
                 "expected_source": expected_source,
                 "existed_before": existed_before,
-                "recommended_action": "read_file",
+                "recommended_action": _tool_action_label("read_file"),
             },
         )
     after_snapshot = snapshot_text(path, new_content)
@@ -573,11 +577,12 @@ def _prepared_change_metadata(prepared: PreparedTextChange) -> dict[str, Any]:
 
 
 def _unguarded_write_denied_result(tool_name: str, prepared: PreparedTextChange) -> ToolResult:
+    read_action = _tool_action_label("read_file")
     return ToolResult(
         ok=False,
         summary=(
-            f"unguarded write is disabled for {prepared.path}; read_file first or provide "
-            "expected_sha256"
+            f"unguarded write is disabled for {prepared.path}; use {read_action} first "
+            "or provide expected_sha256"
         ),
         resource_ref=f"file:{prepared.path}",
         error_code=ErrorCode.PERMISSION_DENIED.value,
@@ -586,7 +591,7 @@ def _unguarded_write_denied_result(tool_name: str, prepared: PreparedTextChange)
             "tool_name": tool_name,
             "path": prepared.path,
             "unguarded_write": True,
-            "recommended_action": "read_file",
+            "recommended_action": _tool_action_label("read_file"),
         },
     )
 
@@ -599,11 +604,14 @@ def _file_change_approval_request(
     prepared: PreparedTextChange,
     prefer_edit: bool,
 ) -> ToolApprovalRequest:
+    display_tool = _tool_action_label(tool_name)
     risks: list[str] = []
     if prepared.unguarded_write:
         risks.append("This write has no expected_sha256 guard.")
     if prefer_edit:
-        risks.append("This overwrites an existing file; prefer edit_file for small changes.")
+        risks.append(
+            "This overwrites an existing file; prefer file action=\"edit\" for small changes."
+        )
     if prepared.diff.added_lines + prepared.diff.removed_lines > 200:
         risks.append("This is a large diff; review carefully before approving.")
     if not risks:
@@ -612,7 +620,7 @@ def _file_change_approval_request(
         tool_name=tool_name,
         arguments=arguments,
         decision=PermissionDecision.deny(
-            f"{tool_name} will modify {prepared.path}",
+            f"{display_tool} will modify {prepared.path}",
             missing_capabilities=tuple(request.capability_key for request in permission_requests),
             metadata={
                 "warning": _file_change_warning(prepared, prefer_edit=prefer_edit),
@@ -630,8 +638,17 @@ def _file_change_warning(prepared: PreparedTextChange, *, prefer_edit: bool) -> 
     if prepared.unguarded_write:
         return "This file write is not protected by an expected hash."
     if prefer_edit:
-        return "This overwrites an existing file; edit_file is safer for targeted changes."
+        return "This overwrites an existing file; file action=\"edit\" is safer for targeted changes."
     return "Review the diff before allowing this file change."
+
+
+def _tool_action_label(tool_name: str) -> str:
+    return {
+        "read_file": 'file action="read"',
+        "write_file": 'file action="write"',
+        "edit_file": 'file action="edit"',
+        "list_files": 'file action="list"',
+    }.get(tool_name, tool_name)
 
 
 def _read_text_for_write(

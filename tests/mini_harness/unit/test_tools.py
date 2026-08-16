@@ -515,7 +515,7 @@ async def test_write_file_rejects_when_expected_sha256_is_stale(fake_runtime) ->
     assert result.error_code == "FILE_CHANGED"
     assert result.metadata["expected_sha256"] == "0" * 64
     assert result.metadata["actual_sha256"] != "0" * 64
-    assert result.metadata["recommended_action"] == "read_file"
+    assert result.metadata["recommended_action"] == 'file action="read"'
     assert "write_text" not in [name for name, _ in fake_runtime.requests]
 
 
@@ -705,7 +705,7 @@ async def test_write_file_can_disallow_unguarded_write(fake_runtime) -> None:
     assert not result.ok
     assert result.error_code == "PERMISSION_DENIED"
     assert result.metadata["unguarded_write"] is True
-    assert result.metadata["recommended_action"] == "read_file"
+    assert result.metadata["recommended_action"] == 'file action="read"'
     assert "write_text" not in [name for name, _ in fake_runtime.requests]
 
 
@@ -794,7 +794,7 @@ async def test_edit_file_rejects_missing_context(fake_runtime) -> None:
 
     assert not result.ok
     assert result.error_code == "EDIT_CONTEXT_NOT_FOUND"
-    assert result.metadata["recommended_action"] == "read_file"
+    assert result.metadata["recommended_action"] == 'file action="read"'
     assert "write_text" not in [name for name, _ in fake_runtime.requests]
 
 
@@ -1509,7 +1509,9 @@ async def test_ensure_remote_tool_reports_missing_and_can_install(fake_runtime) 
     missing = await registry.execute("ensure_remote_tool", {"tool": "tmux"}, context)
     assert not missing.ok
     assert missing.recoverable
-    assert missing.metadata["recommended_action"] == "install_tmux_or_enable_ssh_pty_fallback"
+    assert missing.metadata["recommended_action"] == (
+        'remote action="ensure_tool" install=true or enable ssh_pty fallback'
+    )
     assert "ENVRT_TOOL_MISSING tmux" in str(missing.content)
     assert context.remote_tool_statuses["tmux"].status == "missing"
 
@@ -1559,6 +1561,8 @@ async def test_ensure_remote_tool_manual_tmux_install_prompts_for_password(fake_
     assert installed.metadata["sudo_password_rejected"] is False
     assert installed.metadata["password_attempts"] == 1
     assert approval.requests
+    assert approval.requests[0].tool_name == "remote"
+    assert approval.requests[0].arguments["action"] == "ensure_tool"
     assert approval.secret_prompts == ["Remote sudo password for installing tmux"]
     assert "sudo-secret" not in str(installed.content)
     assert "close_terminal" in [name for name, _ in fake_runtime.requests]
@@ -1723,7 +1727,7 @@ async def test_open_terminal_surfaces_tmux_fallback_action(fake_runtime) -> None
     assert opened.metadata["fallback_from"] == "ssh_tmux"
     assert opened.metadata["fallback_error"] == "tmux: command not found"
     assert opened.metadata["recommended_action"] == (
-        "run ensure_remote_tool with tool=tmux and install=true"
+        'use remote action="ensure_tool" with tool=tmux and install=true'
     )
 
 

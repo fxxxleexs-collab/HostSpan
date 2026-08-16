@@ -561,12 +561,12 @@ def _clean_task_session_guard(
     command = " ".join(argv)
     if context.active_session_privilege == "root":
         reason = (
-            "A root-capable terminal session is active. run_command starts a clean task "
+            "A root-capable terminal session is active. command action=\"run\" starts a clean task "
             "and will not inherit that root shell."
         )
     else:
         reason = (
-            "A stateful terminal session is active. run_command starts a clean task "
+            "A stateful terminal session is active. command action=\"run\" starts a clean task "
             "and will not inherit that session's cwd/env/venv/login state."
         )
     return ToolResult(
