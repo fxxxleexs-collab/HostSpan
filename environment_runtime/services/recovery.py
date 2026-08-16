@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 # active-handle maps are empty, so any persisted record in one of these states
 # is stale (the backing process handle was lost with the previous process).
 _TASK_RECOVERABLE_STATES = {TaskState.PREPARING, TaskState.RUNNING, TaskState.CANCELLING}
-_SESSION_RECOVERABLE_STATES = {SessionState.CREATING, SessionState.ACTIVE}
+_SESSION_RECOVERABLE_STATES = {SessionState.CREATING, SessionState.ACTIVE, SessionState.DETACHED}
 
 
 class RecoveryService:

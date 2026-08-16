@@ -349,7 +349,11 @@ async def _tmux_status(
     try:
         result = await connection.run(_argv(["tmux", "has-session", "-t", tmux_session]), check=False)
     except (OSError, asyncssh.Error) as exc:
-        return SessionBackendStatus(alive=False, detail=f"tmux status failed: {exc}")
+        return SessionBackendStatus(
+            alive=False,
+            detail=f"tmux status unavailable: {exc}",
+            checked=False,
+        )
     if getattr(result, "exit_status", 1) == 0:
         return SessionBackendStatus(alive=True, detail="tmux session is alive")
     delayed_payload = await _read_status_when_available(endpoint, sftp, remote_status_file)

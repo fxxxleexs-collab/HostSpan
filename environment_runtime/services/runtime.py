@@ -13,7 +13,9 @@ from environment_runtime.core.models import (
     Endpoint,
     Environment,
     InputRequest,
+    InteractionState,
     Session,
+    SessionState,
     Task,
     Workspace,
     WriterLease,
@@ -116,6 +118,15 @@ async def shutdown_runtime(context: RuntimeContext) -> None:
             await task_handle.cancel()
     for session_handle in list(context.active.session_handles.values()):
         if getattr(session_handle, "backend_name", None) == "ssh_tmux":
+            for session_id, handle in list(context.active.session_handles.items()):
+                if handle is not session_handle:
+                    continue
+                session = await context.sessions.get(session_id)
+                if session is not None and session.state == SessionState.ACTIVE:
+                    session.state = SessionState.DETACHED
+                    session.interaction_state = InteractionState.NONE
+                    await context.sessions.upsert(session)
+                break
             await session_handle.detach()
         elif hasattr(session_handle, "terminate"):
             await session_handle.terminate()

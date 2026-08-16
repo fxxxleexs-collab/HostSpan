@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from environment_runtime.broker.commands import RuntimeCommandHandler
 from environment_runtime.core.errors import ValidationError
 from environment_runtime.services.endpoint import EndpointService
 
@@ -52,6 +53,36 @@ async def test_add_ssh_endpoint_supports_password_auth(runtime, tmp_path) -> Non
     assert endpoint.config["password_secret_ref"] == "secret:test"
     assert "password" not in endpoint.config
     assert endpoint.config["use_ssh_agent"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ensure_ssh_refreshes_password_secret_without_new_endpoint(runtime, tmp_path) -> None:
+    known_hosts = tmp_path / "known_hosts"
+    known_hosts.write_text("example.test ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA==\n")
+    handler = RuntimeCommandHandler(runtime)
+    params = {
+        "name": "ssh-demo",
+        "hostname": "example.test",
+        "username": "envrt",
+        "known_hosts_file": str(known_hosts),
+        "port": 2222,
+        "auth_method": "password",
+        "password_secret_ref": "secret:old",
+        "use_ssh_agent": False,
+    }
+
+    first = await handler.handle("env.ensure_ssh", params)
+    second = await handler.handle(
+        "env.ensure_ssh",
+        {**params, "password_secret_ref": "secret:new"},
+    )
+    endpoint = await runtime.endpoints.get(first["endpoint"]["endpoint_id"])
+
+    assert first["endpoint"]["endpoint_id"] == second["endpoint"]["endpoint_id"]
+    assert endpoint is not None
+    assert endpoint.config["password_secret_ref"] == "secret:new"
+    assert len(await runtime.endpoints.list()) == 1
 
 
 @pytest.mark.unit

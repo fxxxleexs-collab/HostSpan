@@ -464,11 +464,30 @@ class RuntimeCommandHandler:
             "connect_timeout": data.connect_timeout,
             "keepalive_interval": data.keepalive_interval,
         }
+        identity = {
+            key: value
+            for key, value in expected.items()
+            if key != "password_secret_ref"
+        }
+        matching_endpoint: Endpoint | None = None
         for endpoint in await self.context.endpoints.list():
             if endpoint.name != data.name or endpoint.provider_type != "ssh":
                 continue
             if all(endpoint.config.get(key) == value for key, value in expected.items()):
-                return endpoint
+                if matching_endpoint is None:
+                    matching_endpoint = endpoint
+                continue
+            if all(endpoint.config.get(key) == value for key, value in identity.items()):
+                if endpoint.config.get("password_secret_ref") != data.password_secret_ref:
+                    endpoint.config = {
+                        **endpoint.config,
+                        "password_secret_ref": data.password_secret_ref,
+                    }
+                    await self.context.endpoints.upsert(endpoint)
+                if matching_endpoint is None:
+                    matching_endpoint = endpoint
+        if matching_endpoint is not None:
+            return matching_endpoint
         return await EndpointService(self.context).add_ssh(
             name=data.name,
             hostname=data.hostname,
