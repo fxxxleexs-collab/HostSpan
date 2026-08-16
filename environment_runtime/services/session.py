@@ -120,6 +120,10 @@ class SessionService:
         session = await self.context.sessions.get(session_id)
         if session is None:
             raise NotFoundError(f"session {session_id} was not found")
+        if await self._reattach_if_needed(session):
+            session = await self.context.sessions.get(session_id)
+            if session is None:
+                raise NotFoundError(f"session {session_id} was not found")
         return session
 
     async def terminal_frames(
@@ -207,6 +211,21 @@ class SessionService:
             return False
         status = await provider.status(session, endpoint)
         if not status.alive:
+            if not getattr(status, "checked", True):
+                session.state = SessionState.DETACHED
+                session.interaction_state = InteractionState.NONE
+                _touch_session(session)
+                await self.context.sessions.upsert(session)
+                await self._emit(
+                    "session.recovery_deferred",
+                    session,
+                    {
+                        "session_id": session.session_id,
+                        "backend": session.backend,
+                        "reason": status.detail or "backend status could not be checked",
+                    },
+                )
+                return True
             if status.finished or status.exit_code is not None:
                 session.exit_code = status.exit_code
                 session.state = SessionState.TERMINATED
@@ -241,6 +260,21 @@ class SessionService:
             {"session_id": session.session_id, "backend": session.backend},
         )
         return True
+
+    async def _reattach_if_needed(self, session: Session) -> bool:
+        if session.session_id in self.context.active.session_handles:
+            return False
+        if session.state not in {SessionState.ACTIVE, SessionState.DETACHED} and not (
+            session.state == SessionState.DISCONNECTED and session.backend == "ssh_tmux"
+        ):
+            return False
+        provider = self.context.providers.session.get(session.backend)
+        if provider is None:
+            return False
+        try:
+            return await self.reattach_on_startup(session)
+        except Exception:
+            return False
 
     async def _watch_session(self, session_id: str) -> None:
         handle = self.context.active.session_handles.get(session_id)

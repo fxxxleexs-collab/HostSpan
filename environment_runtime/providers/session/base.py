@@ -34,6 +34,7 @@ class SessionBackendStatus:
     exit_code: int | None = None
     detail: str | None = None
     finished: bool = False
+    checked: bool = True
 
 
 class SessionHandle(Protocol):

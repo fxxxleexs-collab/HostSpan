@@ -19,6 +19,7 @@ from environment_runtime.providers.session.ssh_tmux import SSHTmuxSessionProvide
 from environment_runtime.services.endpoint import EndpointService
 from environment_runtime.services.environment import EnvironmentService
 from environment_runtime.services.recovery import RecoveryService
+from environment_runtime.services.session import SessionService
 
 
 class FakeConnection:
@@ -359,6 +360,31 @@ async def test_recovery_reattaches_durable_session(runtime, tmp_path) -> None:
     assert provider.initial_output_offset == len("already")
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_reattaches_disconnected_ssh_tmux_session(runtime, tmp_path) -> None:
+    endpoint = await EndpointService(runtime).add_local("local", str(tmp_path))
+    environment = await EnvironmentService(runtime).create("env", [endpoint.endpoint_id])
+    target_id = environment.default_execution_target_id
+    assert target_id is not None
+    provider = FakeDurableProvider()
+    runtime.providers.session["ssh_tmux"] = provider
+    session = Session(
+        environment_id=environment.environment_id,
+        target_id=target_id,
+        backend="ssh_tmux",
+        command=["bash", "-l"],
+        state=SessionState.DISCONNECTED,
+        interaction_state=InteractionState.NONE,
+    )
+    await runtime.sessions.upsert(session)
+
+    recovered = await SessionService(runtime).get(session.session_id)
+
+    assert recovered.state == SessionState.ACTIVE
+    assert session.session_id in runtime.active.session_handles
+
+
 class FakeFinishedProvider:
     backend_name = "finished_fake"
 
@@ -379,6 +405,34 @@ class FakeFinishedProvider:
     ):
         _ = (session, endpoint, on_output, initial_output_offset)
         raise AssertionError("attach should not be called for finished sessions")
+
+
+class FakeUncheckedProvider:
+    backend_name = "unchecked_fake"
+
+    async def create(self, params, on_output):
+        _ = (params, on_output)
+        raise AssertionError("create should not be called during recovery")
+
+    async def status(self, session: Session, endpoint: Endpoint):
+        _ = (session, endpoint)
+        return SimpleNamespace(
+            alive=False,
+            exit_code=None,
+            finished=False,
+            checked=False,
+            detail="password secret expired",
+        )
+
+    async def attach(
+        self,
+        session: Session,
+        endpoint: Endpoint,
+        on_output,
+        initial_output_offset: int = 0,
+    ):
+        _ = (session, endpoint, on_output, initial_output_offset)
+        raise AssertionError("attach should not be called when status is unchecked")
 
 
 @pytest.mark.unit
@@ -409,6 +463,33 @@ async def test_recovery_finalizes_finished_durable_session_without_exit_code(
     assert recovered is not None
     assert recovered.state == SessionState.TERMINATED
     assert recovered.exit_code is None
+    assert recovered.interaction_state == InteractionState.NONE
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_recovery_keeps_unchecked_durable_session_detached(runtime, tmp_path) -> None:
+    endpoint = await EndpointService(runtime).add_local("local", str(tmp_path))
+    environment = await EnvironmentService(runtime).create("env", [endpoint.endpoint_id])
+    target_id = environment.default_execution_target_id
+    assert target_id is not None
+    runtime.providers.session["unchecked_fake"] = FakeUncheckedProvider()
+    session = Session(
+        environment_id=environment.environment_id,
+        target_id=target_id,
+        backend="unchecked_fake",
+        command=["bash", "-l"],
+        state=SessionState.ACTIVE,
+        interaction_state=InteractionState.AUTOMATION_CONTROLLED,
+    )
+    await runtime.sessions.upsert(session)
+
+    result = await RecoveryService(runtime).reconcile_on_startup()
+    recovered = await runtime.sessions.get(session.session_id)
+
+    assert result["sessions"] == 1
+    assert recovered is not None
+    assert recovered.state == SessionState.DETACHED
     assert recovered.interaction_state == InteractionState.NONE
 
 
