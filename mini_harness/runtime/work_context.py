@@ -133,6 +133,30 @@ class TaskBrief:
 
 
 @dataclass
+class RuntimeTransition:
+    kind: Literal["task", "terminal", "remote", "sync", "file"]
+    action: str
+    ref: str | None
+    summary: str
+    state: str | None = None
+    active_after: str | None = None
+    touched_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    index: int = 0
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "kind": self.kind,
+            "action": self.action,
+            "ref": self.ref,
+            "summary": self.summary,
+            "state": self.state,
+            "active_after": self.active_after,
+            "touched_at": self.touched_at,
+            "index": self.index,
+        }
+
+
+@dataclass
 class WorkContext:
     endpoint_id: str
     environment_id: str
@@ -178,8 +202,10 @@ class WorkContext:
     file_snapshots: dict[str, FileSnapshotSummary] = field(default_factory=dict)
     session_briefs: dict[str, SessionBrief] = field(default_factory=dict)
     task_briefs: dict[str, TaskBrief] = field(default_factory=dict)
+    runtime_transitions: list[RuntimeTransition] = field(default_factory=list)
     _session_touch_counter: int = 0
     _task_touch_counter: int = 0
+    _runtime_transition_counter: int = 0
     _sandbox_approval_depth: int = 0
 
     def __post_init__(self) -> None:
@@ -303,6 +329,40 @@ class WorkContext:
         if active_only:
             tasks = [task for task in tasks if task.active or task.task_id == self.active_task_id]
         return [task.as_dict() for task in tasks]
+
+    def record_runtime_transition(
+        self,
+        *,
+        kind: Literal["task", "terminal", "remote", "sync", "file"],
+        action: str,
+        ref: str | None = None,
+        summary: str,
+        state: str | None = None,
+        active_after: str | None = None,
+    ) -> RuntimeTransition:
+        self._runtime_transition_counter += 1
+        transition = RuntimeTransition(
+            kind=kind,
+            action=action,
+            ref=ref,
+            summary=_compact_session_text(summary, limit=300),
+            state=state,
+            active_after=active_after,
+            index=self._runtime_transition_counter,
+        )
+        self.runtime_transitions.append(transition)
+        self.runtime_transitions = self.runtime_transitions[-20:]
+        return transition
+
+    def recent_runtime_transitions(self, *, limit: int = 8) -> list[dict[str, object]]:
+        return [
+            transition.as_dict()
+            for transition in sorted(
+                self.runtime_transitions,
+                key=lambda item: item.index,
+                reverse=True,
+            )[:limit]
+        ]
 
     def session_ref(self) -> str | None:
         return f"session:{self.active_session_id}" if self.active_session_id else None
@@ -475,10 +535,22 @@ class WorkContext:
             f"remote_manifest_path={config.remote_manifest_path}"
         )
 
-    def runtime_activity_summary(self, *, max_tasks: int = 5, max_sessions: int = 5) -> str:
+    def runtime_activity_summary(
+        self,
+        *,
+        max_tasks: int = 5,
+        max_sessions: int = 5,
+        max_transitions: int = 8,
+    ) -> str:
         lines = ["Runtime activity:"]
+        transition_lines = self._runtime_transition_lines(max_transitions=max_transitions)
         task_lines = self._task_activity_lines(max_tasks=max_tasks)
         session_lines = self._session_activity_lines(max_sessions=max_sessions)
+        if transition_lines:
+            lines.append("Recent runtime transitions:")
+            lines.extend(transition_lines)
+        else:
+            lines.append("Recent runtime transitions: none")
         if task_lines:
             lines.append("Managed tasks tracked for this conversation:")
             lines.extend(task_lines)
@@ -490,6 +562,27 @@ class WorkContext:
         else:
             lines.append("Terminal sessions: none")
         return "\n".join(lines)
+
+    def _runtime_transition_lines(self, *, max_transitions: int) -> list[str]:
+        transitions = sorted(
+            self.runtime_transitions,
+            key=lambda item: item.index,
+            reverse=True,
+        )[:max_transitions]
+        lines: list[str] = []
+        for transition in transitions:
+            parts = [
+                f"- {transition.kind}.{transition.action}",
+            ]
+            if transition.ref:
+                parts.append(f"ref={transition.ref}")
+            if transition.state:
+                parts.append(f"state={transition.state}")
+            if transition.active_after is not None:
+                parts.append(f"active_after={transition.active_after}")
+            parts.append(f"summary={_compact_session_text(transition.summary, limit=220)}")
+            lines.append(" | ".join(parts))
+        return lines
 
     def _task_activity_lines(self, *, max_tasks: int) -> list[str]:
         candidates = [

@@ -97,26 +97,73 @@ class RunCommandTool(RuntimeTool):
         context.task_log_cursor = 0
         context.last_task_state = str(task.get("state", "RUNNING"))
         context.last_command_exit_code = None
+        pid = _task_pid(task)
+        content: str | None = None
+        truncated = False
+        if data.timeout_seconds and data.timeout_seconds > 0:
+            observation = await asyncio.to_thread(
+                self.runtime.observe_task,
+                task_id,
+                0,
+                data.max_output_chars,
+                float(data.timeout_seconds),
+            )
+            content = str(observation.get("text", "")) or None
+            context.task_log_cursor = int(observation.get("cursor", 0))
+            task = observation.get("task", task)
+            state = str(observation.get("state") or task.get("state", context.last_task_state))
+            context.last_task_state = state
+            context.last_command_exit_code = _task_exit_code(observation, task)
+            pid = _task_pid(task) or pid
+            truncated = bool(observation.get("truncated", False))
+            if state in TERMINAL_TASK_STATES:
+                context.active_task_id = None
+        else:
+            state = context.last_task_state
+        timed_out = state not in TERMINAL_TASK_STATES
         brief = context.record_task_brief(
             task_id,
             argv=sandboxed.argv,
             cwd=sandboxed.cwd,
-            state=context.last_task_state,
-            pid=_task_pid(task),
+            state=state,
+            pid=pid,
             persistent=bool(task.get("persistent", False)),
+            log_tail=content,
+            exit_code=context.last_command_exit_code,
             started_by=self.definition.name,
+        )
+        context.record_runtime_transition(
+            kind="task",
+            action="run",
+            ref=f"task:{task_id}",
+            summary=_run_command_summary(
+                task_id,
+                state,
+                context.last_command_exit_code,
+                timed_out,
+            ),
+            state=state,
+            active_after=context.task_ref() or "none",
         )
         return ToolResult(
             ok=True,
-            summary=_task_started_summary("started command", task_id, _task_pid(task)),
+            summary=_run_command_summary(task_id, state, context.last_command_exit_code, timed_out),
+            content=content,
             resource_ref=f"task:{task_id}",
-            state=context.last_task_state,
+            state=state,
+            cursor=context.task_log_cursor,
+            truncated=truncated,
+            recoverable=timed_out,
             metadata={
                 "task_id": task_id,
                 "pid": brief.pid,
                 "persistent": brief.persistent,
                 "argv": sandboxed.argv,
                 "cwd": sandboxed.cwd,
+                "exit_code": context.last_command_exit_code,
+                "log_tail": brief.log_tail,
+                "timed_out": timed_out,
+                "observe_timeout_seconds": data.timeout_seconds,
                 "target": binding.location,
                 "target_os": binding.os_name,
                 "target_shell": binding.shell,
@@ -222,6 +269,14 @@ class StartTaskTool(RuntimeTool):
             exit_code=exit_code,
             started_by=self.definition.name,
         )
+        context.record_runtime_transition(
+            kind="task",
+            action="start",
+            ref=f"task:{task_id}",
+            summary=_task_started_summary("started long-running task", task_id, pid),
+            state=state,
+            active_after=context.task_ref() or "none",
+        )
         return ToolResult(
             ok=True,
             summary=_task_started_summary("started long-running task", task_id, pid),
@@ -317,6 +372,14 @@ class ObserveTaskTool(RuntimeTool):
             log_tail=new_text,
             exit_code=context.last_command_exit_code,
         )
+        context.record_runtime_transition(
+            kind="task",
+            action="observe",
+            ref=f"task:{task_id}",
+            summary=_task_summary(task_id, state, context.last_command_exit_code),
+            state=state,
+            active_after=context.task_ref() or "none",
+        )
         return ToolResult(
             ok=True,
             summary=_task_summary(task_id, state, context.last_command_exit_code),
@@ -379,6 +442,14 @@ class CancelTaskTool(RuntimeTool):
             state=state,
             pid=pid,
             exit_code=exit_code,
+        )
+        context.record_runtime_transition(
+            kind="task",
+            action="cancel",
+            ref=f"task:{task_id}",
+            summary=f"cancelled task:{task_id}",
+            state=state,
+            active_after=context.task_ref() or "none",
         )
         return ToolResult(
             ok=True,
@@ -522,6 +593,19 @@ def _task_started_summary(prefix: str, task_id: str, pid: int | None) -> str:
     if pid is None:
         return f"{prefix} task:{task_id}"
     return f"{prefix} task:{task_id} pid={pid}"
+
+
+def _run_command_summary(
+    task_id: str,
+    state: str,
+    exit_code: int | None,
+    timed_out: bool,
+) -> str:
+    if timed_out:
+        return f"command still running as task:{task_id}; use task observe for more output"
+    if exit_code is None:
+        return f"command completed as task:{task_id} state={state}"
+    return f"command completed as task:{task_id} state={state} exit={exit_code}"
 
 
 def _task_pid(task: Mapping[str, Any] | None) -> int | None:

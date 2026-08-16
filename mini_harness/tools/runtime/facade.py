@@ -34,7 +34,8 @@ class CommandToolInput(BaseModel):
     target: Literal["local", "remote"] = "local"
     argv: list[str] = Field(min_length=1)
     cwd: str = "."
-    timeout_seconds: int | None = Field(default=300, ge=1, le=3_600)
+    timeout_seconds: int | None = Field(default=10, ge=1, le=3_600)
+    max_output_chars: int = Field(default=12_000, ge=1, le=200_000)
     force_clean: bool = False
 
 
@@ -43,7 +44,16 @@ class TaskToolInput(BaseModel):
     target: Literal["local", "remote"] = "local"
     argv: list[str] | None = Field(default=None, min_length=1)
     cwd: str = "."
-    wait_seconds: float = Field(default=1.0, ge=0, le=30)
+    wait_seconds: float = Field(
+        default=1.0,
+        ge=0,
+        le=30,
+        description=(
+            "For action=start, initial wait for startup logs. For action=observe, maximum "
+            "seconds to wait for new logs or task completion; use 0 for an immediate poll "
+            "and larger values for long operations."
+        ),
+    )
     max_output_chars: int = Field(default=12_000, ge=1, le=200_000)
     task_ref: str | None = None
     scope: Literal["conversation"] = "conversation"
@@ -85,8 +95,25 @@ class TerminalToolInput(BaseModel):
     rows: int = Field(default=30, ge=5, le=120)
     session_ref: str | None = None
     tail_chars: int = Field(default=4000, ge=0, le=100_000)
-    wait_seconds: float | None = Field(default=None, ge=0, le=300)
-    idle_seconds: float = Field(default=1.5, ge=0.1, le=30)
+    wait_seconds: float | None = Field(
+        default=None,
+        ge=0,
+        le=300,
+        description=(
+            "For action=observe, maximum seconds to wait for terminal output. Leave unset "
+            "for a quick observe; use 0 for an immediate poll; set larger values when a "
+            "foreground command is expected to produce output later."
+        ),
+    )
+    idle_seconds: float = Field(
+        default=1.5,
+        ge=0.1,
+        le=30,
+        description=(
+            "For action=observe, return after this many quiet seconds once meaningful "
+            "output has arrived."
+        ),
+    )
     max_output_chars: int = Field(default=12_000, ge=1, le=200_000)
     data: str | None = Field(default=None, max_length=20_000)
     input_only: bool = False
@@ -229,7 +256,14 @@ def build_facade_tools(internal_tools: list[AgentTool]) -> list[AgentTool]:
             {
                 "run": (
                     "run_command",
-                    ("target", "argv", "cwd", "timeout_seconds", "force_clean"),
+                    (
+                        "target",
+                        "argv",
+                        "cwd",
+                        "timeout_seconds",
+                        "max_output_chars",
+                        "force_clean",
+                    ),
                 )
             },
         ),

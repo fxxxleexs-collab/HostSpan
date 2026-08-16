@@ -36,6 +36,14 @@ class EnsureRemoteToolTool(RuntimeTool):
             else EnsureRemoteToolInput.model_validate(parsed)
         )
         if context.runtime_mode != "ssh":
+            context.record_runtime_transition(
+                kind="remote",
+                action="ensure_tool",
+                ref=data.tool,
+                summary=f"{data.tool} is not required for local runtime mode",
+                state="SKIPPED",
+                active_after=context.remote_address_summary(),
+            )
             return ToolResult(
                 ok=True,
                 summary=f"{data.tool} is not required for local runtime mode",
@@ -59,6 +67,14 @@ class EnsureRemoteToolTool(RuntimeTool):
             or not data.install
             or not _tmux_install_needs_manual_elevation(str(result.content or ""))
         ):
+            context.record_runtime_transition(
+                kind="remote",
+                action="ensure_tool",
+                ref=data.tool,
+                summary=result.summary,
+                state=str(result.state or result.metadata.get("state") or "UNKNOWN"),
+                active_after=context.remote_address_summary(),
+            )
             return result
         manual = await self._manual_tmux_install(
             context=context,
@@ -68,8 +84,25 @@ class EnsureRemoteToolTool(RuntimeTool):
         if manual is None:
             result.metadata["manual_elevation_available"] = True
             result.metadata["recommended_action"] = "approve_temporary_tmux_install_elevation"
+            context.record_runtime_transition(
+                kind="remote",
+                action="ensure_tool",
+                ref=data.tool,
+                summary=result.summary,
+                state=str(result.state or result.metadata.get("state") or "UNKNOWN"),
+                active_after=context.remote_address_summary(),
+            )
             return result
-        return _remote_tool_result(data, manual, phase="manual_elevation")
+        result = _remote_tool_result(data, manual, phase="manual_elevation")
+        context.record_runtime_transition(
+            kind="remote",
+            action="ensure_tool",
+            ref=data.tool,
+            summary=result.summary,
+            state=str(result.state or result.metadata.get("state") or "UNKNOWN"),
+            active_after=context.remote_address_summary(),
+        )
+        return result
 
     async def _run_remote_tool_command(
         self,
@@ -261,6 +294,14 @@ class RequestSSHConnectionTool(RuntimeTool):
             else RequestSSHConnectionInput.model_validate(parsed)
         )
         if context.runtime_mode == "ssh":
+            context.record_runtime_transition(
+                kind="remote",
+                action="request_ssh_connection",
+                ref=context.remote_address_summary(),
+                summary="SSH runtime is already connected",
+                state="CONNECTED",
+                active_after=context.remote_address_summary(),
+            )
             return ToolResult(
                 ok=True,
                 summary="SSH runtime is already connected",
@@ -333,6 +374,14 @@ class RequestSSHConnectionTool(RuntimeTool):
         context.remote_os = "linux"
         context.remote_shell = "bash"
         context.refresh_workspace_policy()
+        context.record_runtime_transition(
+            kind="remote",
+            action="request_ssh_connection",
+            ref=context.remote_address_summary(),
+            summary="SSH runtime connected for this conversation",
+            state="CONNECTED",
+            active_after=context.remote_address_summary(),
+        )
         return ToolResult(
             ok=True,
             summary="SSH runtime connected for this conversation",

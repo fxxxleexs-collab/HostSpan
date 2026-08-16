@@ -288,7 +288,7 @@ MINI_AGENT_REMOTE_ROOT=...
 Remote behavior:
 
 - File tools use SFTP and map relative paths under `remote_root`.
-- `command` action `run` uses SDK `commands.run` as a clean task. It does not inherit terminal state such as root shell, `cd`, exported env vars, activated venv, nested login, or tmux shell state.
+- `command` action `run` uses SDK `commands.run` as a clean task, then waits up to `timeout_seconds` and returns available output, state, and exit code directly. If the command is still running after that window, use `task` action `observe` with the returned `task_id`.
 - `command` action `run` and `task` action `start` can select `target="local"` or `target="remote"` when both targets are available.
 - `task` action `observe` uses cursor-based SDK observation.
 - Interactive work uses `terminal` actions `open`, `observe`, `command`, and `close`.
