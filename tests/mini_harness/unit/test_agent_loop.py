@@ -91,7 +91,7 @@ async def test_agent_loop_completes_with_fake_model(fake_runtime) -> None:
 
 
 @pytest.mark.asyncio
-async def test_agent_loop_blocks_test_final_until_task_is_observed(fake_runtime) -> None:
+async def test_agent_loop_allows_test_final_when_command_returns_exit_code(fake_runtime) -> None:
     model = FakeModelProvider(
         [
             ToolDecision(
@@ -99,13 +99,6 @@ async def test_agent_loop_blocks_test_final_until_task_is_observed(fake_runtime)
                 tool_name="command",
                 arguments={"action": "run", "argv": ["python", "-m", "pytest", "-q"]},
                 reason_summary="Verify tests.",
-            ),
-            FinalDecision(type="final", summary="too early"),
-            ToolDecision(
-                type="tool",
-                tool_name="task",
-                arguments={"action": "observe", "wait_seconds": 0},
-                reason_summary="Observe active task.",
             ),
             FinalDecision(type="final", summary="done"),
         ]
@@ -117,7 +110,8 @@ async def test_agent_loop_blocks_test_final_until_task_is_observed(fake_runtime)
     result = await loop.run("fix tests", _context())
 
     assert result.final_state == AgentState.COMPLETED
-    assert result.tool_error_count == 1
+    assert result.summary == "done"
+    assert result.tool_error_count == 0
 
 
 @pytest.mark.asyncio
@@ -195,12 +189,6 @@ async def test_agent_loop_can_block_final_after_failed_command_when_configured(
 async def test_agent_loop_fails_after_repeated_final_guard_blocks(fake_runtime) -> None:
     model = FakeModelProvider(
         [
-            ToolDecision(
-                type="tool",
-                tool_name="command",
-                arguments={"action": "run", "argv": ["python", "-m", "pytest", "-q"]},
-                reason_summary="Verify tests.",
-            ),
             FinalDecision(type="final", summary="too early"),
             FinalDecision(type="final", summary="still too early"),
         ]
@@ -217,7 +205,7 @@ async def test_agent_loop_fails_after_repeated_final_guard_blocks(fake_runtime) 
 
     assert result.final_state == AgentState.FAILED
     assert result.error_code == "CONSECUTIVE_ERROR_LIMIT"
-    assert result.iterations == 3
+    assert result.iterations == 2
     failed_events = [event for event in sink.events if event.event_type.value == "tool.failed"]
     assert failed_events[-1].payload["metadata"]["guard"] == "final"
     assert failed_events[-1].payload["metadata"]["reason"] == "verification_missing"

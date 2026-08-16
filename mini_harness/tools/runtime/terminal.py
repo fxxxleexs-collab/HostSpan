@@ -151,6 +151,14 @@ class OpenTerminalTool(RuntimeTool):
                 f"after {fallback_from} failed; "
                 f"{recommended_action}"
             )
+        context.record_runtime_transition(
+            kind="terminal",
+            action="open",
+            ref=f"session:{session_id}",
+            summary=summary,
+            state="ACTIVE",
+            active_after=context.session_ref() or "none",
+        )
         return ToolResult(
             ok=True,
             summary=summary,
@@ -402,6 +410,14 @@ class ActivateTerminalSessionTool(RuntimeTool):
                 },
             )
         _apply_session_record_to_context(session, context, activate=True)
+        context.record_runtime_transition(
+            kind="terminal",
+            action="activate",
+            ref=f"session:{session_id}",
+            summary=f"activated session:{session_id}",
+            state=state,
+            active_after=context.session_ref() or "none",
+        )
         return ToolResult(
             ok=True,
             summary=f"activated session:{session_id}",
@@ -530,6 +546,17 @@ class ObserveTerminalTool(RuntimeTool):
             pending=context.terminal_input_pending,
             history_only=not interactive,
         )
+        context.record_runtime_transition(
+            kind="terminal",
+            action="observe",
+            ref=f"session:{session_id}",
+            summary=(
+                f"observed session:{session_id}; "
+                f"{'output received' if content else 'no new output'}"
+            ),
+            state=session_state,
+            active_after=context.session_ref() or "none",
+        )
         truncated = len(content) > data.max_output_chars
         if truncated:
             content = content[-data.max_output_chars :]
@@ -650,6 +677,14 @@ class TerminalCommandTool(RuntimeTool):
             history_only=False,
         )
         display = _terminal_input_display(normalized)
+        context.record_runtime_transition(
+            kind="terminal",
+            action="command",
+            ref=f"session:{session_id}",
+            summary=f"sent terminal input to session:{session_id}: {display}",
+            state="ACTIVE",
+            active_after=context.session_ref() or "none",
+        )
         return ToolResult(
             ok=True,
             summary=f"sent terminal input to session:{session_id}: {display}",
@@ -755,6 +790,14 @@ class RequestHumanTerminalInputTool(RuntimeTool):
             pending=context.terminal_input_pending,
             history_only=False,
         )
+        context.record_runtime_transition(
+            kind="terminal",
+            action="human_input",
+            ref=f"session:{session_id}",
+            summary=f"submitted hidden human input to session:{session_id}",
+            state="ACTIVE",
+            active_after=context.session_ref() or "none",
+        )
         return ToolResult(
             ok=True,
             summary=f"submitted hidden human input to session:{session_id}",
@@ -846,6 +889,14 @@ class SendTerminalControlTool(RuntimeTool):
             pending=context.terminal_input_pending,
             history_only=False,
         )
+        context.record_runtime_transition(
+            kind="terminal",
+            action="control",
+            ref=f"session:{session_id}",
+            summary=f"sent {data.control} to session:{session_id}",
+            state="ACTIVE",
+            active_after=context.session_ref() or "none",
+        )
         return ToolResult(
             ok=True,
             summary=f"sent {data.control} to session:{session_id}",
@@ -894,9 +945,11 @@ class CloseTerminalTool(RuntimeTool):
             else CloseTerminalInput.model_validate(parsed)
         )
         session_id = _resolve_session_id(data.session_ref, context)
+        before = await asyncio.to_thread(self.runtime.get_session, session_id)
         session = await asyncio.to_thread(self.runtime.close_terminal, session_id)
+        merged_session = {**before, **session}
         _record_session_brief_from_record(
-            session,
+            merged_session,
             context,
             updated_by=self.definition.name,
             brief="Closed terminal session",
@@ -904,12 +957,26 @@ class CloseTerminalTool(RuntimeTool):
             history_only=True,
         )
         context.clear_session_state()
+        state = str(session.get("state", "TERMINATED"))
+        context.record_runtime_transition(
+            kind="terminal",
+            action="close",
+            ref=f"session:{session_id}",
+            summary=f"closed session:{session_id}; active terminal is now none",
+            state=state,
+            active_after=context.session_ref() or "none",
+        )
         return ToolResult(
             ok=True,
             summary=f"closed session:{session_id}",
             resource_ref=f"session:{session_id}",
-            state=str(session.get("state", "TERMINATED")),
-            metadata={"session_id": session_id},
+            state=state,
+            metadata={
+                "session_id": session_id,
+                "closed_session_id": session_id,
+                "session_state_after": state,
+                "active_session_after": context.session_ref(),
+            },
         )
 
 

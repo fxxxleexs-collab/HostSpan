@@ -66,6 +66,7 @@ def test_runtime_activity_summary_includes_active_tasks_and_sessions() -> None:
 
     summary = context.runtime_activity_summary()
 
+    assert "Recent runtime transitions: none" in summary
     assert "Managed tasks tracked for this conversation:" in summary
     assert "task:task_1" in summary
     assert "pid=12345" in summary
@@ -75,6 +76,36 @@ def test_runtime_activity_summary_includes_active_tasks_and_sessions() -> None:
     assert "session:session_1" in summary
     assert "privilege=root" in summary
     assert "pending=true" in summary
+
+
+def test_runtime_activity_summary_includes_recent_transitions() -> None:
+    context = _context()
+    context.record_runtime_transition(
+        kind="terminal",
+        action="close",
+        ref="session:old",
+        summary="closed session:old; active terminal is now none",
+        state="TERMINATED",
+        active_after="none",
+    )
+    context.record_runtime_transition(
+        kind="terminal",
+        action="open",
+        ref="session:new",
+        summary="opened local session:new using local_pty",
+        state="ACTIVE",
+        active_after="session:new",
+    )
+
+    summary = context.runtime_activity_summary()
+
+    assert "Recent runtime transitions:" in summary
+    assert "terminal.open" in summary
+    assert "ref=session:new" in summary
+    assert "active_after=session:new" in summary
+    assert "terminal.close" in summary
+    assert "ref=session:old" in summary
+    assert "active_after=none" in summary
 
 
 def test_managed_task_inventory_lists_active_task_pid() -> None:

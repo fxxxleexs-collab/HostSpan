@@ -96,7 +96,6 @@ async def test_runtime_tools_map_to_runtime_client(fake_runtime) -> None:
         {"argv": ["python", "-m", "pytest", "-q"], "cwd": "."},
         context,
     )
-    observed = await registry.execute("observe_task", {"wait_seconds": 0}, context)
 
     assert listed.ok
     assert "calculator.py" in str(listed.content)
@@ -123,10 +122,11 @@ async def test_runtime_tools_map_to_runtime_client(fake_runtime) -> None:
     assert run.resource_ref == "task:task_1"
     assert run.metadata["pid"] == 12345
     assert run.metadata["persistent"] is False
-    assert observed.ok
-    assert observed.metadata["pid"] == 12345
-    assert observed.metadata["log_tail"] == ".\n1 passed\n"
-    assert observed.cursor == len(".\n1 passed\n")
+    assert run.metadata["exit_code"] == 0
+    assert run.metadata["timed_out"] is False
+    assert run.metadata["log_tail"] == ".\n1 passed\n"
+    assert run.cursor == len(".\n1 passed\n")
+    assert run.content == ".\n1 passed\n"
     assert context.active_task_id is None
     assert [name for name, _ in fake_runtime.requests] == [
         "list_files",
@@ -153,18 +153,14 @@ async def test_facade_tools_are_default_runtime_tools(fake_runtime) -> None:
         {"action": "run", "argv": ["python", "-m", "pytest", "-q"]},
         context,
     )
-    observed = await registry.execute(
-        "task",
-        {"action": "observe", "wait_seconds": 0},
-        context,
-    )
 
     assert read.ok
     assert read.metadata["inner_tool"] == "read_file"
     assert command.ok
     assert command.metadata["inner_tool"] == "run_command"
-    assert observed.ok
-    assert observed.metadata["inner_tool"] == "observe_task"
+    assert command.metadata["exit_code"] == 0
+    assert command.metadata["timed_out"] is False
+    assert ".\n1 passed\n" in str(command.content)
 
 
 @pytest.mark.asyncio
@@ -262,6 +258,15 @@ async def test_start_task_records_managed_long_running_task(fake_runtime) -> Non
     assert "python app.py" in str(listed.content)
     assert cancelled.ok
     assert cancelled.metadata["pid"] == 12345
+    transitions = context.recent_runtime_transitions()
+    assert transitions[0]["kind"] == "task"
+    assert transitions[0]["action"] == "cancel"
+    assert transitions[0]["ref"] == "task:task_1"
+    assert transitions[0]["active_after"] == "none"
+    assert any(
+        transition["kind"] == "task" and transition["action"] == "start"
+        for transition in transitions
+    )
     assert [name for name, _ in fake_runtime.requests] == [
         "start_task",
         "observe_task",
@@ -305,6 +310,19 @@ async def test_runtime_tools_map_remote_paths_and_terminal_tools(fake_runtime) -
     assert sent.ok
     assert closed.state == "TERMINATED"
     assert context.active_session_id is None
+    assert context.session_brief("session_1") is not None
+    assert context.session_brief("session_1").runtime_state == "TERMINATED"
+    assert context.session_brief("session_1").pending is False
+    assert context.session_brief("session_1").history_only is True
+    transitions = context.recent_runtime_transitions()
+    assert transitions[0]["kind"] == "terminal"
+    assert transitions[0]["action"] == "close"
+    assert transitions[0]["ref"] == "session:session_1"
+    assert transitions[0]["active_after"] == "none"
+    assert any(
+        transition["kind"] == "terminal" and transition["action"] == "open"
+        for transition in transitions
+    )
     assert fake_runtime.requests[0][1]["path"] == "/srv/app"
     assert fake_runtime.requests[1][1]["path"] == "/srv/app/calculator.py"
     assert fake_runtime.requests[2][1]["cwd"] == "/srv/app"
@@ -865,13 +883,22 @@ async def test_command_facade_can_target_local_in_ssh_runtime(fake_runtime) -> N
     assert result.ok
     assert result.metadata["target"] == "local"
     assert result.metadata["inner_tool"] == "run_command"
-    assert fake_runtime.requests[-1] == (
+    assert fake_runtime.requests[-2] == (
         "run_command",
         {
             "environment_id": "env_1",
             "target_id": "target_1",
             "argv": ["python", "--version"],
             "cwd": str(Path("/local/project").resolve()),
+        },
+    )
+    assert fake_runtime.requests[-1] == (
+        "observe_task",
+        {
+            "task_id": "task_1",
+            "cursor": 0,
+            "max_chars": 12000,
+            "wait_seconds": 10.0,
         },
     )
 
@@ -1276,7 +1303,48 @@ async def test_run_command_force_clean_overrides_active_session_guard(fake_runti
 
     assert result.ok
     assert result.resource_ref == "task:task_1"
-    assert fake_runtime.requests[-1][0] == "run_command"
+    assert fake_runtime.requests[-2][0] == "run_command"
+    assert fake_runtime.requests[-1][0] == "observe_task"
+
+
+@pytest.mark.asyncio
+async def test_run_command_timeout_keeps_task_observable(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = _context()
+    fake_runtime.task_state = "RUNNING"
+    fake_runtime.task_exit_code = None
+    fake_runtime.logs = [{"chunk": "server booting\n"}]
+
+    result = await registry.execute(
+        "run_command",
+        {
+            "argv": ["python", "-m", "http.server", "8000"],
+            "cwd": ".",
+            "timeout_seconds": 1,
+            "max_output_chars": 200,
+        },
+        context,
+    )
+    assert context.active_task_id == "task_1"
+    fake_runtime.task_state = "SUCCEEDED"
+    fake_runtime.task_exit_code = 0
+    observed = await registry.execute("observe_task", {"task_ref": "task:task_1"}, context)
+
+    assert result.ok
+    assert result.recoverable
+    assert result.state == "RUNNING"
+    assert result.metadata["timed_out"] is True
+    assert result.metadata["observe_timeout_seconds"] == 1
+    assert result.content == "server booting\n"
+    assert result.metadata["task_id"] == "task_1"
+    assert result.metadata["pid"] == 12345
+    assert result.metadata["exit_code"] is None
+    assert result.metadata["log_tail"] == "server booting\n"
+    assert observed.ok
+    assert observed.state == "SUCCEEDED"
+    assert context.active_task_id is None
 
 
 @pytest.mark.asyncio

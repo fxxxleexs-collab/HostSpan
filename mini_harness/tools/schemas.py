@@ -83,7 +83,16 @@ class RunCommandInput(BaseModel):
     )
     argv: list[str] = Field(min_length=1)
     cwd: str = "."
-    timeout_seconds: int | None = Field(default=300, ge=1, le=3_600)
+    timeout_seconds: int | None = Field(
+        default=10,
+        ge=1,
+        le=3_600,
+        description=(
+            "Maximum seconds to wait for command output and completion before returning "
+            "a RUNNING task_id that can be observed later."
+        ),
+    )
+    max_output_chars: int = Field(default=12_000, ge=1, le=200_000)
     force_clean: bool = Field(
         default=False,
         description=(
@@ -124,7 +133,16 @@ class StartTaskInput(BaseModel):
 
 class ObserveTaskInput(BaseModel):
     task_ref: str | None = None
-    wait_seconds: float = Field(default=0.5, ge=0, le=30)
+    wait_seconds: float = Field(
+        default=0.5,
+        ge=0,
+        le=30,
+        description=(
+            "Maximum seconds to wait for new task logs or a terminal task state before "
+            "returning. Use 0 for an immediate poll; set a larger value for long "
+            "operations so the agent does not repeatedly poll."
+        ),
+    )
     max_output_chars: int = Field(default=12_000, ge=1, le=200_000)
 
 
@@ -247,8 +265,9 @@ class ObserveTerminalInput(BaseModel):
         ge=0,
         le=300,
         description=(
-            "Maximum seconds to wait for new terminal output. Leave unset for the default "
-            "short observe, or set to expected command duration plus a small buffer."
+            "Maximum seconds to wait for new terminal output before returning. Leave "
+            "unset for the default quick observe; use 0 for an immediate poll; set to "
+            "the expected command duration plus a small buffer for long terminal work."
         ),
     )
     idle_seconds: float = Field(
