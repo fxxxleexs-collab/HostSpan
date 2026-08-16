@@ -56,6 +56,10 @@ task_ref for later task observe/list/cancel.
 Managed tasks are tracked in the conversation task inventory with task_id and
 pid when available. A tracked long-running service may remain running after the
 final answer, but mention its task_id/pid and how to stop it.
+For task and terminal actions that start, observe, change, or close ongoing
+runtime state, optionally include brief as one short sentence when it clarifies
+what the task/session is doing, whether it is waiting, or the next likely step.
+Do not put secrets or raw logs in brief.
 Before repeating any state-changing action such as task cancel, terminal close,
 terminal open, terminal activate, or remote connection setup, check Recent
 runtime transitions in the work context. Do not repeat a transition that already
@@ -568,6 +572,7 @@ def _format_tool_metadata(metadata: dict[str, object]) -> str:
         "input_only",
         "recommended_action",
         "recommended_tool",
+        "brief",
         "content_saved_to_artifact",
         "artifact_kind",
         "artifact_path",

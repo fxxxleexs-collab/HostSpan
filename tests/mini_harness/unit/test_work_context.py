@@ -132,6 +132,7 @@ def test_managed_task_inventory_lists_active_task_pid() -> None:
             "state": "RUNNING",
             "pid": 12345,
             "persistent": True,
+            "brief": None,
             "log_tail": None,
             "exit_code": None,
             "started_by": "start_task",
@@ -140,6 +141,28 @@ def test_managed_task_inventory_lists_active_task_pid() -> None:
             "touch_index": 1,
         }
     ]
+
+
+def test_task_brief_is_saved_and_summarized() -> None:
+    context = _context()
+    context.active_task_id = "task_1"
+
+    context.record_task_brief(
+        "task_1",
+        argv=["python", "-m", "http.server", "8000"],
+        cwd="/project",
+        state="RUNNING",
+        pid=12345,
+        persistent=True,
+        brief="serving local test app and waiting for requests",
+        started_by="start_task",
+    )
+
+    inventory = context.managed_task_inventory(active_only=True)
+    summary = context.runtime_activity_summary()
+
+    assert inventory[0]["brief"] == "serving local test app and waiting for requests"
+    assert "brief=serving local test app and waiting for requests" in summary
 
 
 def test_runtime_activity_summary_does_not_redact_docker_ps_output() -> None:

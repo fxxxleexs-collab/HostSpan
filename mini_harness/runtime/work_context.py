@@ -105,6 +105,7 @@ class TaskBrief:
     state: str = "UNKNOWN"
     pid: int | None = None
     persistent: bool = False
+    brief: str | None = None
     log_tail: str | None = None
     exit_code: int | None = None
     started_by: str = "unknown"
@@ -123,6 +124,7 @@ class TaskBrief:
             "state": self.state,
             "pid": self.pid,
             "persistent": self.persistent,
+            "brief": self.brief,
             "log_tail": self.log_tail,
             "exit_code": self.exit_code,
             "started_by": self.started_by,
@@ -376,6 +378,7 @@ class WorkContext:
         state: str | None = None,
         pid: int | None = None,
         persistent: bool | None = None,
+        brief: str | None = None,
         log_tail: str | None = None,
         exit_code: int | None = None,
         started_by: str | None = None,
@@ -392,6 +395,8 @@ class WorkContext:
             item.pid = pid
         if persistent is not None:
             item.persistent = persistent
+        if brief is not None:
+            item.brief = _compact_session_text(brief, limit=240)
         if log_tail is not None:
             item.log_tail = log_tail[-4000:]
         if exit_code is not None:
@@ -604,6 +609,8 @@ class WorkContext:
             if task.exit_code is not None:
                 parts.append(f"exit={task.exit_code}")
             parts.append(f"cmd={command}")
+            if task.brief:
+                parts.append(f"brief={task.brief}")
             if task.log_tail:
                 parts.append(f"tail={_compact_session_text(task.log_tail, limit=240)}")
             lines.append(" | ".join(parts))
