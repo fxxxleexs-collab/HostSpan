@@ -14,6 +14,11 @@ The default test suite skips real SSH Docker tests unless explicitly enabled.
 
 ## Current Test Areas
 
+Older status notes in this repository may mention historical pass counts from specific local
+runs. Those counts are intentionally not repeated here because the useful contract is the test
+scope, not a stale number. Re-run the standard commands for the current branch before publishing
+or packaging.
+
 Unit tests cover:
 
 - domain validation and writer leases

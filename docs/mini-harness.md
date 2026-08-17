@@ -41,6 +41,31 @@ Tool schemas hide endpoint, environment, target, broker, process, persistence, S
 
 `command` action `run` and `task` action `start` accept `target="local" | "remote"`. Use `local` for machine-local commands such as packaging or Windows PowerShell work, and `remote` for the configured SSH host.
 
+## Capability Boundaries
+
+Mini Harness is currently a Runtime SDK validation harness with a CLI agent loop. The default
+model-facing surface is intentionally small: file operations, short commands, long tasks,
+remote setup helpers, and interactive terminals.
+
+Current boundaries:
+
+- The default facade does not expose sync tools. The `mini_harness.sync` package is present for
+  internal development and tests only.
+- Local and remote operations are explicit targets. A session can use the local project and one
+  configured SSH runtime, but multi-remote routing and live server switching are not implemented.
+- `file` action `edit` is exact text replacement with hash guarding and diff preview. General
+  patch application is not implemented.
+- `command` action `run` is for clean one-shot commands and returns available output directly.
+  `task` action `start` is for long-running non-interactive work. `terminal` is for stateful or
+  human-interactive shell state.
+- The sandbox is policy-only. It can block or ask approval for risky paths and command patterns,
+  but it is not process isolation, container isolation, or gVisor/bubblewrap enforcement yet.
+- CLI approvals are one-shot user decisions. Mini Harness does not yet provide a persistent
+  approval UI, per-resource ACLs, or full RBAC.
+- Long task and terminal summaries are best-effort context aids, not durable audit records.
+- Browser UI, WebSocket UI, MCP, RAG, long-term memory, and sub-agents are outside the current
+  open-source MVP.
+
 ## Tool Permissions
 
 Tool execution goes through a capability preflight in `ToolRegistry.execute()` before the runtime operation is attempted. The first implementation defaults to an allow-all policy so existing local and SSH smoke flows keep working, but the authorization seam is now mandatory for registered runtime tools.
@@ -129,6 +154,9 @@ mode = "push"
 delete_remote = false
 ```
 
+This block is for internal/manual experiments until the sync workflow is promoted back into the
+default agent facade.
+
 ## Running
 
 Start a broker in one terminal:
@@ -185,6 +213,8 @@ Mini Harness reads TOML config from:
 3. `<project>/.mini-harness.toml`
 4. `./mini-harness.toml`
 5. `./.mini-harness.toml`
+
+See `mini-harness.example.toml` in the repository root for a minimal commented starting point.
 
 CLI options and environment variables override the file. Common model overrides:
 
@@ -302,7 +332,7 @@ Remote behavior:
 - If terminal open falls back from `ssh_tmux` to `ssh_pty`, the result includes `fallback_from`, `fallback_error`, and a recommended action.
 - `remote` action `ensure_tool` can check for `tmux` and optionally attempt non-interactive installation with the remote package manager.
 
-Password SSH authentication is not wired through Runtime endpoint creation yet. Use an identity file or SSH agent for this first version.
+Password SSH authentication is supported through the interactive secret prompt only. Plaintext SSH passwords are intentionally not accepted in TOML config or CLI arguments.
 
 ## API Troubleshooting
 
@@ -344,3 +374,8 @@ Mini Harness tests:
 ```
 
 The integration test uses `FakeModelProvider`, a real local broker, `AgentRuntimeClient`, and a copied sample project. It verifies that the file is modified via SDK calls and pytest is run as a Runtime task.
+
+Older status notes may mention historical pass counts from implementation-time runs. Treat those
+as smoke-test evidence, not as release badges. The current tests are most useful for validating
+deterministic Mini Harness behavior, the local SDK/broker path, and selected Runtime providers.
+Real model calls and Docker SSH flows remain manual or opt-in checks.
