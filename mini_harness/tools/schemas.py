@@ -47,6 +47,14 @@ class ReadFileInput(BaseModel):
 
 class WriteFileInput(BaseModel):
     path: str
+    target: Literal["current", "local", "remote", "sync"] = Field(
+        default="current",
+        description=(
+            "Write target. current preserves the runtime default; local writes the local "
+            "workspace; remote writes the SSH workspace; sync writes locally and then "
+            "pushes that file to the configured remote mirror."
+        ),
+    )
     content: str = Field(max_length=1_000_000)
     expected_sha256: str | None = Field(
         default=None,
