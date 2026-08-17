@@ -266,8 +266,8 @@ def build_facade_tools(internal_tools: list[AgentTool]) -> list[AgentTool]:
             FileToolInput,
             tools,
             {
-                "list": ("list_files", ("path", "recursive", "max_entries")),
-                "read": ("read_file", ("path", "start_line", "end_line", "max_lines")),
+                "list": ("list_files", ("path", "target", "recursive", "max_entries")),
+                "read": ("read_file", ("path", "target", "start_line", "end_line", "max_lines")),
                 "write": ("write_file", ("path", "target", "content", "expected_sha256")),
                 "edit": (
                     "edit_file",

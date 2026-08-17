@@ -26,12 +26,28 @@ class ToolResult(BaseModel):
 
 class ListFilesInput(BaseModel):
     path: str = "."
+    target: Literal["current", "local", "remote", "sync"] = Field(
+        default="current",
+        description=(
+            "List target. current preserves the runtime default; local lists the local "
+            "workspace; remote lists the SSH workspace; sync lists the local workspace "
+            "and includes local-to-remote mirror status metadata."
+        ),
+    )
     recursive: bool = False
     max_entries: int = Field(default=200, ge=1, le=2_000)
 
 
 class ReadFileInput(BaseModel):
     path: str
+    target: Literal["current", "local", "remote", "sync"] = Field(
+        default="current",
+        description=(
+            "Read target. current preserves the runtime default; local reads the local "
+            "workspace; remote reads the SSH workspace; sync reads the local workspace "
+            "and includes local-to-remote mirror status metadata."
+        ),
+    )
     start_line: int | None = Field(default=None, ge=1)
     end_line: int | None = Field(default=None, ge=1)
     max_lines: int | None = Field(

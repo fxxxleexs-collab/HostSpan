@@ -26,6 +26,10 @@ the full saved output.
 For targeted edits to existing files, prefer file action="edit" with exact
 old_text and expected_sha256 from the most recent file read result. Use file
 action="write" mainly for new files or deliberate full-file rewrites.
+For file action="list" and file action="read", set target="local" to inspect the
+local workspace, target="remote" to inspect the SSH workspace, and target="sync"
+when sync is enabled and you need the local authoritative files plus mirror
+status metadata.
 For file action="write" and file action="edit", set target="local" to change
 only the local workspace, target="remote" to change only the SSH workspace, and
 target="sync" when sync is enabled and the intended result is local change plus
