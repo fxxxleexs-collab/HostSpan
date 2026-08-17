@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel
@@ -72,40 +73,70 @@ class ListFilesTool(RuntimeTool):
     ) -> list[PermissionRequest]:
         data = ListFilesInput.model_validate(arguments)
         path = context.normalize_path(data.path)
-        return [
+        target = _file_target(data.target, context)
+        requests = [
             PermissionRequest.for_target(
                 tool_name=self.definition.name,
                 capability="file.list",
-                target=context.default_terminal_target(),
+                target="local" if target == "sync" else target,
                 operation="list",
                 resource=path,
             )
         ]
+        if target == "sync":
+            requests.append(
+                PermissionRequest.for_target(
+                    tool_name=self.definition.name,
+                    capability="sync.status",
+                    target="remote",
+                    operation="status",
+                    resource=context.sync_remote_root(),
+                    metadata={"path": path},
+                )
+            )
+        return requests
 
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = (
             parsed if isinstance(parsed, ListFilesInput) else ListFilesInput.model_validate(parsed)
         )
         path = context.normalize_path(data.path)
-        entries = await asyncio.to_thread(
-            self.runtime.list_files,
-            context.endpoint_id,
-            context.runtime_path(path),
-            data.recursive,
-        )
+        target = _file_target(data.target, context)
+        if target == "sync":
+            unavailable = _sync_target_unavailable_result(context)
+            if unavailable is not None:
+                return unavailable
+            entries = await asyncio.to_thread(_list_local_disk_files, context, path, data.recursive)
+            sync_metadata = await asyncio.to_thread(_sync_status_metadata, self.runtime, context)
+        else:
+            binding = context.terminal_target(target)
+            entries = await asyncio.to_thread(
+                self.runtime.list_files,
+                binding.endpoint_id,
+                context.runtime_path_for(path, binding.location),
+                data.recursive,
+            )
+            sync_metadata = None
         visible = sorted(
-            context.display_path(entry)
+            _display_path_for_target(context, entry, target)
             for entry in entries
-            if not context.should_ignore_entry(context.display_path(entry))
+            if not context.should_ignore_entry(_display_path_for_target(context, entry, target))
         )
         truncated = len(visible) > data.max_entries
         visible = visible[: data.max_entries]
+        metadata: dict[str, Any] = {
+            "entry_count": len(visible),
+            "path": path,
+            "target": target,
+        }
+        if sync_metadata is not None:
+            metadata["sync"] = sync_metadata
         return ToolResult(
             ok=True,
-            summary=f"{len(visible)} entries listed",
+            summary=_list_files_summary(len(visible), path, target),
             content="\n".join(visible),
             truncated=truncated,
-            metadata={"entry_count": len(visible), "path": path},
+            metadata=metadata,
         )
 
 
@@ -123,15 +154,28 @@ class ReadFileTool(RuntimeTool):
     ) -> list[PermissionRequest]:
         data = ReadFileInput.model_validate(arguments)
         path = context.normalize_path(data.path)
-        return [
+        target = _file_target(data.target, context)
+        requests = [
             PermissionRequest.for_target(
                 tool_name=self.definition.name,
                 capability="file.read",
-                target=context.default_terminal_target(),
+                target="local" if target == "sync" else target,
                 operation="read",
                 resource=path,
             )
         ]
+        if target == "sync":
+            requests.append(
+                PermissionRequest.for_target(
+                    tool_name=self.definition.name,
+                    capability="sync.status",
+                    target="remote",
+                    operation="status",
+                    resource=context.sync_remote_root(),
+                    metadata={"path": path},
+                )
+            )
+        return requests
 
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = parsed if isinstance(parsed, ReadFileInput) else ReadFileInput.model_validate(parsed)
@@ -148,7 +192,21 @@ class ReadFileTool(RuntimeTool):
                 "end_line must be greater than or equal to start_line",
                 recoverable=True,
             )
-        file_ops = RuntimeWorkspaceFileOps(self.runtime, context)
+        target = _file_target(data.target, context)
+        if target == "sync":
+            unavailable = _sync_target_unavailable_result(context)
+            if unavailable is not None:
+                return unavailable
+            file_ops = LocalDiskWorkspaceFileOps(context)
+            sync_metadata = await asyncio.to_thread(
+                _sync_status_metadata,
+                self.runtime,
+                context,
+                path,
+            )
+        else:
+            file_ops = RuntimeWorkspaceFileOps(self.runtime, context, target=target)
+            sync_metadata = None
         read = await asyncio.to_thread(file_ops.read_text, path)
         snapshot = snapshot_text(read.location.path, read.text)
         snapshot_summary = context.record_file_snapshot(snapshot)
@@ -169,7 +227,7 @@ class ReadFileTool(RuntimeTool):
         truncated = len(rendered) > self.max_chars
         if truncated:
             rendered = rendered[: self.max_chars] + "\n[truncated]"
-        return ToolResult(
+        result = ToolResult(
             ok=True,
             summary=_read_file_summary(path, len(selected), selected_start_line, selected_end_line),
             content=rendered,
@@ -192,8 +250,12 @@ class ReadFileTool(RuntimeTool):
                 "encoding": snapshot.encoding,
                 "snapshot": snapshot_summary.as_dict(),
                 "file_location": read.location.as_dict(),
+                "target": target,
             },
         )
+        if sync_metadata is not None:
+            result.metadata["sync"] = sync_metadata
+        return result
 
 
 class WriteFileTool(RuntimeTool):
@@ -439,11 +501,12 @@ def build_file_tools(runtime: HarnessRuntimeClient) -> list[AgentTool]:
     ]
 
 
-WriteTarget = Literal["local", "remote", "sync"]
+FileTarget = Literal["local", "remote", "sync"]
+WriteTarget = FileTarget
 FileChangeOperation = Literal["write", "edit"]
 
 
-def _write_target(raw_target: str, context: WorkContext) -> WriteTarget:
+def _file_target(raw_target: str, context: WorkContext) -> FileTarget:
     if raw_target == "sync":
         return "sync"
     if raw_target == "current":
@@ -452,9 +515,103 @@ def _write_target(raw_target: str, context: WorkContext) -> WriteTarget:
         return raw_target  # type: ignore[return-value]
     raise MiniHarnessError(
         ErrorCode.TOOL_ARGUMENT_INVALID,
-        f"unsupported write target: {raw_target}",
+        f"unsupported file target: {raw_target}",
         recoverable=True,
     )
+
+
+def _write_target(raw_target: str, context: WorkContext) -> WriteTarget:
+    return _file_target(raw_target, context)
+
+
+def _display_path_for_target(context: WorkContext, runtime_path: str, target: FileTarget) -> str:
+    if target == "remote":
+        return context.display_path(runtime_path)
+    return runtime_path.replace("\\", "/")
+
+
+def _list_files_summary(count: int, path: str, target: FileTarget) -> str:
+    if target == "sync":
+        return f"{count} local sync workspace entries listed from {path}"
+    return f"{count} {target} entries listed from {path}"
+
+
+def _list_local_disk_files(context: WorkContext, path: str, recursive: bool) -> list[str]:
+    root = Path(context.project_root).resolve()
+    base = root if path == "." else (root / path).resolve()
+    if not base.is_relative_to(root):
+        raise MiniHarnessError(
+            ErrorCode.PATH_OUTSIDE_PROJECT,
+            "paths must stay inside the project root",
+            recoverable=True,
+        )
+    if recursive:
+        if base.is_file():
+            return [base.name]
+        return sorted(item.relative_to(base).as_posix() for item in base.rglob("*") if item.is_file())
+    return sorted(item.name for item in base.iterdir())
+
+
+def _sync_status_metadata(
+    runtime: HarnessRuntimeClient,
+    context: WorkContext,
+    path: str | None = None,
+) -> dict[str, Any]:
+    result = _sync_engine(runtime, context).status()
+    state = _sync_semantic_state(result)
+    diff = result.plan.diff_summary(50)
+    metadata: dict[str, Any] = {
+        "ok": result.ok,
+        "state": state,
+        "semantic_state": state,
+        "workspace_id": result.workspace_id,
+        "local_root": context.project_root,
+        "remote_root": context.sync_remote_root(),
+        "manifest_file_count": len(result.manifest.files),
+        "diff": diff,
+        "retryable": state == "LOCAL_AHEAD",
+        "recommended_action": _sync_read_recommended_action(state),
+    }
+    if path is not None:
+        metadata["path_status"] = _sync_path_status(result, path)
+    return metadata
+
+
+def _sync_semantic_state(result: SyncPushResult) -> str:
+    if result.plan.conflicts:
+        return "CONFLICT"
+    if result.plan.has_changes:
+        return "LOCAL_AHEAD"
+    return "IN_SYNC"
+
+
+def _sync_path_status(result: SyncPushResult, path: str) -> dict[str, object]:
+    normalized = path.replace("\\", "/").strip("/")
+    if any(item.path == normalized for item in result.plan.conflicts):
+        return {"state": "CONFLICT", "path": normalized}
+    skipped = next((item for item in result.plan.skipped if item.path == normalized), None)
+    if skipped is not None:
+        return {
+            "state": "SKIPPED",
+            "path": normalized,
+            "reason": skipped.reason,
+            "detail": skipped.detail,
+        }
+    if any(item.path == normalized for item in result.plan.uploads):
+        return {"state": "LOCAL_AHEAD", "path": normalized}
+    if normalized in result.plan.unchanged:
+        return {"state": "IN_SYNC", "path": normalized}
+    if normalized in result.manifest.files:
+        return {"state": "TRACKED", "path": normalized}
+    return {"state": "UNTRACKED", "path": normalized}
+
+
+def _sync_read_recommended_action(state: str) -> str | None:
+    if state == "LOCAL_AHEAD":
+        return 'sync action="push" before remote commands that need these local files'
+    if state == "CONFLICT":
+        return 'sync action="status" and inspect conflicts before relying on the mirror'
+    return None
 
 
 def _write_prepare_file_ops(
@@ -781,7 +938,7 @@ def _sync_engine(runtime: HarnessRuntimeClient, context: WorkContext) -> SyncEng
 
 
 def _require_sync_write_context(context: WorkContext) -> None:
-    unavailable = _sync_write_unavailable_result(context)
+    unavailable = _sync_target_unavailable_result(context)
     if unavailable is not None:
         raise MiniHarnessError(
             ErrorCode.TOOL_ARGUMENT_INVALID,
@@ -792,6 +949,10 @@ def _require_sync_write_context(context: WorkContext) -> None:
 
 
 def _sync_write_unavailable_result(context: WorkContext) -> ToolResult | None:
+    return _sync_target_unavailable_result(context)
+
+
+def _sync_target_unavailable_result(context: WorkContext) -> ToolResult | None:
     config = context.sync_config
     if config is None or not config.enabled:
         return ToolResult(

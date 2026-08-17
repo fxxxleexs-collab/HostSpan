@@ -446,6 +446,139 @@ async def test_read_file_rejects_end_line_with_max_lines(fake_runtime) -> None:
 
 
 @pytest.mark.asyncio
+async def test_read_file_can_target_local_in_ssh_runtime(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root="/local/project",
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+        local_endpoint_id="endpoint_1",
+        local_environment_id="env_1",
+        local_target_id="target_1",
+    )
+
+    result = await registry.execute(
+        "read_file",
+        {"path": "calculator.py", "target": "local"},
+        context,
+    )
+
+    assert result.ok
+    assert result.metadata["target"] == "local"
+    assert result.metadata["file_location"]["endpoint_id"] == "endpoint_1"
+    assert fake_runtime.requests[-1] == (
+        "read_text",
+        {"endpoint_id": "endpoint_1", "path": "calculator.py"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_file_read_sync_reads_local_and_reports_mirror_status(
+    fake_runtime,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('local')\n", encoding="utf-8")
+    registry = _facade_registry(fake_runtime)
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root=str(tmp_path),
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+        local_endpoint_id="endpoint_1",
+        local_environment_id="env_1",
+        local_target_id="target_1",
+        sync_config=SyncConfig(enabled=True),
+    )
+
+    result = await registry.execute(
+        "file",
+        {"action": "read", "target": "sync", "path": "src/app.py"},
+        context,
+    )
+
+    assert result.ok
+    assert "print('local')" in str(result.content)
+    assert result.metadata["target"] == "sync"
+    assert result.metadata["file_location"]["backend"] == "local-disk"
+    assert result.metadata["sync"]["state"] == "LOCAL_AHEAD"
+    assert result.metadata["sync"]["path_status"]["state"] == "LOCAL_AHEAD"
+    assert result.metadata["sync"]["recommended_action"].startswith('sync action="push"')
+
+
+@pytest.mark.asyncio
+async def test_list_files_sync_lists_local_and_reports_mirror_status(
+    fake_runtime,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('local')\n", encoding="utf-8")
+    registry = _facade_registry(fake_runtime)
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root=str(tmp_path),
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+        local_endpoint_id="endpoint_1",
+        local_environment_id="env_1",
+        local_target_id="target_1",
+        sync_config=SyncConfig(enabled=True),
+    )
+
+    result = await registry.execute(
+        "file",
+        {"action": "list", "target": "sync", "path": ".", "recursive": True},
+        context,
+    )
+
+    assert result.ok
+    assert "src/app.py" in str(result.content)
+    assert result.metadata["target"] == "sync"
+    assert result.metadata["sync"]["state"] == "LOCAL_AHEAD"
+    assert result.metadata["sync"]["diff"]["uploads"] == ["src/app.py"]
+
+
+@pytest.mark.asyncio
+async def test_list_files_can_target_local_in_ssh_runtime(fake_runtime) -> None:
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root="/local/project",
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+        local_endpoint_id="endpoint_1",
+        local_environment_id="env_1",
+        local_target_id="target_1",
+    )
+
+    result = await registry.execute(
+        "list_files",
+        {"path": ".", "target": "local"},
+        context,
+    )
+
+    assert result.ok
+    assert result.metadata["target"] == "local"
+    assert fake_runtime.requests[-1] == (
+        "list_files",
+        {"endpoint_id": "endpoint_1", "path": ".", "recursive": False},
+    )
+
+
+@pytest.mark.asyncio
 async def test_write_file_allows_unguarded_write_without_recent_snapshot(fake_runtime) -> None:
     registry = ToolRegistry()
     for tool in build_runtime_tools(fake_runtime):
