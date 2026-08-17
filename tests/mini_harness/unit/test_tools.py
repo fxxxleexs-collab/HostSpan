@@ -1652,7 +1652,10 @@ async def test_sync_status_reports_manifest_diff_summary(fake_runtime, tmp_path:
     result = await registry.execute("sync_status", {"max_paths": 10}, context)
 
     assert result.ok
-    assert result.state == "DIRTY"
+    assert result.state == "LOCAL_AHEAD"
+    assert result.metadata["sync_state"] == "LOCAL_AHEAD"
+    assert result.metadata["retryable"] is True
+    assert result.metadata["recommended_action"] == 'sync action="push"'
     assert result.metadata["diff"]["upload_count"] == 1
     assert result.metadata["diff"]["skipped_count"] == 1
     assert result.metadata["diff"]["uploads"] == ["src/app.py"]
@@ -1686,7 +1689,8 @@ async def test_sync_push_uploads_remote_mirror_and_updates_state(
     status = await registry.execute("sync_status", {"max_paths": 10}, context)
 
     assert pushed.ok
-    assert pushed.state == "CLEAN"
+    assert pushed.state == "IN_SYNC"
+    assert pushed.metadata["sync_state"] == "IN_SYNC"
     assert pushed.metadata["diff"]["upload_count"] == 1
     assert pushed.metadata["uploaded"] == ["src/app.py"]
     assert pushed.metadata["local_state_path"]
@@ -1697,7 +1701,7 @@ async def test_sync_push_uploads_remote_mirror_and_updates_state(
     assert "/srv/app/src/app.py" in write_paths
     assert "/srv/app/.mini-harness/sync-manifest.json" in write_paths
     assert status.ok
-    assert status.state == "CLEAN"
+    assert status.state == "IN_SYNC"
     assert status.metadata["diff"]["upload_count"] == 0
     assert status.metadata["diff"]["unchanged_count"] == 1
 
@@ -1748,6 +1752,93 @@ async def test_file_write_sync_writes_local_and_pushes_remote_mirror(
     assert "/srv/app/.mini-harness/sync-manifest.json" in write_paths
     assert result.metadata["facade_tool"] == "file"
     assert result.metadata["inner_tool"] == "write_file"
+
+
+@pytest.mark.asyncio
+async def test_file_edit_sync_edits_local_and_pushes_remote_mirror(
+    fake_runtime,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('old')\n", encoding="utf-8")
+    registry = _facade_registry(fake_runtime)
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root=str(tmp_path),
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+        local_endpoint_id="endpoint_1",
+        local_environment_id="env_1",
+        local_target_id="target_1",
+        sync_config=SyncConfig(enabled=True),
+    )
+
+    result = await registry.execute(
+        "file",
+        {
+            "action": "edit",
+            "target": "sync",
+            "path": "src/app.py",
+            "old_text": "old",
+            "new_text": "new",
+        },
+        context,
+    )
+
+    assert result.ok
+    assert result.state == "IN_SYNC"
+    assert result.metadata["operation"] == "edit"
+    assert result.metadata["sync"]["state"] == "IN_SYNC"
+    assert (tmp_path / "src" / "app.py").read_text(encoding="utf-8") == "print('new')\n"
+    write_paths = [
+        payload["path"] for name, payload in fake_runtime.requests if name == "write_text"
+    ]
+    assert "/srv/app/src/app.py" in write_paths
+
+
+@pytest.mark.asyncio
+async def test_file_write_sync_reports_non_retryable_skip_failure(
+    fake_runtime,
+    tmp_path: Path,
+) -> None:
+    registry = _facade_registry(fake_runtime)
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root=str(tmp_path),
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+        local_endpoint_id="endpoint_1",
+        local_environment_id="env_1",
+        local_target_id="target_1",
+        sync_config=SyncConfig(enabled=True),
+    )
+
+    result = await registry.execute(
+        "file",
+        {
+            "action": "write",
+            "target": "sync",
+            "path": "node_modules/pkg/generated.js",
+            "content": "module.exports = 1;\n",
+        },
+        context,
+    )
+
+    assert not result.ok
+    assert result.state == "LOCAL_AHEAD"
+    assert result.recoverable is False
+    assert result.metadata["local"]["ok"] is True
+    assert result.metadata["remote"]["ok"] is False
+    assert result.metadata["sync"]["skipped_reason"] == "ignored"
+    assert result.metadata["sync"]["retryable"] is False
+    assert result.metadata["sync"]["failure"]["phase"] == "manifest_scan"
+    assert (
+        tmp_path / "node_modules" / "pkg" / "generated.js"
+    ).read_text(encoding="utf-8") == "module.exports = 1;\n"
 
 
 @pytest.mark.asyncio

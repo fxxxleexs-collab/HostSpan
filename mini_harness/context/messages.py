@@ -26,11 +26,11 @@ the full saved output.
 For targeted edits to existing files, prefer file action="edit" with exact
 old_text and expected_sha256 from the most recent file read result. Use file
 action="write" mainly for new files or deliberate full-file rewrites.
-For file action="write", set target="local" to write only the local workspace,
-target="remote" to write only the SSH workspace, and target="sync" when sync is
-enabled and the intended result is local write plus remote mirror update in one
-atomic file operation. target="sync" returns separate local, remote, and sync
-status metadata.
+For file action="write" and file action="edit", set target="local" to change
+only the local workspace, target="remote" to change only the SSH workspace, and
+target="sync" when sync is enabled and the intended result is local change plus
+remote mirror update in one atomic file operation. target="sync" returns
+separate local, remote, and sync status metadata.
 Use command action="run" for short one-shot non-interactive commands such as
 checks, builds, tests, and inspections. command action="run" waits up to
 timeout_seconds and normally returns output, state, and exit_code directly; use

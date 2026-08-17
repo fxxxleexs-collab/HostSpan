@@ -147,11 +147,15 @@ def _sync_disabled_result(context: WorkContext) -> ToolResult | None:
     return ToolResult(
         ok=False,
         summary="sync is disabled; enable [sync].enabled=true before using sync tools",
+        state="DISABLED",
         error_code=ErrorCode.TOOL_ARGUMENT_INVALID.value,
         recoverable=True,
         metadata={
             "sync_enabled": False,
+            "sync_state": "DISABLED",
+            "retryable": False,
             "recommended_config": {"sync.enabled": True, "sync.mode": "push"},
+            "recommended_action": "enable sync configuration before using sync tools",
         },
     )
 
@@ -195,15 +199,19 @@ def _sync_tool_result(
     return ToolResult(
         ok=resolved_ok,
         summary=summary or _sync_summary(action, result),
-        content=_render_sync_diff(result, max_paths),
+        content=_render_sync_diff(result, max_paths, state),
         resource_ref=f"sync:{result.workspace_id}",
         state=state,
         truncated=truncated,
         error_code=error_code,
-        recoverable=recoverable or state in {"DIRTY", "CONFLICT"},
+        recoverable=recoverable or state in {"LOCAL_AHEAD", "CONFLICT"},
         metadata={
             "workspace_id": result.workspace_id,
             "sync_enabled": True,
+            "sync_state": state,
+            "semantic_state": state,
+            "retryable": state == "LOCAL_AHEAD",
+            "recommended_action": _recommended_action_for_state(state, action),
             "runtime_mode": context.runtime_mode,
             "local_root": context.project_root,
             "remote_root": context.sync_remote_root(),
@@ -221,10 +229,10 @@ def _sync_state(action: Literal["status", "push"], result: SyncPushResult, ok: b
     if result.plan.conflicts:
         return "CONFLICT"
     if action == "push" and ok:
-        return "CLEAN"
+        return "IN_SYNC"
     if result.plan.has_changes:
-        return "DIRTY"
-    return "CLEAN"
+        return "LOCAL_AHEAD"
+    return "IN_SYNC"
 
 
 def _sync_summary(action: Literal["status", "push"], result: SyncPushResult) -> str:
@@ -232,19 +240,38 @@ def _sync_summary(action: Literal["status", "push"], result: SyncPushResult) -> 
     if plan.conflicts:
         return f"sync {action}: {len(plan.conflicts)} manifest conflict(s)"
     if action == "push":
-        return f"sync push: uploaded {len(result.uploaded)} file(s), deleted {len(result.deleted)}"
+        if result.ok:
+            return (
+                f"sync push: in sync after uploading {len(result.uploaded)} file(s), "
+                f"deleted {len(result.deleted)}"
+            )
+        return "sync push: failed before remote mirror became current"
     if plan.has_changes:
         return (
-            f"sync status: {len(plan.uploads)} upload(s), "
+            f"sync status: local ahead with {len(plan.uploads)} upload(s), "
             f"{len(plan.deletes)} delete(s), {len(plan.skipped)} skipped"
         )
-    return f"sync status: clean, {len(plan.unchanged)} unchanged file(s)"
+    return f"sync status: in sync, {len(plan.unchanged)} unchanged file(s)"
 
 
-def _render_sync_diff(result: SyncPushResult, max_paths: int) -> str:
+def _recommended_action_for_state(
+    state: str,
+    action: Literal["status", "push"],
+) -> str | None:
+    if state == "LOCAL_AHEAD":
+        return 'sync action="push"'
+    if state == "CONFLICT":
+        return 'sync action="status" and inspect conflicts before retrying push'
+    if action == "push" and state != "IN_SYNC":
+        return 'sync action="status"'
+    return None
+
+
+def _render_sync_diff(result: SyncPushResult, max_paths: int, state: str) -> str:
     plan = result.plan
     lines = [
         f"workspace_id: {result.workspace_id}",
+        f"sync_state: {state}",
         f"files: {len(result.manifest.files)}",
         (
             "diff: "

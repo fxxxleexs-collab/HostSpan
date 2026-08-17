@@ -271,7 +271,14 @@ def build_facade_tools(internal_tools: list[AgentTool]) -> list[AgentTool]:
                 "write": ("write_file", ("path", "target", "content", "expected_sha256")),
                 "edit": (
                     "edit_file",
-                    ("path", "old_text", "new_text", "expected_sha256", "replace_all"),
+                    (
+                        "path",
+                        "target",
+                        "old_text",
+                        "new_text",
+                        "expected_sha256",
+                        "replace_all",
+                    ),
                 ),
             },
         ),
