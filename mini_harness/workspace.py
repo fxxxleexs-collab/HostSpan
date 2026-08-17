@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 from mini_harness.errors import ErrorCode, MiniHarnessError
 
 SandboxProfile = Literal["off", "workspace", "strict"]
-SandboxEngineName = Literal["off", "policy-only", "auto", "bubblewrap", "container"]
+SandboxEngineName = Literal["policy-only"]
 SandboxTarget = Literal["local", "remote"]
 NetworkMode = Literal["inherit", "disabled"]
 
@@ -53,7 +53,6 @@ class SandboxTargetConfig(BaseModel):
 class SandboxPathConfig(BaseModel):
     allow: list[str] = Field(default_factory=lambda: ["**"])
     deny: list[str] = Field(default_factory=lambda: list(DEFAULT_DENY_PATTERNS))
-    follow_symlinks: bool = False
 
 
 class SandboxConfig(BaseModel):

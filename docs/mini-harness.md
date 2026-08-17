@@ -89,7 +89,7 @@ Example configuration:
 ```toml
 [sandbox]
 profile = "workspace"   # off | workspace | strict
-engine = "policy-only"  # off | policy-only | auto | bubblewrap | container
+engine = "policy-only"  # currently only policy-only is implemented
 
 [sandbox.remote]
 root = "/srv/app"
@@ -101,7 +101,6 @@ allow_package_install = false
 [sandbox.paths]
 allow = ["**"]
 deny = [".env", "**/*.pem", "**/id_*", "**/.ssh/**"]
-follow_symlinks = false
 ```
 
 `profile = "off"` disables sandbox policy checks while keeping capability authorization. `profile = "strict"` keeps the same workspace boundary and additionally denies network tools by default.

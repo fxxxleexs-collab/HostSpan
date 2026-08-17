@@ -254,9 +254,6 @@ diff --git a/mini_harness/config.py b/mini_harness/config.py
 +        update={
 +            "allow": _env_csv("MINI_AGENT_SANDBOX_PATHS_ALLOW", config.paths.allow),
 +            "deny": _env_csv("MINI_AGENT_SANDBOX_PATHS_DENY", config.paths.deny),
-+            "follow_symlinks": _env_bool(
-+                "MINI_AGENT_SANDBOX_FOLLOW_SYMLINKS", config.paths.follow_symlinks
-+            ),
 +        }
 +    )
 +    return config.model_copy(
@@ -538,7 +535,6 @@ new file mode 100644
 +MINI_AGENT_SANDBOX_REMOTE_ALLOW_PACKAGE_INSTALL=false
 +MINI_AGENT_SANDBOX_PATHS_ALLOW=**
 +MINI_AGENT_SANDBOX_PATHS_DENY=.env,.env.*,**/.env,**/.env.*,**/*.pem,**/*.key,**/id_*,.ssh/**,**/.ssh/**
-+MINI_AGENT_SANDBOX_FOLLOW_SYMLINKS=false
 +
 +# ---------------------------------------------------------------------------
 +# Sync mode prototype
