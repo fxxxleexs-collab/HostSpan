@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from mini_harness.file_ops import RuntimeWorkspaceFileOps, parent_directory
+from mini_harness.file_ops import (
+    LocalDiskWorkspaceFileOps,
+    RuntimeWorkspaceFileOps,
+    parent_directory,
+)
 from mini_harness.runtime.work_context import WorkContext
 
 
@@ -73,3 +77,49 @@ def test_runtime_file_ops_maps_remote_paths(fake_runtime) -> None:
         ("ensure_dir", {"endpoint_id": "endpoint_ssh", "path": "/srv/app/src"}),
         ("write_text", {"endpoint_id": "endpoint_ssh", "path": "/srv/app/src/app.py"}),
     ]
+
+
+def test_runtime_file_ops_can_target_local_binding_in_ssh_mode(fake_runtime) -> None:
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root="/local/project",
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+        local_endpoint_id="endpoint_1",
+        local_environment_id="env_1",
+        local_target_id="target_1",
+    )
+    ops = RuntimeWorkspaceFileOps(fake_runtime, context, target="local")
+
+    result = ops.write_text("src/app.py", "print('ok')\n")
+
+    assert result.location.target == "local"
+    assert result.location.endpoint_id == "endpoint_1"
+    assert result.location.runtime_path == "src/app.py"
+    assert fake_runtime.requests[-2:] == [
+        ("ensure_dir", {"endpoint_id": "endpoint_1", "path": "src"}),
+        ("write_text", {"endpoint_id": "endpoint_1", "path": "src/app.py"}),
+    ]
+
+
+def test_local_disk_file_ops_write_updates_project_files(tmp_path) -> None:
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root=str(tmp_path),
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+        local_endpoint_id="endpoint_1",
+        local_environment_id="env_1",
+        local_target_id="target_1",
+    )
+    ops = LocalDiskWorkspaceFileOps(context)
+
+    result = ops.write_text("src/app.py", "print('ok')\n")
+
+    assert result.location.backend == "local-disk"
+    assert result.location.runtime_path == str(tmp_path / "src" / "app.py")
+    assert (tmp_path / "src" / "app.py").read_text(encoding="utf-8") == "print('ok')\n"

@@ -1703,6 +1703,54 @@ async def test_sync_push_uploads_remote_mirror_and_updates_state(
 
 
 @pytest.mark.asyncio
+async def test_file_write_sync_writes_local_and_pushes_remote_mirror(
+    fake_runtime,
+    tmp_path: Path,
+) -> None:
+    registry = _facade_registry(fake_runtime)
+    context = WorkContext(
+        endpoint_id="endpoint_ssh",
+        environment_id="env_ssh",
+        target_id="target_ssh",
+        project_root=str(tmp_path),
+        runtime_mode="ssh",
+        remote_root="/srv/app",
+        local_endpoint_id="endpoint_1",
+        local_environment_id="env_1",
+        local_target_id="target_1",
+        sync_config=SyncConfig(enabled=True),
+    )
+
+    result = await registry.execute(
+        "file",
+        {
+            "action": "write",
+            "target": "sync",
+            "path": "src/app.py",
+            "content": "print('synced')\n",
+        },
+        context,
+    )
+
+    assert result.ok
+    assert result.state == "IN_SYNC"
+    assert result.metadata["target"] == "sync"
+    assert result.metadata["local"]["ok"] is True
+    assert result.metadata["remote"]["ok"] is True
+    assert result.metadata["sync"]["ok"] is True
+    assert result.metadata["sync"]["state"] == "IN_SYNC"
+    assert result.metadata["sync"]["diff"]["upload_count"] == 1
+    assert (tmp_path / "src" / "app.py").read_text(encoding="utf-8") == "print('synced')\n"
+    write_paths = [
+        payload["path"] for name, payload in fake_runtime.requests if name == "write_text"
+    ]
+    assert "/srv/app/src/app.py" in write_paths
+    assert "/srv/app/.mini-harness/sync-manifest.json" in write_paths
+    assert result.metadata["facade_tool"] == "file"
+    assert result.metadata["inner_tool"] == "write_file"
+
+
+@pytest.mark.asyncio
 async def test_open_terminal_surfaces_tmux_fallback_action(fake_runtime) -> None:
     fake_runtime.terminal_fallback = True
     registry = ToolRegistry()

@@ -274,17 +274,21 @@ class WorkContext:
         return self._local_runtime_cwd(relative)
 
     def runtime_path(self, path: str) -> str:
+        return self.runtime_path_for(path, self.default_terminal_target())
+
+    def runtime_path_for(self, path: str, target: TerminalTarget) -> str:
+        resolved_target = self.resolve_terminal_target(target)
         if self.sandbox_approval_active():
             approved = _normalize_approved_workspace_path(path)
             if _is_absolute_path(approved):
                 return approved
-            if self.runtime_mode != "ssh":
-                return approved
-            return self._runtime_relative_path(approved, target="remote")
+            if resolved_target == "remote":
+                return self._runtime_relative_path(approved, target="remote")
+            return str((Path(self.project_root).resolve() / approved).resolve())
         relative = self.normalize_path(path)
-        if self.runtime_mode != "ssh":
+        if resolved_target == "local":
             return relative
-        return self._workspace_policy().runtime_path(relative, target="remote").runtime_path
+        return self._workspace_policy().runtime_path(relative, target=resolved_target).runtime_path
 
     def sandbox_task(
         self,

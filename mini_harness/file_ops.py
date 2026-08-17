@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, Protocol
 
 from mini_harness.runtime.client import HarnessRuntimeClient
-from mini_harness.runtime.work_context import ResolvedTerminalTarget, WorkContext
+from mini_harness.runtime.work_context import ResolvedTerminalTarget, TerminalTarget, WorkContext
 
-FileOpsBackend = Literal["runtime", "sync-mirror"]
+FileOpsBackend = Literal["runtime", "local-disk", "sync-mirror"]
 
 
 @dataclass(frozen=True)
@@ -69,17 +70,25 @@ class WorkspaceFileOps(Protocol):
 class RuntimeWorkspaceFileOps:
     backend: FileOpsBackend = "runtime"
 
-    def __init__(self, runtime: HarnessRuntimeClient, context: WorkContext) -> None:
+    def __init__(
+        self,
+        runtime: HarnessRuntimeClient,
+        context: WorkContext,
+        *,
+        target: TerminalTarget = "current",
+    ) -> None:
         self.runtime = runtime
         self.context = context
+        self.target = target
 
     def location(self, path: str) -> FileLocation:
         normalized = self.context.normalize_path(path)
+        binding = self.context.terminal_target(self.target)
         return FileLocation(
             path=normalized,
-            runtime_path=self.context.runtime_path(normalized),
-            endpoint_id=self.context.endpoint_id,
-            target=self.context.default_terminal_target(),
+            runtime_path=self.context.runtime_path_for(normalized, binding.location),
+            endpoint_id=binding.endpoint_id,
+            target=binding.location,
             backend=self.backend,
         )
 
@@ -108,6 +117,61 @@ class RuntimeWorkspaceFileOps:
             return ParentDirectoryResult(path=None, runtime_path=None, ensured=False)
         parent_location = self.location(parent)
         self.runtime.ensure_dir(parent_location.endpoint_id, parent_location.runtime_path)
+        return ParentDirectoryResult(
+            path=parent_location.path,
+            runtime_path=parent_location.runtime_path,
+            ensured=True,
+        )
+
+
+class LocalDiskWorkspaceFileOps:
+    backend: FileOpsBackend = "local-disk"
+
+    def __init__(self, context: WorkContext) -> None:
+        self.context = context
+
+    def location(self, path: str) -> FileLocation:
+        normalized = self.context.normalize_path(path)
+        root = Path(self.context.project_root).resolve()
+        runtime_path = str(root if normalized == "." else (root / normalized).resolve())
+        return FileLocation(
+            path=normalized,
+            runtime_path=runtime_path,
+            endpoint_id=self.context.local_target().endpoint_id
+            if self.context.local_target() is not None
+            else self.context.endpoint_id,
+            target="local",
+            backend=self.backend,
+        )
+
+    def read_text(self, path: str) -> FileRead:
+        location = self.location(path)
+        return FileRead(
+            location=location,
+            text=Path(location.runtime_path).read_text(encoding="utf-8"),
+        )
+
+    def write_text(self, path: str, text: str, *, ensure_parent: bool = True) -> FileWrite:
+        location = self.location(path)
+        parent = (
+            self.ensure_parent_directory(location.path)
+            if ensure_parent
+            else ParentDirectoryResult(path=None, runtime_path=None, ensured=False)
+        )
+        Path(location.runtime_path).write_text(text, encoding="utf-8")
+        return FileWrite(
+            location=location,
+            size=len(text.encode("utf-8")),
+            parent_directory=parent,
+        )
+
+    def ensure_parent_directory(self, path: str) -> ParentDirectoryResult:
+        location = self.location(path)
+        parent = parent_directory(location.path)
+        if parent is None:
+            return ParentDirectoryResult(path=None, runtime_path=None, ensured=False)
+        parent_location = self.location(parent)
+        Path(parent_location.runtime_path).mkdir(parents=True, exist_ok=True)
         return ParentDirectoryResult(
             path=parent_location.path,
             runtime_path=parent_location.runtime_path,

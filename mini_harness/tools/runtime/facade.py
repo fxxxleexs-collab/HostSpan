@@ -17,6 +17,7 @@ from mini_harness.tools.schemas import ToolDefinition, ToolResult
 class FileToolInput(BaseModel):
     action: Literal["list", "read", "write", "edit"]
     path: str = "."
+    target: Literal["current", "local", "remote", "sync"] = "current"
     recursive: bool = False
     max_entries: int = Field(default=200, ge=1, le=2_000)
     start_line: int | None = Field(default=None, ge=1)
@@ -267,7 +268,7 @@ def build_facade_tools(internal_tools: list[AgentTool]) -> list[AgentTool]:
             {
                 "list": ("list_files", ("path", "recursive", "max_entries")),
                 "read": ("read_file", ("path", "start_line", "end_line", "max_lines")),
-                "write": ("write_file", ("path", "content", "expected_sha256")),
+                "write": ("write_file", ("path", "target", "content", "expected_sha256")),
                 "edit": (
                     "edit_file",
                     ("path", "old_text", "new_text", "expected_sha256", "replace_all"),

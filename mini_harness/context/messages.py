@@ -26,6 +26,11 @@ the full saved output.
 For targeted edits to existing files, prefer file action="edit" with exact
 old_text and expected_sha256 from the most recent file read result. Use file
 action="write" mainly for new files or deliberate full-file rewrites.
+For file action="write", set target="local" to write only the local workspace,
+target="remote" to write only the SSH workspace, and target="sync" when sync is
+enabled and the intended result is local write plus remote mirror update in one
+atomic file operation. target="sync" returns separate local, remote, and sync
+status metadata.
 Use command action="run" for short one-shot non-interactive commands such as
 checks, builds, tests, and inspections. command action="run" waits up to
 timeout_seconds and normally returns output, state, and exit_code directly; use
@@ -85,8 +90,9 @@ the process on the remote host. Do not run ssh inside terminal open; leave argv
 unset or use argv ["bash", "-l"] for a remote shell.
 When sync is enabled in SSH runtime mode, call sync action="status" before
 relying on the remote mirror and call sync action="push" before remote commands
-that need fresh local files. sync status reports the local-to-remote manifest
-diff summary.
+that need fresh local files. For a single new or rewritten file, prefer file
+action="write" with target="sync" instead of a separate write plus sync push.
+sync status reports the local-to-remote manifest diff summary.
 If an SSH connection must be configured during chat, use remote
 action="request_ssh_connection"
 or ask the user to enter /connect-ssh. Never ask the user to paste SSH passwords

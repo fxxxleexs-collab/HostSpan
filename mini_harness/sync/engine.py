@@ -23,6 +23,8 @@ class SyncPushResult(BaseModel):
     deleted: list[str] = Field(default_factory=list)
     local_state_path: str | None = None
     remote_manifest_path: str | None = None
+    requested_path: str | None = None
+    skipped_reason: str | None = None
 
 
 class SyncEngine:
@@ -121,6 +123,84 @@ class SyncEngine:
             remote_manifest_path=remote_manifest_path,
         )
 
+    def push_file(self, relative_path: str) -> SyncPushResult:
+        requested_path = _normalize_relative_sync_path(relative_path)
+        scan = self.scan()
+        previous = self._last_manifest()
+        plan = plan_push(
+            local=scan.manifest,
+            last_pushed=previous,
+            skipped=scan.skipped,
+            config=self.config,
+        )
+        if plan.conflicts:
+            raise SyncConflictError(
+                "; ".join(f"{item.path}: {item.reason}" for item in plan.conflicts)
+            )
+        skipped = next((item for item in scan.skipped if item.path == requested_path), None)
+        if skipped is not None:
+            return SyncPushResult(
+                ok=False,
+                workspace_id=self.workspace_id,
+                plan=plan,
+                manifest=scan.manifest,
+                requested_path=requested_path,
+                skipped_reason=skipped.reason,
+            )
+        if requested_path not in scan.manifest.files:
+            return SyncPushResult(
+                ok=False,
+                workspace_id=self.workspace_id,
+                plan=plan,
+                manifest=scan.manifest,
+                requested_path=requested_path,
+                skipped_reason="not_in_manifest",
+            )
+
+        uploaded: list[str] = []
+        upload_paths = {action.path for action in plan.uploads}
+        if requested_path in upload_paths:
+            local_path = self.local_root / Path(requested_path)
+            remote_path = self.remote_path(requested_path)
+            self._ensure_remote_parent(remote_path)
+            self.runtime.write_text(
+                self.endpoint_id,
+                remote_path,
+                local_path.read_text(encoding="utf-8"),
+            )
+            uploaded.append(requested_path)
+
+        remote_manifest_path = self.remote_path(self.config.remote_manifest_path)
+        self._ensure_remote_parent(remote_manifest_path)
+        self.runtime.write_text(
+            self.endpoint_id,
+            remote_manifest_path,
+            json.dumps(scan.manifest.model_dump(mode="json"), indent=2, sort_keys=True),
+        )
+
+        state = SyncState(
+            metadata=SyncRunMetadata(
+                workspace_id=self.workspace_id,
+                remote_root=self.remote_root,
+                last_push_at=datetime.now(UTC).isoformat(timespec="seconds"),
+                last_upload_count=len(uploaded),
+                last_delete_count=0,
+            ),
+            manifest=scan.manifest,
+        )
+        local_state_path = self.state_store.save(self.workspace_id, state)
+        return SyncPushResult(
+            ok=True,
+            workspace_id=self.workspace_id,
+            plan=plan,
+            manifest=scan.manifest,
+            uploaded=uploaded,
+            deleted=[],
+            local_state_path=str(local_state_path),
+            remote_manifest_path=remote_manifest_path,
+            requested_path=requested_path,
+        )
+
     def remote_path(self, relative_path: str) -> str:
         normalized = relative_path.replace("\\", "/").strip("/")
         if not normalized:
@@ -135,3 +215,10 @@ class SyncEngine:
         parent = str(Path(remote_path.replace("\\", "/")).parent).replace("\\", "/")
         if parent and parent != ".":
             self.runtime.ensure_dir(self.endpoint_id, parent)
+
+
+def _normalize_relative_sync_path(path: str) -> str:
+    normalized = path.replace("\\", "/").strip("/")
+    if not normalized or ".." in [part for part in normalized.split("/") if part]:
+        raise ValueError("sync path must be relative and stay inside the workspace")
+    return normalized
