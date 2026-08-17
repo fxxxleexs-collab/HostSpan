@@ -210,40 +210,13 @@ class WriteFileTool(RuntimeTool):
         data = WriteFileInput.model_validate(arguments)
         path = context.normalize_path(data.path)
         target = _write_target(data.target, context)
-        if target == "sync":
-            return [
-                PermissionRequest.for_target(
-                    tool_name=self.definition.name,
-                    capability="file.write",
-                    target="local",
-                    operation="write",
-                    resource=path,
-                ),
-                PermissionRequest.for_target(
-                    tool_name=self.definition.name,
-                    capability="file.write",
-                    target="remote",
-                    operation="sync_write",
-                    resource=f"{context.sync_remote_root().rstrip('/')}/{path}",
-                ),
-                PermissionRequest.for_target(
-                    tool_name=self.definition.name,
-                    capability="sync.push",
-                    target="remote",
-                    operation="push_file",
-                    resource=context.sync_remote_root(),
-                    metadata={"path": path},
-                ),
-            ]
-        return [
-            PermissionRequest.for_target(
-                tool_name=self.definition.name,
-                capability="file.write",
-                target=target,
-                operation="write",
-                resource=path,
-            )
-        ]
+        return _file_change_permission_requests(
+            tool_name=self.definition.name,
+            context=context,
+            path=path,
+            target=target,
+            operation="write",
+        )
 
     async def approval_preview(
         self,
@@ -299,6 +272,7 @@ class WriteFileTool(RuntimeTool):
                 path=path,
                 content=data.content,
                 prepared=prepared,
+                operation="write",
             )
         file_ops = RuntimeWorkspaceFileOps(self.runtime, context, target=target)
         write = await asyncio.to_thread(file_ops.write_text, path, data.content)
@@ -352,15 +326,14 @@ class EditFileTool(RuntimeTool):
     ) -> list[PermissionRequest]:
         data = EditFileInput.model_validate(arguments)
         path = context.normalize_path(data.path)
-        return [
-            PermissionRequest.for_target(
-                tool_name=self.definition.name,
-                capability="file.write",
-                target=context.default_terminal_target(),
-                operation="edit",
-                resource=path,
-            )
-        ]
+        target = _write_target(data.target, context)
+        return _file_change_permission_requests(
+            tool_name=self.definition.name,
+            context=context,
+            path=path,
+            target=target,
+            operation="edit",
+        )
 
     async def approval_preview(
         self,
@@ -371,9 +344,10 @@ class EditFileTool(RuntimeTool):
     ) -> ToolApprovalRequest | ToolResult | None:
         data = EditFileInput.model_validate(arguments)
         path = context.normalize_path(data.path)
+        target = _write_target(data.target, context)
         prepared = await asyncio.to_thread(
             _prepare_edit_change,
-            file_ops=RuntimeWorkspaceFileOps(self.runtime, context),
+            file_ops=_write_prepare_file_ops(self.runtime, context, target),
             context=context,
             path=path,
             old_text=data.old_text,
@@ -396,9 +370,10 @@ class EditFileTool(RuntimeTool):
     async def _execute(self, parsed: BaseModel, context: WorkContext) -> ToolResult:
         data = parsed if isinstance(parsed, EditFileInput) else EditFileInput.model_validate(parsed)
         path = context.normalize_path(data.path)
+        target = _write_target(data.target, context)
         prepared = await asyncio.to_thread(
             _prepare_edit_change,
-            file_ops=RuntimeWorkspaceFileOps(self.runtime, context),
+            file_ops=_write_prepare_file_ops(self.runtime, context, target),
             context=context,
             path=path,
             old_text=data.old_text,
@@ -408,9 +383,27 @@ class EditFileTool(RuntimeTool):
         )
         if isinstance(prepared, ToolResult):
             return prepared
-        file_ops = RuntimeWorkspaceFileOps(self.runtime, context)
+        if target == "sync":
+            return await asyncio.to_thread(
+                _execute_sync_write,
+                runtime=self.runtime,
+                context=context,
+                path=path,
+                content=prepared.content,
+                prepared=prepared,
+                operation="edit",
+            )
+        file_ops = RuntimeWorkspaceFileOps(self.runtime, context, target=target)
         write = await asyncio.to_thread(file_ops.write_text, path, prepared.content)
         written_summary = context.record_file_snapshot(prepared.after_snapshot)
+        context.record_runtime_transition(
+            kind="file",
+            action="edit",
+            ref=f"file:{path}",
+            summary=f"{target} edit completed for {path}",
+            state="OK",
+            active_after=None,
+        )
         return ToolResult(
             ok=True,
             summary=_write_file_summary(
@@ -424,6 +417,7 @@ class EditFileTool(RuntimeTool):
             resource_ref=f"file:{path}",
             metadata={
                 "path": path,
+                "target": target,
                 "size": write.size,
                 **_prepared_change_metadata(prepared),
                 "replace_all": data.replace_all,
@@ -446,6 +440,7 @@ def build_file_tools(runtime: HarnessRuntimeClient) -> list[AgentTool]:
 
 
 WriteTarget = Literal["local", "remote", "sync"]
+FileChangeOperation = Literal["write", "edit"]
 
 
 def _write_target(raw_target: str, context: WorkContext) -> WriteTarget:
@@ -473,6 +468,50 @@ def _write_prepare_file_ops(
     return RuntimeWorkspaceFileOps(runtime, context, target=target)
 
 
+def _file_change_permission_requests(
+    *,
+    tool_name: str,
+    context: WorkContext,
+    path: str,
+    target: WriteTarget,
+    operation: FileChangeOperation,
+) -> list[PermissionRequest]:
+    if target == "sync":
+        return [
+            PermissionRequest.for_target(
+                tool_name=tool_name,
+                capability="file.write",
+                target="local",
+                operation=operation,
+                resource=path,
+            ),
+            PermissionRequest.for_target(
+                tool_name=tool_name,
+                capability="file.write",
+                target="remote",
+                operation=f"sync_{operation}",
+                resource=f"{context.sync_remote_root().rstrip('/')}/{path}",
+            ),
+            PermissionRequest.for_target(
+                tool_name=tool_name,
+                capability="sync.push",
+                target="remote",
+                operation="push_file",
+                resource=context.sync_remote_root(),
+                metadata={"path": path, "file_operation": operation},
+            ),
+        ]
+    return [
+        PermissionRequest.for_target(
+            tool_name=tool_name,
+            capability="file.write",
+            target=target,
+            operation=operation,
+            resource=path,
+        )
+    ]
+
+
 def _execute_sync_write(
     *,
     runtime: HarnessRuntimeClient,
@@ -480,6 +519,7 @@ def _execute_sync_write(
     path: str,
     content: str,
     prepared: PreparedTextChange,
+    operation: FileChangeOperation,
 ) -> ToolResult:
     unavailable = _sync_write_unavailable_result(context)
     if unavailable is not None:
@@ -492,7 +532,7 @@ def _execute_sync_write(
     except SyncConflictError as exc:
         context.record_runtime_transition(
             kind="file",
-            action="sync_write",
+            action=f"sync_{operation}",
             ref=f"file:{path}",
             summary=f"local write completed but remote sync hit conflicts for {path}: {exc}",
             state="CONFLICT",
@@ -509,6 +549,8 @@ def _execute_sync_write(
             ok=False,
             summary=f"wrote local file {path}, but remote sync is blocked by conflicts",
             state="CONFLICT",
+            operation=operation,
+            failure_phase="conflict_check",
             error_code=ErrorCode.RUNTIME_OPERATION_FAILED.value,
             recoverable=True,
             remote_error=str(exc),
@@ -516,7 +558,7 @@ def _execute_sync_write(
     except Exception as exc:
         context.record_runtime_transition(
             kind="file",
-            action="sync_write",
+            action=f"sync_{operation}",
             ref=f"file:{path}",
             summary=f"local write completed but remote sync failed for {path}: {exc}",
             state="LOCAL_AHEAD",
@@ -533,6 +575,8 @@ def _execute_sync_write(
             ok=False,
             summary=f"wrote local file {path}, but remote sync failed: {exc}",
             state="LOCAL_AHEAD",
+            operation=operation,
+            failure_phase="remote_push",
             error_code=ErrorCode.RUNTIME_OPERATION_FAILED.value,
             recoverable=True,
             remote_error=str(exc),
@@ -540,7 +584,7 @@ def _execute_sync_write(
     if not sync_result.ok:
         context.record_runtime_transition(
             kind="file",
-            action="sync_write",
+            action=f"sync_{operation}",
             ref=f"file:{path}",
             summary=(
                 f"local write completed but {path} was not pushed "
@@ -563,14 +607,16 @@ def _execute_sync_write(
                 f"({sync_result.skipped_reason or 'not accepted by manifest'})"
             ),
             state="LOCAL_AHEAD",
+            operation=operation,
+            failure_phase="manifest_scan",
             error_code=ErrorCode.RUNTIME_OPERATION_FAILED.value,
-            recoverable=True,
+            recoverable=_sync_failure_retryable(sync_result.skipped_reason),
             remote_error=sync_result.skipped_reason,
         )
     state = "IN_SYNC"
     context.record_runtime_transition(
         kind="file",
-        action="sync_write",
+        action=f"sync_{operation}",
         ref=f"file:{path}",
         summary=f"wrote local file {path} and synced remote mirror",
         state=state,
@@ -587,6 +633,7 @@ def _execute_sync_write(
         ok=True,
         summary=_sync_write_summary(path, local_write.size, prepared, sync_result),
         state=state,
+        operation=operation,
     )
 
 
@@ -602,6 +649,8 @@ def _sync_write_result(
     ok: bool,
     summary: str,
     state: str,
+    operation: FileChangeOperation,
+    failure_phase: str | None = None,
     error_code: str | None = None,
     recoverable: bool = False,
     remote_error: str | None = None,
@@ -621,6 +670,7 @@ def _sync_write_result(
         metadata={
             "path": path,
             "target": "sync",
+            "operation": operation,
             "atomic_file_operation": True,
             "size": local_write.size,
             **_prepared_change_metadata(prepared),
@@ -644,13 +694,26 @@ def _sync_write_result(
             "sync": {
                 "ok": bool(sync_result and sync_result.ok),
                 "state": state,
+                "semantic_state": state,
                 "workspace_id": sync_result.workspace_id if sync_result is not None else "default",
                 "local_state_path": local_state_path,
                 "remote_manifest_path": remote_manifest_path,
                 "diff": sync_diff,
                 "skipped_reason": sync_result.skipped_reason if sync_result is not None else None,
-                "retryable": not ok,
-                "recommended_action": 'sync action="push"' if not ok else None,
+                "failure": _sync_failure_metadata(
+                    phase=failure_phase,
+                    message=remote_error,
+                    skipped_reason=sync_result.skipped_reason if sync_result is not None else None,
+                    retryable=recoverable,
+                ),
+                "retryable": recoverable,
+                "recommended_action": _sync_failure_recommended_action(
+                    state=state,
+                    phase=failure_phase,
+                    retryable=recoverable,
+                )
+                if not ok
+                else None,
             },
             "snapshot": written_snapshot,
         },
@@ -670,6 +733,40 @@ def _sync_write_summary(
         f"wrote {size} bytes to local {path}; diff +{prepared.diff.added_lines} "
         f"-{prepared.diff.removed_lines}; {upload_part}"
     )
+
+
+def _sync_failure_retryable(skipped_reason: str | None) -> bool:
+    return skipped_reason not in {"ignored", "too_large", "binary", "not_file", "not_in_manifest"}
+
+
+def _sync_failure_metadata(
+    *,
+    phase: str | None,
+    message: str | None,
+    skipped_reason: str | None,
+    retryable: bool,
+) -> dict[str, object] | None:
+    if phase is None and message is None and skipped_reason is None:
+        return None
+    return {
+        "phase": phase or "unknown",
+        "message": message,
+        "skipped_reason": skipped_reason,
+        "retryable": retryable,
+    }
+
+
+def _sync_failure_recommended_action(
+    *,
+    state: str,
+    phase: str | None,
+    retryable: bool,
+) -> str:
+    if state == "CONFLICT" or phase == "conflict_check":
+        return 'sync action="status"'
+    if retryable:
+        return 'sync action="push"'
+    return "adjust sync ignore/config or use file write target=\"remote\" intentionally"
 
 
 def _sync_engine(runtime: HarnessRuntimeClient, context: WorkContext) -> SyncEngine:

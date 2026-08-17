@@ -68,6 +68,14 @@ class WriteFileInput(BaseModel):
 
 class EditFileInput(BaseModel):
     path: str
+    target: Literal["current", "local", "remote", "sync"] = Field(
+        default="current",
+        description=(
+            "Edit target. current preserves the runtime default; local edits the local "
+            "workspace; remote edits the SSH workspace; sync edits locally and then "
+            "pushes that file to the configured remote mirror."
+        ),
+    )
     old_text: str = Field(min_length=1, max_length=200_000)
     new_text: str = Field(max_length=200_000)
     expected_sha256: str | None = Field(
