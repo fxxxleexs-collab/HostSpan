@@ -1,4 +1,4 @@
-# Environment Runtime
+﻿# Environment Runtime
 
 Environment Runtime is a stateful Python runtime for local and remote development automation. It provides endpoints, environments, workspace metadata, file access, long-running tasks, interactive sessions, terminal output persistence, recovery, a local broker, and an agent-facing SDK without depending on any specific LLM or agent framework.
 
@@ -401,13 +401,13 @@ Mini Harness -> AgentRuntimeClient -> BrokerTransport -> local broker -> service
 Run a deterministic local sample:
 
 ```powershell
-.\.venv\Scripts\mini-harness.exe run --embedded-broker --fake-model --project tests\mini_harness\sample_project "检查测试失败的原因，修改代码并确保所有测试通过。"
+.\.venv\Scripts\mini-harness.exe run --embedded-broker --fake-model --project tests\mini_harness\sample_project "Find why the tests fail, fix the code, and verify all tests pass."
 ```
 
 Without refreshing console scripts, the same command is available as:
 
 ```powershell
-.\.venv\Scripts\python.exe -m mini_harness run --embedded-broker --fake-model --project tests\mini_harness\sample_project "检查测试失败的原因，修改代码并确保所有测试通过。"
+.\.venv\Scripts\python.exe -m mini_harness run --embedded-broker --fake-model --project tests\mini_harness\sample_project "Find why the tests fail, fix the code, and verify all tests pass."
 ```
 
 See `docs/mini-harness.md` and `MINI_HARNESS_STATUS.md` for architecture, commands, verification status, and current limitations.

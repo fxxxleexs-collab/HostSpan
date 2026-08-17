@@ -10,7 +10,7 @@ def test_runtime_tool_builder_matches_adapter_compat_entrypoint(fake_runtime) ->
     namespaced_names = [tool.definition.name for tool in build_namespaced_tools(fake_runtime)]
 
     assert namespaced_names == adapter_names
-    assert namespaced_names == ["file", "command", "task", "remote", "sync", "terminal"]
+    assert namespaced_names == ["file", "command", "task", "remote", "terminal"]
     assert "run_command" not in namespaced_names
     assert "terminal_command" not in namespaced_names
     assert "run_terminal_command" not in namespaced_names

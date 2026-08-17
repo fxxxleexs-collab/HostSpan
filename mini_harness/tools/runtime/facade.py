@@ -17,7 +17,7 @@ from mini_harness.tools.schemas import ToolDefinition, ToolResult
 class FileToolInput(BaseModel):
     action: Literal["list", "read", "write", "edit"]
     path: str = "."
-    target: Literal["current", "local", "remote", "sync"] = "current"
+    target: Literal["current", "local", "remote"] = "current"
     recursive: bool = False
     max_entries: int = Field(default=200, ge=1, le=2_000)
     start_line: int | None = Field(default=None, ge=1)
@@ -331,16 +331,6 @@ def build_facade_tools(internal_tools: list[AgentTool]) -> list[AgentTool]:
                     ("tool", "install", "wait_seconds", "max_output_chars"),
                 ),
                 "request_ssh_connection": ("request_ssh_connection", ("reason",)),
-            },
-        ),
-        FacadeTool(
-            "sync",
-            "Local-to-remote mirror operations. Use action=status/push.",
-            SyncToolInput,
-            tools,
-            {
-                "status": ("sync_status", ("workspace_id", "max_paths")),
-                "push": ("sync_push", ("workspace_id", "max_paths")),
             },
         ),
         FacadeTool(

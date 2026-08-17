@@ -35,7 +35,6 @@ The current version exposes:
 - `command` with action `run`
 - `task` with actions `start`, `observe`, `list`, and `cancel`
 - `remote` with actions `ensure_tool` and `request_ssh_connection`
-- `sync` with actions `status` and `push`
 - `terminal` with actions `open`, `list`, `inspect`, `activate`, `observe`, `command`, `human_input`, `control`, and `close`
 
 Tool schemas hide endpoint, environment, target, broker, process, persistence, SSH, and tmux details from the model. `WorkContext` injects stable Runtime resource IDs and maps relative paths to either the local project root or the configured SSH `remote_root`.
@@ -70,7 +69,7 @@ Covered permission request families:
 - Terminal tools request `terminal.open`, `terminal.observe`, `terminal.send_input`, or `terminal.close` with a local/remote target.
 - Session discovery tools request `terminal.list`, `terminal.inspect`, or `terminal.activate`. Use these to discover Runtime-managed sessions; do not rely on `tmux ls` from a separate shell because tmux visibility depends on user/socket context.
 - Shell commands which look like they create or overwrite files, such as `>`, `>>`, `tee`, `touch`, `mkdir`, `cp`, or `mv`, also request `file.write` for the target.
-- Sync tools request `sync.status` or `sync.push` with the remote target.
+- Internal experimental sync tools request `sync.status` or `sync.push` with the remote target, but they are not exposed through the default agent facade yet.
 
 In CLI `run` and `chat` sessions, a policy denial prompts the user for a one-shot `y/n` approval before the Runtime SDK call is attempted. If `approve_sandbox_denials` is enabled, recoverable sandbox denials such as absolute paths or blocked command patterns can also be approved once and retried with a sandbox override. If `approve_root_escalation` is enabled, root shell escalation such as `sudo -i` gets a dedicated high-risk warning before approval; disable it to block those approvals completely. If `approve_terminal_open` is enabled, opening a local or remote interactive terminal always asks for confirmation because later input can run arbitrary shell commands and may inherit session state such as cwd, env vars, login state, or root privileges.
 
@@ -105,7 +104,7 @@ deny = [".env", "**/*.pem", "**/id_*", "**/.ssh/**"]
 
 `profile = "off"` disables sandbox policy checks while keeping capability authorization. `profile = "strict"` keeps the same workspace boundary and additionally denies network tools by default.
 
-## Sync Module
+## Internal Sync Module
 
 The `mini_harness.sync` package is initialized as an independent module for workspace mirror work. It currently includes:
 
@@ -116,10 +115,10 @@ The `mini_harness.sync` package is initialized as an independent module for work
 - `state.py`: local JSON state storage under `.mini-harness/sync/`.
 - `engine.py`: push/status engine using the existing runtime file API.
 
-The module is exposed through:
+The module is currently internal/experimental and is not exposed through the default agent facade. Its internal tools are:
 
-- `sync` action `status`: scans the local workspace and returns a manifest diff summary without writing remote files.
-- `sync` action `push`: applies the local-to-remote push plan, writes the remote manifest, and updates local sync state.
+- `sync_status`: scans the local workspace and returns a manifest diff summary without writing remote files.
+- `sync_push`: applies the local-to-remote push plan, writes the remote manifest, and updates local sync state.
 
 Enable the first push-mode implementation with:
 
