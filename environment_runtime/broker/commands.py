@@ -174,22 +174,7 @@ class RuntimeCommandHandler:
             return _json(await service.add_local(data.name, data.root))
         if method == "endpoint.add_ssh":
             data = parse_params(AddSSHEndpointParams, params)
-            return _json(
-                await service.add_ssh(
-                    name=data.name,
-                    hostname=data.hostname,
-                    username=data.username,
-                    known_hosts_file=data.known_hosts_file,
-                    port=data.port,
-                    auth_method=data.auth_method,
-                    identity_file=data.identity_file,
-                    password_secret_ref=data.password_secret_ref,
-                    use_ssh_agent=data.use_ssh_agent,
-                    proxy_jump=data.proxy_jump,
-                    connect_timeout=data.connect_timeout,
-                    keepalive_interval=data.keepalive_interval,
-                )
-            )
+            return _json(await self._add_ssh_endpoint(data))
         if method == "endpoint.list":
             parse_params(EmptyParams, params)
             return _json(await service.list_all())
@@ -486,9 +471,33 @@ class RuntimeCommandHandler:
                     await self.context.endpoints.upsert(endpoint)
                 if matching_endpoint is None:
                     matching_endpoint = endpoint
-        if matching_endpoint is not None:
-            return matching_endpoint
-        return await EndpointService(self.context).add_ssh(
+        if matching_endpoint is None:
+            matching_endpoint = await EndpointService(self.context).add_ssh(
+                name=data.name,
+                hostname=data.hostname,
+                username=data.username,
+                known_hosts_file=data.known_hosts_file,
+                port=data.port,
+                auth_method=data.auth_method,
+                identity_file=data.identity_file,
+                password_secret_ref=data.password_secret_ref,
+                use_ssh_agent=data.use_ssh_agent,
+                proxy_jump=data.proxy_jump,
+                connect_timeout=data.connect_timeout,
+                keepalive_interval=data.keepalive_interval,
+            )
+        if data.trust_host_once:
+            self._trust_ssh_host_once(matching_endpoint.endpoint_id)
+        return matching_endpoint
+
+    def _trust_ssh_host_once(self, endpoint_id: str) -> None:
+        provider = self.context.providers.transport.get("ssh")
+        trust_host_once = getattr(provider, "trust_host_once", None)
+        if callable(trust_host_once):
+            trust_host_once(endpoint_id)
+
+    async def _add_ssh_endpoint(self, data: AddSSHEndpointParams) -> Endpoint:
+        endpoint = await EndpointService(self.context).add_ssh(
             name=data.name,
             hostname=data.hostname,
             username=data.username,
@@ -502,6 +511,9 @@ class RuntimeCommandHandler:
             connect_timeout=data.connect_timeout,
             keepalive_interval=data.keepalive_interval,
         )
+        if data.trust_host_once:
+            self._trust_ssh_host_once(endpoint.endpoint_id)
+        return endpoint
 
     async def _ensure_environment(self, name: str, endpoint_id: str):
         for environment in await self.context.environments.list():

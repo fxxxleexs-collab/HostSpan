@@ -18,6 +18,7 @@ from mini_harness.models.openai_compatible import OpenAICompatibleModelProvider
 from mini_harness.models.schemas import FinalDecision, ToolDecision
 from mini_harness.permissions import PermissionsConfig
 from mini_harness.runtime.client import SDKRuntimeClient
+from mini_harness.runtime.ssh_trust import approve_trust_host_once, is_untrusted_host_key_error
 from mini_harness.runtime.work_context import WorkContext
 from mini_harness.sync.config import SyncConfig
 from mini_harness.tools.adapter import build_runtime_tools
@@ -160,19 +161,32 @@ class AgentController:
             return
         password_secret_ref = await self._prepare_ssh_password_secret()
         try:
-            bundle = self.runtime_client.ensure_ssh(
-                self.runtime_config.name,
-                self.runtime_config.ssh,
+            bundle = self._ensure_ssh_bundle_with_root(
                 password_secret_ref=password_secret_ref,
+                trust_host_once=False,
             )
-        except Exception:
-            if password_secret_ref is not None:
-                self.runtime_client.delete_secret(password_secret_ref)
-            raise
+        except Exception as exc:
+            if not is_untrusted_host_key_error(exc) or not await approve_trust_host_once(
+                self.approval_handler,
+                tool_name="ssh_connect",
+                ssh=self.runtime_config.ssh,
+                error=exc,
+            ):
+                if password_secret_ref is not None:
+                    self.runtime_client.delete_secret(password_secret_ref)
+                raise
+            try:
+                bundle = self._ensure_ssh_bundle_with_root(
+                    password_secret_ref=password_secret_ref,
+                    trust_host_once=True,
+                )
+            except Exception:
+                if password_secret_ref is not None:
+                    self.runtime_client.delete_secret(password_secret_ref)
+                raise
         endpoint = bundle["endpoint"]
         environment = bundle["environment"]
         remote_root = self.runtime_config.ssh.remote_root
-        self.runtime_client.ensure_dir(str(endpoint["endpoint_id"]), remote_root)
         work_context.endpoint_id = str(endpoint["endpoint_id"])
         work_context.environment_id = str(environment["environment_id"])
         work_context.target_id = str(bundle["target_id"])
@@ -186,6 +200,23 @@ class AgentController:
         work_context.remote_shell = "bash"
         work_context.refresh_workspace_policy()
         await probe_remote_tool_status(self.runtime_client, work_context, tool="tmux")
+
+    def _ensure_ssh_bundle_with_root(
+        self,
+        *,
+        password_secret_ref: str | None,
+        trust_host_once: bool,
+    ) -> dict:
+        bundle = self.runtime_client.ensure_ssh(
+            self.runtime_config.name,
+            self.runtime_config.ssh,
+            password_secret_ref=password_secret_ref,
+            trust_host_once=trust_host_once,
+        )
+        endpoint = bundle["endpoint"]
+        remote_root = self.runtime_config.ssh.remote_root
+        self.runtime_client.ensure_dir(str(endpoint["endpoint_id"]), remote_root)
+        return bundle
 
     async def _prepare_ssh_password_secret(self) -> str | None:
         if self.runtime_config.ssh.auth_method != "password":

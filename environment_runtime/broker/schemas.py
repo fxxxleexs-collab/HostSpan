@@ -36,6 +36,7 @@ class AddSSHEndpointParams(BaseModel):
     proxy_jump: str | None = None
     connect_timeout: float = Field(default=300.0, gt=0)
     keepalive_interval: float = Field(default=20.0, gt=0)
+    trust_host_once: bool = False
 
 
 class EndpointIdParams(BaseModel):
@@ -66,6 +67,7 @@ class EnsureSSHEnvironmentParams(BaseModel):
     proxy_jump: str | None = None
     connect_timeout: float = Field(default=300.0, gt=0)
     keepalive_interval: float = Field(default=20.0, gt=0)
+    trust_host_once: bool = False
 
 
 class EnvironmentIdParams(BaseModel):

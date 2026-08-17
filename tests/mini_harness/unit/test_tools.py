@@ -2106,6 +2106,54 @@ async def test_controller_prompts_for_ssh_password_secret(fake_runtime) -> None:
 
 
 @pytest.mark.asyncio
+async def test_controller_can_approve_untrusted_ssh_host_key_once(fake_runtime) -> None:
+    original_ensure_dir = fake_runtime.ensure_dir
+    failures_left = 1
+
+    def flaky_ensure_dir(endpoint_id: str, path: str) -> dict:
+        nonlocal failures_left
+        if path == "/srv/app" and failures_left:
+            failures_left -= 1
+            raise RuntimeError("ProviderError: SSH connection failed: Host key is not trusted")
+        return original_ensure_dir(endpoint_id, path)
+
+    fake_runtime.ensure_dir = flaky_ensure_dir
+    approval = FakeInteractiveApprovalHandler(approved=True)
+    controller = AgentController(
+        fake_runtime,
+        FakeModelProvider([FinalDecision(type="final", summary="ok")]),
+        runtime_config=RuntimeConfig(
+            mode="ssh",
+            name="remote-test",
+            ssh=SSHRuntimeConfig(
+                hostname="example.test",
+                username="envrt",
+                known_hosts_file="known_hosts",
+                identity_file="id_ed25519",
+                use_ssh_agent=False,
+                remote_root="/srv/app",
+            ),
+        ),
+        approval_handler=approval,
+    )
+
+    result = await controller.run("say hello", "/local/project")
+
+    assert result.final_state == AgentState.COMPLETED
+    assert approval.requests[0].preview_kind == "ssh-host-key"
+    assert (
+        "ensure_ssh",
+        {
+            "name": "remote-test",
+            "hostname": "example.test",
+            "auth_method": "auto",
+            "has_password_secret_ref": False,
+            "trust_host_once": True,
+        },
+    ) in fake_runtime.requests
+
+
+@pytest.mark.asyncio
 async def test_request_ssh_connection_opens_interactive_setup(fake_runtime) -> None:
     approval = FakeInteractiveApprovalHandler(secret="runtime-password")
     registry = ToolRegistry()
@@ -2142,6 +2190,52 @@ async def test_request_ssh_connection_opens_interactive_setup(fake_runtime) -> N
             "hostname": "example.test",
             "auth_method": "password",
             "has_password_secret_ref": True,
+        },
+    ) in fake_runtime.requests
+
+
+@pytest.mark.asyncio
+async def test_request_ssh_connection_can_approve_untrusted_host_key_once(fake_runtime) -> None:
+    original_ensure_dir = fake_runtime.ensure_dir
+    failures_left = 1
+
+    def flaky_ensure_dir(endpoint_id: str, path: str) -> dict:
+        nonlocal failures_left
+        if path == "/srv/app" and failures_left:
+            failures_left -= 1
+            raise RuntimeError("ProviderError: SSH connection failed: Host key is not trusted")
+        return original_ensure_dir(endpoint_id, path)
+
+    fake_runtime.ensure_dir = flaky_ensure_dir
+    approval = FakeInteractiveApprovalHandler(approved=True, secret="runtime-password")
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = WorkContext(
+        endpoint_id="endpoint_1",
+        environment_id="env_1",
+        target_id="target_1",
+        project_root="/local/project",
+        runtime_name="remote-test",
+        approval_handler=approval,
+    )
+
+    result = await registry.execute(
+        "request_ssh_connection",
+        {"reason": "remote dependencies are needed"},
+        context,
+    )
+
+    assert result.ok
+    assert approval.requests[0].preview_kind == "ssh-host-key"
+    assert (
+        "ensure_ssh",
+        {
+            "name": "remote-test",
+            "hostname": "example.test",
+            "auth_method": "password",
+            "has_password_secret_ref": True,
+            "trust_host_once": True,
         },
     ) in fake_runtime.requests
 

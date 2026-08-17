@@ -18,6 +18,7 @@ class HarnessRuntimeClient(Protocol):
         name: str,
         ssh: SSHRuntimeConfig,
         password_secret_ref: str | None = None,
+        trust_host_once: bool = False,
     ) -> dict[str, Any]: ...
 
     def list_files(self, endpoint_id: str, path: str, recursive: bool = False) -> list[str]: ...
@@ -103,6 +104,7 @@ class SDKRuntimeClient:
         name: str,
         ssh: SSHRuntimeConfig,
         password_secret_ref: str | None = None,
+        trust_host_once: bool = False,
     ) -> dict[str, Any]:
         if not ssh.hostname or not ssh.username or not ssh.known_hosts_file:
             raise ValueError("ssh runtime requires hostname, username, and known_hosts_file")
@@ -119,6 +121,7 @@ class SDKRuntimeClient:
             proxy_jump=ssh.proxy_jump,
             connect_timeout=ssh.connect_timeout,
             keepalive_interval=ssh.keepalive_interval,
+            trust_host_once=trust_host_once,
         )
 
     def list_files(self, endpoint_id: str, path: str, recursive: bool = False) -> list[str]:

@@ -64,18 +64,17 @@ class FakeHarnessRuntime:
         name: str,
         ssh: SSHRuntimeConfig,
         password_secret_ref: str | None = None,
+        trust_host_once: bool = False,
     ) -> dict[str, Any]:
-        self.requests.append(
-            (
-                "ensure_ssh",
-                {
-                    "name": name,
-                    "hostname": ssh.hostname,
-                    "auth_method": ssh.auth_method,
-                    "has_password_secret_ref": password_secret_ref is not None,
-                },
-            )
-        )
+        request = {
+            "name": name,
+            "hostname": ssh.hostname,
+            "auth_method": ssh.auth_method,
+            "has_password_secret_ref": password_secret_ref is not None,
+        }
+        if trust_host_once:
+            request["trust_host_once"] = True
+        self.requests.append(("ensure_ssh", request))
         return {
             "endpoint": {"endpoint_id": "endpoint_ssh"},
             "environment": {"environment_id": "env_ssh"},
