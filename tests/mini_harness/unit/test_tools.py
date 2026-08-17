@@ -484,7 +484,9 @@ async def test_file_read_sync_reads_local_and_reports_mirror_status(
 ) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("print('local')\n", encoding="utf-8")
-    registry = _facade_registry(fake_runtime)
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
     context = WorkContext(
         endpoint_id="endpoint_ssh",
         environment_id="env_ssh",
@@ -499,8 +501,8 @@ async def test_file_read_sync_reads_local_and_reports_mirror_status(
     )
 
     result = await registry.execute(
-        "file",
-        {"action": "read", "target": "sync", "path": "src/app.py"},
+        "read_file",
+        {"target": "sync", "path": "src/app.py"},
         context,
     )
 
@@ -520,7 +522,9 @@ async def test_list_files_sync_lists_local_and_reports_mirror_status(
 ) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("print('local')\n", encoding="utf-8")
-    registry = _facade_registry(fake_runtime)
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
     context = WorkContext(
         endpoint_id="endpoint_ssh",
         environment_id="env_ssh",
@@ -535,8 +539,8 @@ async def test_list_files_sync_lists_local_and_reports_mirror_status(
     )
 
     result = await registry.execute(
-        "file",
-        {"action": "list", "target": "sync", "path": ".", "recursive": True},
+        "list_files",
+        {"target": "sync", "path": ".", "recursive": True},
         context,
     )
 
@@ -1844,7 +1848,9 @@ async def test_file_write_sync_writes_local_and_pushes_remote_mirror(
     fake_runtime,
     tmp_path: Path,
 ) -> None:
-    registry = _facade_registry(fake_runtime)
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
     context = WorkContext(
         endpoint_id="endpoint_ssh",
         environment_id="env_ssh",
@@ -1859,9 +1865,8 @@ async def test_file_write_sync_writes_local_and_pushes_remote_mirror(
     )
 
     result = await registry.execute(
-        "file",
+        "write_file",
         {
-            "action": "write",
             "target": "sync",
             "path": "src/app.py",
             "content": "print('synced')\n",
@@ -1883,8 +1888,6 @@ async def test_file_write_sync_writes_local_and_pushes_remote_mirror(
     ]
     assert "/srv/app/src/app.py" in write_paths
     assert "/srv/app/.mini-harness/sync-manifest.json" in write_paths
-    assert result.metadata["facade_tool"] == "file"
-    assert result.metadata["inner_tool"] == "write_file"
 
 
 @pytest.mark.asyncio
@@ -1894,7 +1897,9 @@ async def test_file_edit_sync_edits_local_and_pushes_remote_mirror(
 ) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("print('old')\n", encoding="utf-8")
-    registry = _facade_registry(fake_runtime)
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
     context = WorkContext(
         endpoint_id="endpoint_ssh",
         environment_id="env_ssh",
@@ -1909,9 +1914,8 @@ async def test_file_edit_sync_edits_local_and_pushes_remote_mirror(
     )
 
     result = await registry.execute(
-        "file",
+        "edit_file",
         {
-            "action": "edit",
             "target": "sync",
             "path": "src/app.py",
             "old_text": "old",
@@ -1936,7 +1940,9 @@ async def test_file_write_sync_reports_non_retryable_skip_failure(
     fake_runtime,
     tmp_path: Path,
 ) -> None:
-    registry = _facade_registry(fake_runtime)
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
     context = WorkContext(
         endpoint_id="endpoint_ssh",
         environment_id="env_ssh",
@@ -1951,9 +1957,8 @@ async def test_file_write_sync_reports_non_retryable_skip_failure(
     )
 
     result = await registry.execute(
-        "file",
+        "write_file",
         {
-            "action": "write",
             "target": "sync",
             "path": "node_modules/pkg/generated.js",
             "content": "module.exports = 1;\n",
