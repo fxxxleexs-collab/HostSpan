@@ -176,7 +176,6 @@ allow_package_install = false
 [sandbox.paths]
 allow = ["src/**", "tests/**"]
 deny = [".env", "**/*.pem"]
-follow_symlinks = false
 """,
         encoding="utf-8",
     )
@@ -190,6 +189,20 @@ follow_symlinks = false
     assert config.sandbox.remote.network == "disabled"
     assert config.sandbox.paths.allow == ["src/**", "tests/**"]
     assert config.sandbox.paths.deny == [".env", "**/*.pem"]
+
+
+def test_load_config_rejects_unimplemented_sandbox_engine(tmp_path: Path) -> None:
+    config_path = tmp_path / "mini-harness.toml"
+    config_path.write_text(
+        """
+[sandbox]
+engine = "bubblewrap"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError):
+        load_harness_config(config_path=str(config_path), project_root=str(tmp_path))
 
 
 def test_load_config_supports_permissions(tmp_path: Path) -> None:

@@ -20,11 +20,6 @@ class RuntimeSection(BaseModel):
 
 class SecuritySettings(BaseModel):
     allowed_local_roots: list[Path] = Field(default_factory=lambda: [Path.cwd()])
-    allow_shell_commands: bool = False
-
-
-class OutputSettings(BaseModel):
-    max_inline_bytes: int = 1_048_576
 
 
 class RuntimeSettings(BaseSettings):
@@ -37,4 +32,3 @@ class RuntimeSettings(BaseSettings):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     runtime: RuntimeSection = Field(default_factory=RuntimeSection)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
-    output: OutputSettings = Field(default_factory=OutputSettings)
