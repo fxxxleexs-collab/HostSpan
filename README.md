@@ -421,7 +421,8 @@ model = "claude-your-model-name"
 api_key = "..."
 ```
 
-Use `--config path\to\mini-harness.toml` or place `mini-harness.toml` in the project root.
+Use `--config path\to\mini-harness.toml` or place `mini-harness.toml` in the project root. See
+`mini-harness.example.toml` for a minimal commented starting point.
 
 ## Recovery Behavior
 

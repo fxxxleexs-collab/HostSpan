@@ -1,0 +1,103 @@
+# Minimal Mini Harness configuration.
+#
+# Copy this file to mini-harness.toml, or run with:
+#   mini-harness run --config mini-harness.example.toml --embedded-broker --project . "Inspect this project."
+#
+# Prefer environment variables for API keys:
+#   MINI_AGENT_API_KEY=...
+#   ANTHROPIC_API_KEY=...
+
+[agent]
+max_iterations = 30
+max_consecutive_tool_errors = 3
+max_context_chars = 120000
+max_tool_result_chars = 20000
+tool_result_artifact_chars = 20000
+tool_result_artifact_dir = ".mini-harness/artifacts/tool-results"
+recent_tool_turns = 12
+auto_compact_turns = 8
+auto_compact_tool_turns = 24
+tool_timeout_seconds = 300
+allow_unguarded_write = true
+block_final_on_failed_command = false
+
+[model]
+# provider can be "openai", "openai-compatible", or "anthropic".
+provider = "openai"
+model = "gpt-4.1-mini"
+base_url = "https://api.openai.com/v1"
+timeout_seconds = 60
+max_retries = 2
+max_tokens = 4096
+anthropic_version = "2023-06-01"
+
+[runtime]
+mode = "local"
+name = "mini-harness"
+
+# Uncomment for a configured SSH runtime. Password authentication is intentionally
+# interactive-only; do not put SSH passwords in this file.
+#
+# [runtime.ssh]
+# hostname = "127.0.0.1"
+# username = "envrt"
+# port = 2222
+# known_hosts_file = "manual_ssh_test/known_hosts"
+# auth_method = "key" # auto | agent | key | password
+# identity_file = "manual_ssh_test/envrt_test_key"
+# use_ssh_agent = false
+# connect_timeout = 300
+# keepalive_interval = 20
+# remote_root = ".environment-runtime/mini-harness-project"
+# prefer_tmux = true
+# allow_ssh_pty_fallback = true
+
+[permissions]
+allow = ["*"]
+deny = []
+approve_sandbox_denials = true
+approve_terminal_open = true
+approve_root_escalation = true
+
+[sandbox]
+profile = "workspace"   # off | workspace | strict
+engine = "policy-only"  # currently only policy-only is implemented
+
+[sandbox.local]
+root = "."
+network = "inherit"
+allow_root_shell = false
+allow_system_paths = false
+allow_package_install = false
+
+[sandbox.remote]
+root = ".environment-runtime/mini-harness-project"
+network = "inherit"
+allow_root_shell = false
+allow_system_paths = false
+allow_package_install = false
+
+[sandbox.paths]
+allow = ["**"]
+deny = [
+  ".env",
+  ".env.*",
+  "**/.env",
+  "**/.env.*",
+  "**/*.pem",
+  "**/*.key",
+  "**/id_*",
+  ".ssh/**",
+  "**/.ssh/**",
+]
+
+# Internal and experimental. Sync tools are not exposed through the default
+# model-facing facade yet.
+[sync]
+enabled = false
+mode = "push"
+delete_remote = false
+max_file_bytes = 1048576
+text_only = true
+local_state_dir = ".mini-harness/sync"
+remote_manifest_path = ".mini-harness/sync-manifest.json"
