@@ -13,6 +13,16 @@ if TYPE_CHECKING:
     from asyncssh import SSHClientConnection
 
 
+class _TrustHostOnceSSHClient(asyncssh.SSHClient):
+    def validate_host_public_key(self, host: str, addr: str, port: int, key: Any) -> bool:
+        _ = host, addr, port, key
+        return True
+
+    def validate_host_ca_key(self, host: str, addr: str, port: int, key: Any) -> bool:
+        _ = host, addr, port, key
+        return True
+
+
 class SSHTransportProvider:
     """AsyncSSH transport with strict host-key checking by default."""
 
@@ -78,18 +88,27 @@ class SSHTransportProvider:
                 "identity_file, password_secret_ref, or use_ssh_agent is required for SSH authentication"
             )
 
-        try:
-            connection = await asyncssh.connect(
-                config.hostname,
-                port=config.port,
-                username=config.username,
-                client_keys=client_keys,
-                password=password,
-                agent_path=agent_path,
-                known_hosts=None if trust_host_once else str(known_hosts),
-                login_timeout=config.connect_timeout,
-                keepalive_interval=config.keepalive_interval,
+        connect_kwargs: dict[str, Any] = {
+            "port": config.port,
+            "username": config.username,
+            "client_keys": client_keys,
+            "password": password,
+            "agent_path": agent_path,
+            "known_hosts": str(known_hosts),
+            "login_timeout": config.connect_timeout,
+            "keepalive_interval": config.keepalive_interval,
+        }
+        if trust_host_once:
+            connect_kwargs.update(
+                {
+                    "known_hosts": b"",
+                    "client_factory": _TrustHostOnceSSHClient,
+                    "server_host_key_algs": "default",
+                }
             )
+
+        try:
+            connection = await asyncssh.connect(config.hostname, **connect_kwargs)
         except (OSError, asyncssh.Error) as exc:
             raise ProviderError(f"SSH connection failed: {exc}") from exc
         finally:
