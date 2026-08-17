@@ -4,16 +4,17 @@ import asyncio
 import contextlib
 import shlex
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from pydantic import BaseModel
 
 from mini_harness.approvals import ToolApprovalRequest
-from mini_harness.config import RuntimeConfig
+from mini_harness.config import RuntimeConfig, SSHRuntimeConfig
 from mini_harness.errors import ErrorCode, MiniHarnessError
 from mini_harness.permissions import PermissionDecision, PermissionRequest
 from mini_harness.runtime.client import HarnessRuntimeClient
+from mini_harness.runtime.ssh_trust import approve_trust_host_once, is_untrusted_host_key_error
 from mini_harness.runtime.work_context import RemoteToolStatus, WorkContext
 from mini_harness.tools.base import AgentTool
 from mini_harness.tools.runtime.common import TERMINAL_TASK_STATES, RuntimeTool
@@ -350,20 +351,42 @@ class RequestSSHConnectionTool(RuntimeTool):
             runtime_config,
         )
         try:
-            bundle = await asyncio.to_thread(
+            bundle = await _ensure_ssh_bundle_with_root(
                 self.runtime.ensure_ssh,
+                self.runtime.ensure_dir,
                 runtime_config.name,
                 runtime_config.ssh,
-                password_secret_ref,
+                runtime_config.ssh.remote_root,
+                password_secret_ref=password_secret_ref,
+                trust_host_once=False,
             )
-        except Exception:
-            if password_secret_ref is not None:
-                await asyncio.to_thread(self.runtime.delete_secret, password_secret_ref)
-            raise
+        except Exception as exc:
+            if not is_untrusted_host_key_error(exc) or not await approve_trust_host_once(
+                context.approval_handler,
+                tool_name="request_ssh_connection",
+                ssh=runtime_config.ssh,
+                error=exc,
+            ):
+                if password_secret_ref is not None:
+                    await asyncio.to_thread(self.runtime.delete_secret, password_secret_ref)
+                raise
+            try:
+                bundle = await _ensure_ssh_bundle_with_root(
+                    self.runtime.ensure_ssh,
+                    self.runtime.ensure_dir,
+                    runtime_config.name,
+                    runtime_config.ssh,
+                    runtime_config.ssh.remote_root,
+                    password_secret_ref=password_secret_ref,
+                    trust_host_once=True,
+                )
+            except Exception:
+                if password_secret_ref is not None:
+                    await asyncio.to_thread(self.runtime.delete_secret, password_secret_ref)
+                raise
         endpoint = bundle["endpoint"]
         environment = bundle["environment"]
         remote_root = runtime_config.ssh.remote_root
-        await asyncio.to_thread(self.runtime.ensure_dir, str(endpoint["endpoint_id"]), remote_root)
         context.endpoint_id = str(endpoint["endpoint_id"])
         context.environment_id = str(environment["environment_id"])
         context.target_id = str(bundle["target_id"])
@@ -511,6 +534,34 @@ async def _prepare_ssh_password_secret_for_tool(
             recoverable=True,
         )
     return await asyncio.to_thread(runtime.put_secret, password, "ssh-password")
+
+
+async def _ensure_ssh_bundle_with_root(
+    ensure_ssh: Callable[..., dict[str, Any]],
+    ensure_dir: Callable[[str, str], dict[str, Any]],
+    name: str,
+    ssh: SSHRuntimeConfig,
+    remote_root: str,
+    *,
+    password_secret_ref: str | None,
+    trust_host_once: bool,
+) -> dict[str, Any]:
+    bundle = await asyncio.to_thread(
+        ensure_ssh,
+        name,
+        ssh,
+        password_secret_ref,
+        trust_host_once,
+    )
+    endpoint = bundle["endpoint"]
+    if not isinstance(endpoint, Mapping):
+        raise MiniHarnessError(
+            ErrorCode.RUNTIME_OPERATION_FAILED,
+            "runtime ensure_ssh returned an invalid endpoint payload",
+            recoverable=False,
+        )
+    await asyncio.to_thread(ensure_dir, str(endpoint["endpoint_id"]), remote_root)
+    return bundle
 
 
 def _remote_tool_command(tool: str, install: bool) -> str:

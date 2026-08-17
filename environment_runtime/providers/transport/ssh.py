@@ -19,21 +19,28 @@ class SSHTransportProvider:
     def __init__(self, secret_resolver: Callable[[str], str] | None = None) -> None:
         self._secret_resolver = secret_resolver
         self._connections: dict[str, SSHClientConnection] = {}
+        self._trust_host_once_endpoint_ids: set[str] = set()
 
     def set_secret_resolver(self, resolver: Callable[[str], str] | None) -> None:
         self._secret_resolver = resolver
 
+    def trust_host_once(self, endpoint_id: str) -> None:
+        self._trust_host_once_endpoint_ids.add(endpoint_id)
+
     async def connect(self, endpoint: Endpoint) -> SSHClientConnection:
         config = self._load_config(endpoint)
+        trust_host_once = endpoint.endpoint_id in self._trust_host_once_endpoint_ids
         cached = self._connections.get(endpoint.endpoint_id)
         if cached is not None and not cached.is_closed():
+            if trust_host_once:
+                self._trust_host_once_endpoint_ids.discard(endpoint.endpoint_id)
             return cached
 
         if config.proxy_jump:
             raise ProviderError("proxy_jump is not implemented for SSH endpoints yet")
 
         known_hosts = Path(config.known_hosts_file).expanduser()
-        if not known_hosts.exists():
+        if not trust_host_once and not known_hosts.exists():
             raise ValidationError(f"known_hosts_file does not exist: {known_hosts}")
 
         client_keys: list[str] | None = None
@@ -79,12 +86,14 @@ class SSHTransportProvider:
                 client_keys=client_keys,
                 password=password,
                 agent_path=agent_path,
-                known_hosts=str(known_hosts),
+                known_hosts=None if trust_host_once else str(known_hosts),
                 login_timeout=config.connect_timeout,
                 keepalive_interval=config.keepalive_interval,
             )
         except (OSError, asyncssh.Error) as exc:
             raise ProviderError(f"SSH connection failed: {exc}") from exc
+        finally:
+            self._trust_host_once_endpoint_ids.discard(endpoint.endpoint_id)
 
         self._connections[endpoint.endpoint_id] = connection
         return connection

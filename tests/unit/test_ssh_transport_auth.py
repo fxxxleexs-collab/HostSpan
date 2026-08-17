@@ -81,3 +81,38 @@ async def test_ssh_transport_passes_key_auth(monkeypatch, tmp_path) -> None:
     assert calls[0]["password"] is None
     assert calls[0]["client_keys"] == [str(identity)]
     assert calls[0]["agent_path"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ssh_transport_trust_host_once_uses_unverified_next_connect(
+    monkeypatch, tmp_path
+) -> None:
+    calls: list[dict[str, object]] = []
+    missing_known_hosts = tmp_path / "missing_known_hosts"
+    identity = tmp_path / "id_ed25519"
+    identity.write_text("not-a-real-key")
+
+    async def fake_connect(*args, **kwargs):
+        calls.append({"args": args, **kwargs})
+        return FakeSSHConnection()
+
+    monkeypatch.setattr(ssh_transport.asyncssh, "connect", fake_connect)
+    endpoint = Endpoint(
+        name="ssh-demo",
+        provider_type="ssh",
+        config={
+            "hostname": "example.test",
+            "username": "envrt",
+            "known_hosts_file": str(missing_known_hosts),
+            "auth_method": "key",
+            "identity_file": str(identity),
+            "use_ssh_agent": False,
+        },
+    )
+    provider = SSHTransportProvider()
+
+    provider.trust_host_once(endpoint.endpoint_id)
+    await provider.connect(endpoint)
+
+    assert calls[0]["known_hosts"] is None

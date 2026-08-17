@@ -87,6 +87,39 @@ async def test_ensure_ssh_refreshes_password_secret_without_new_endpoint(runtime
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_ensure_ssh_trust_host_once_is_not_persisted(runtime, tmp_path) -> None:
+    class FakeSSHTransportProvider:
+        def __init__(self) -> None:
+            self.trusted_endpoint_ids: list[str] = []
+
+        def trust_host_once(self, endpoint_id: str) -> None:
+            self.trusted_endpoint_ids.append(endpoint_id)
+
+    known_hosts = tmp_path / "known_hosts"
+    known_hosts.write_text("")
+    fake_provider = FakeSSHTransportProvider()
+    runtime.providers.transport["ssh"] = fake_provider
+    handler = RuntimeCommandHandler(runtime)
+
+    result = await handler.handle(
+        "env.ensure_ssh",
+        {
+            "name": "ssh-demo",
+            "hostname": "example.test",
+            "username": "envrt",
+            "known_hosts_file": str(known_hosts),
+            "trust_host_once": True,
+        },
+    )
+    endpoint = await runtime.endpoints.get(result["endpoint"]["endpoint_id"])
+
+    assert fake_provider.trusted_endpoint_ids == [result["endpoint"]["endpoint_id"]]
+    assert endpoint is not None
+    assert "trust_host_once" not in endpoint.config
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_add_ssh_rejects_no_identity_when_agent_disabled(runtime, tmp_path) -> None:
     known_hosts = tmp_path / "known_hosts"
     known_hosts.write_text("example.test ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA==\n")

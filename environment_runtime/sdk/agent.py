@@ -153,6 +153,7 @@ class EndpointNamespace:
         proxy_jump: str | None = None,
         connect_timeout: float = 300.0,
         keepalive_interval: float = 20.0,
+        trust_host_once: bool = False,
     ) -> dict[str, Any]:
         params = {
             "name": name,
@@ -167,6 +168,7 @@ class EndpointNamespace:
             "proxy_jump": proxy_jump,
             "connect_timeout": connect_timeout,
             "keepalive_interval": keepalive_interval,
+            "trust_host_once": trust_host_once,
         }
         return self._transport.request("endpoint.add_ssh", params)
 
@@ -219,6 +221,7 @@ class EnvironmentNamespace:
         proxy_jump: str | None = None,
         connect_timeout: float = 300.0,
         keepalive_interval: float = 20.0,
+        trust_host_once: bool = False,
     ) -> dict[str, Any]:
         return self._transport.request(
             "env.ensure_ssh",
@@ -235,6 +238,7 @@ class EnvironmentNamespace:
                 "proxy_jump": proxy_jump,
                 "connect_timeout": connect_timeout,
                 "keepalive_interval": keepalive_interval,
+                "trust_host_once": trust_host_once,
             },
         )
 
