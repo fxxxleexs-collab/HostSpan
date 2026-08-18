@@ -155,6 +155,46 @@ class RemoteToolStatus:
 
 
 @dataclass
+class RemoteEnvironmentInfo:
+    status: Literal["ok", "unknown"] = "unknown"
+    os_name: str = "unknown"
+    arch: str = "unknown"
+    shell: str = "unknown"
+    sh_path: str | None = None
+    bash_path: str | None = None
+    python3_path: str | None = None
+    python_path: str | None = None
+    python3_version: str | None = None
+    python_version: str | None = None
+    nohup_path: str | None = None
+    tmux_path: str | None = None
+    tmux_version: str | None = None
+    sudo_path: str | None = None
+    reason: str | None = None
+    checked_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "os_name": self.os_name,
+            "arch": self.arch,
+            "shell": self.shell,
+            "sh_path": self.sh_path,
+            "bash_path": self.bash_path,
+            "python3_path": self.python3_path,
+            "python_path": self.python_path,
+            "python3_version": self.python3_version,
+            "python_version": self.python_version,
+            "nohup_path": self.nohup_path,
+            "tmux_path": self.tmux_path,
+            "tmux_version": self.tmux_version,
+            "sudo_path": self.sudo_path,
+            "reason": self.reason,
+            "checked_at": self.checked_at,
+        }
+
+
+@dataclass
 class RuntimeTransition:
     kind: Literal["task", "terminal", "remote", "sync", "file"]
     action: str
@@ -224,6 +264,7 @@ class WorkContext:
     file_snapshots: dict[str, FileSnapshotSummary] = field(default_factory=dict)
     session_briefs: dict[str, SessionBrief] = field(default_factory=dict)
     task_briefs: dict[str, TaskBrief] = field(default_factory=dict)
+    remote_environment: RemoteEnvironmentInfo = field(default_factory=RemoteEnvironmentInfo)
     remote_tool_statuses: dict[str, RemoteToolStatus] = field(default_factory=dict)
     runtime_transitions: list[RuntimeTransition] = field(default_factory=list)
     _session_touch_counter: int = 0
@@ -530,6 +571,76 @@ class WorkContext:
         self.remote_tool_statuses[tool] = item
         return item
 
+    def record_remote_environment(
+        self,
+        *,
+        status: Literal["ok", "unknown"],
+        os_name: str | None = None,
+        arch: str | None = None,
+        shell: str | None = None,
+        sh_path: str | None = None,
+        bash_path: str | None = None,
+        python3_path: str | None = None,
+        python_path: str | None = None,
+        python3_version: str | None = None,
+        python_version: str | None = None,
+        nohup_path: str | None = None,
+        tmux_path: str | None = None,
+        tmux_version: str | None = None,
+        sudo_path: str | None = None,
+        reason: str | None = None,
+    ) -> RemoteEnvironmentInfo:
+        info = RemoteEnvironmentInfo(
+            status=status,
+            os_name=_compact_session_text(os_name or "unknown", limit=80),
+            arch=_compact_session_text(arch or "unknown", limit=80),
+            shell=_compact_session_text(shell or "unknown", limit=120),
+            sh_path=_optional_compact(sh_path, limit=160),
+            bash_path=_optional_compact(bash_path, limit=160),
+            python3_path=_optional_compact(python3_path, limit=160),
+            python_path=_optional_compact(python_path, limit=160),
+            python3_version=_optional_compact(python3_version, limit=120),
+            python_version=_optional_compact(python_version, limit=120),
+            nohup_path=_optional_compact(nohup_path, limit=160),
+            tmux_path=_optional_compact(tmux_path, limit=160),
+            tmux_version=_optional_compact(tmux_version, limit=120),
+            sudo_path=_optional_compact(sudo_path, limit=160),
+            reason=_optional_compact(reason, limit=220),
+        )
+        self.remote_environment = info
+        if info.os_name != "unknown":
+            self.remote_os = _normalize_remote_os_name(info.os_name)
+        if info.bash_path:
+            self.remote_shell = "bash"
+        elif info.sh_path:
+            self.remote_shell = "sh"
+        elif info.shell != "unknown":
+            self.remote_shell = Path(info.shell).name or info.shell
+        return info
+
+    def remote_environment_summary(self) -> str:
+        if self.runtime_mode != "ssh" and self.remote_environment.status == "unknown":
+            return "Remote environment: n/a"
+        info = self.remote_environment
+        if info.status == "unknown":
+            reason = f" reason={info.reason}" if info.reason else ""
+            return f"Remote environment: unknown{reason}"
+        tools = [
+            f"sh={'present' if info.sh_path else 'missing'}",
+            f"bash={'present' if info.bash_path else 'missing'}",
+            f"python3={'present' if info.python3_path else 'missing'}",
+            f"python={'present' if info.python_path else 'missing'}",
+            f"nohup={'present' if info.nohup_path else 'missing'}",
+            f"sudo={'present' if info.sudo_path else 'missing'}",
+        ]
+        if info.tmux_path:
+            tools.append("tmux=present")
+        return (
+            "Remote environment: "
+            f"os={info.os_name}, arch={info.arch}, shell={info.shell}; "
+            + ", ".join(tools)
+        )
+
     def remote_tools_summary(self) -> str:
         if self.runtime_mode != "ssh" and not self.remote_tool_statuses:
             return "Remote tools: n/a"
@@ -575,6 +686,7 @@ class WorkContext:
             f"root={self.remote_root or 'n/a'}"
         )
         if remote_configured or remote_connected:
+            lines.append(self.remote_environment_summary())
             lines.append(self.remote_tools_summary())
         lines.append(f"Default command target: {self.default_terminal_target()}")
         return "\n".join(lines)
@@ -900,6 +1012,26 @@ def _compact_session_text(text: str, *, limit: int) -> str:
     if len(value) <= limit:
         return value
     return value[: max(0, limit - 14)].rstrip() + " ...[truncated]"
+
+
+def _optional_compact(text: str | None, *, limit: int) -> str | None:
+    if text is None:
+        return None
+    text = text.strip()
+    if not text:
+        return None
+    return _compact_session_text(text, limit=limit)
+
+
+def _normalize_remote_os_name(name: str) -> str:
+    lowered = name.lower()
+    if lowered.startswith("linux"):
+        return "linux"
+    if lowered.startswith("darwin"):
+        return "macos"
+    if lowered.startswith(("freebsd", "openbsd", "netbsd")):
+        return lowered.split()[0]
+    return lowered or "unknown"
 
 
 def _normalize_approved_workspace_path(path: str | None) -> str:

@@ -81,6 +81,30 @@ class FakeHarnessRuntime:
             "target_id": "target_ssh",
         }
 
+    def endpoint_health(self, endpoint_id: str) -> dict[str, Any]:
+        self.requests.append(("endpoint_health", {"endpoint_id": endpoint_id}))
+        return {
+            "endpoint_id": endpoint_id,
+            "status": "ok",
+            "hostname": "example.test",
+            "port": 22,
+            "exit_status": 0,
+            "environment": {
+                "uname_s": "Linux",
+                "uname_m": "x86_64",
+                "shell": "/bin/bash",
+                "sh_path": "/bin/sh",
+                "bash_path": "/bin/bash",
+                "python3_path": "/usr/bin/python3",
+                "python3_version": "Python 3.11.2",
+                "python_path": "",
+                "nohup_path": "/usr/bin/nohup",
+                "tmux_path": "/usr/bin/tmux" if self.tmux_present else "",
+                "tmux_version": "tmux 3.4" if self.tmux_present else "",
+                "sudo_path": "/usr/bin/sudo",
+            },
+        }
+
     def list_files(self, endpoint_id: str, path: str, recursive: bool = False) -> list[str]:
         self.requests.append(
             ("list_files", {"endpoint_id": endpoint_id, "path": path, "recursive": recursive})

@@ -13,6 +13,28 @@ if TYPE_CHECKING:
     from asyncssh import SSHClientConnection
 
 
+_REMOTE_ENV_PROBE_COMMAND = r"""
+printf 'ENVRT_REMOTE_PROBE_BEGIN\n'
+printf 'uname_s=%s\n' "$(uname -s 2>/dev/null || printf unknown)"
+printf 'uname_m=%s\n' "$(uname -m 2>/dev/null || printf unknown)"
+printf 'shell=%s\n' "${SHELL:-}"
+for envrt_tool in sh bash python3 python nohup tmux sudo; do
+  envrt_path="$(command -v "$envrt_tool" 2>/dev/null || true)"
+  printf '%s_path=%s\n' "$envrt_tool" "$envrt_path"
+done
+if command -v python3 >/dev/null 2>&1; then
+  printf 'python3_version=%s\n' "$(python3 -V 2>&1)"
+fi
+if command -v python >/dev/null 2>&1; then
+  printf 'python_version=%s\n' "$(python -V 2>&1)"
+fi
+if command -v tmux >/dev/null 2>&1; then
+  printf 'tmux_version=%s\n' "$(tmux -V 2>&1)"
+fi
+printf 'ENVRT_REMOTE_PROBE_END\n'
+""".strip()
+
+
 class _TrustHostOnceSSHClient(asyncssh.SSHClient):
     def validate_host_public_key(self, host: str, addr: str, port: int, key: Any) -> bool:
         _ = host, addr, port, key
@@ -120,15 +142,17 @@ class SSHTransportProvider:
     async def healthcheck(self, endpoint: Endpoint) -> dict[str, Any]:
         connection = await self.connect(endpoint)
         try:
-            result = await connection.run("true", check=True)
+            result = await connection.run(_REMOTE_ENV_PROBE_COMMAND, check=False)
         except (OSError, asyncssh.Error) as exc:
             self._connections.pop(endpoint.endpoint_id, None)
             raise ProviderError(f"SSH healthcheck failed: {exc}") from exc
+        environment = _parse_remote_probe_output(str(result.stdout or ""))
         return {
             "status": "ok",
             "hostname": endpoint.config.get("hostname"),
             "port": endpoint.config.get("port"),
             "exit_status": result.exit_status,
+            "environment": environment,
         }
 
     async def close(self, endpoint_id: str) -> None:
@@ -146,3 +170,22 @@ class SSHTransportProvider:
         if endpoint.provider_type != "ssh":
             raise ValidationError(f"endpoint {endpoint.endpoint_id} is not an SSH endpoint")
         return SSHEndpointConfig.model_validate(endpoint.config)
+
+
+def _parse_remote_probe_output(output: str) -> dict[str, str]:
+    environment: dict[str, str] = {}
+    in_probe = False
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped == "ENVRT_REMOTE_PROBE_BEGIN":
+            in_probe = True
+            continue
+        if stripped == "ENVRT_REMOTE_PROBE_END":
+            break
+        if not in_probe or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        if key:
+            environment[key] = value.strip()
+    return environment
