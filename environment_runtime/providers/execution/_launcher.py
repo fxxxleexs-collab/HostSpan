@@ -23,7 +23,7 @@ import os
 import signal
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -40,7 +40,10 @@ def _parse_env(items: list[str]) -> dict[str, str]:
 def _write_status(status_file: Path, exit_code: int) -> None:
     """Atomically write the status JSON so readers never see a partial file."""
     status_file.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"exit_code": exit_code, "finished_at": datetime.now(UTC).isoformat()}
+    payload = {
+        "exit_code": exit_code,
+        "finished_at": datetime.now(timezone.utc).isoformat(),  # noqa: UP017 - remote py3.8
+    }
     tmp = status_file.with_suffix(status_file.suffix + ".tmp")
     tmp.write_text(json.dumps(payload), encoding="utf-8")
     os.replace(tmp, status_file)

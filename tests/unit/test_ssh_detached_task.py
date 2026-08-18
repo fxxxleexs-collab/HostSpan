@@ -140,6 +140,8 @@ def test_ssh_detached_launcher_resource_is_readable() -> None:
     data = _launcher_bytes()
 
     assert b"Bundled launcher for detached persistent tasks" in data
+    assert b"from datetime import UTC" not in data
+    assert b"timezone.utc" in data
 
 
 def test_ssh_detached_sh_launcher_resource_is_readable() -> None:
@@ -190,6 +192,44 @@ async def test_ssh_detached_falls_back_to_sh_launcher_when_python_is_missing() -
     start_command = transport.connection.commands[1][0]
     assert "nohup sh .environment-runtime/bin/_launcher.sh" in start_command
     assert "--env DEMO=1" in start_command
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ssh_detached_python_probe_requires_python_38_or_newer() -> None:
+    endpoint = Endpoint(
+        name="ssh-demo",
+        provider_type="ssh",
+        config={
+            "hostname": "example.test",
+            "username": "envrt",
+            "known_hosts_file": "known_hosts",
+        },
+    )
+    transport = FakeSSHTransport(
+        "\n".join(
+            [
+                "ENVRT_LAUNCHER_PROBE_BEGIN",
+                "nohup_path=/usr/bin/nohup",
+                "sh_path=/bin/sh",
+                "python_command=",
+                "ENVRT_LAUNCHER_PROBE_END",
+            ]
+        )
+    )
+    provider = SSHDetachedExecutionProvider(transport=transport, sftp=FakeSFTPProvider())
+
+    await provider.start(
+        command=CommandSpec(argv=["echo", "hi"]),
+        cwd=None,
+        env={},
+        on_output=_ignore_output,
+        task_id="task_123",
+        endpoint=endpoint,
+    )
+
+    probe_command = transport.connection.commands[0][0]
+    assert "sys.version_info >= (3, 8)" in probe_command
 
 
 @pytest.mark.unit
