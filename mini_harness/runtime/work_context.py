@@ -925,6 +925,15 @@ class WorkContext:
             config=self.sandbox_config,
         )
 
+    def preserve_current_local_target(self) -> None:
+        if self.local_endpoint_id and self.local_environment_id and self.local_target_id:
+            return
+        if self.runtime_mode != "local":
+            return
+        self.local_endpoint_id = self.endpoint_id
+        self.local_environment_id = self.environment_id
+        self.local_target_id = self.target_id
+
     def _normalized_remote_root(self) -> str:
         root = self._workspace_policy().root_for("remote").replace("\\", "/").strip()
         if not root:

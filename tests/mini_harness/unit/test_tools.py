@@ -2062,6 +2062,43 @@ async def test_controller_configures_ssh_runtime_before_loop(fake_runtime) -> No
 
 
 @pytest.mark.asyncio
+async def test_controller_remote_connect_preserves_local_target(fake_runtime) -> None:
+    controller = AgentController(
+        fake_runtime,
+        FakeModelProvider([FinalDecision(type="final", summary="ok")]),
+        runtime_config=RuntimeConfig(
+            mode="local",
+            name="remote-test",
+            ssh=SSHRuntimeConfig(
+                hostname="example.test",
+                username="envrt",
+                known_hosts_file="known_hosts",
+                identity_file="id_ed25519",
+                use_ssh_agent=False,
+                remote_root="/srv/app",
+            ),
+        ),
+    )
+    session = controller.start_session("/local/project")
+    session.controller.runtime_config = session.controller.runtime_config.model_copy(
+        update={"mode": "ssh"}
+    )
+
+    await session.controller.ensure_remote_runtime(session.work_context)
+    result = await session.controller.build_tool_registry().execute(
+        "file",
+        {"action": "read", "path": "calculator.py", "target": "local"},
+        session.work_context,
+    )
+
+    assert session.work_context.runtime_mode == "ssh"
+    assert session.work_context.endpoint_id == "endpoint_ssh"
+    assert session.work_context.local_target() is not None
+    assert result.ok
+    assert result.metadata["file_location"]["endpoint_id"] == "endpoint_1"
+
+
+@pytest.mark.asyncio
 async def test_controller_prompts_for_ssh_password_secret(fake_runtime) -> None:
     approval = FakeInteractiveApprovalHandler(secret="runtime-password")
     controller = AgentController(
@@ -2171,6 +2208,8 @@ async def test_request_ssh_connection_opens_interactive_setup(fake_runtime) -> N
     assert result.ok
     assert context.runtime_mode == "ssh"
     assert context.endpoint_id == "endpoint_ssh"
+    assert context.local_target() is not None
+    assert context.local_target().endpoint_id == "endpoint_1"
     assert context.remote_environment.status == "ok"
     assert context.remote_environment.python3_path == "/usr/bin/python3"
     assert context.remote_tool_statuses["tmux"].status == "missing"
@@ -2188,6 +2227,39 @@ async def test_request_ssh_connection_opens_interactive_setup(fake_runtime) -> N
             "has_password_secret_ref": True,
         },
     ) in fake_runtime.requests
+
+
+@pytest.mark.asyncio
+async def test_request_ssh_connection_preserves_local_file_target(fake_runtime) -> None:
+    approval = FakeInteractiveApprovalHandler(secret="runtime-password")
+    registry = ToolRegistry()
+    for tool in build_runtime_tools(fake_runtime):
+        registry.register(tool)
+    context = WorkContext(
+        endpoint_id="endpoint_1",
+        environment_id="env_1",
+        target_id="target_1",
+        project_root="/local/project",
+        runtime_name="remote-test",
+        approval_handler=approval,
+    )
+
+    connected = await registry.execute(
+        "request_ssh_connection",
+        {"reason": "remote dependencies are needed"},
+        context,
+    )
+    read = await registry.execute(
+        "read_file",
+        {"path": "calculator.py", "target": "local"},
+        context,
+    )
+
+    assert connected.ok
+    assert read.ok
+    assert read.metadata["target"] == "local"
+    assert read.metadata["file_location"]["endpoint_id"] == "endpoint_1"
+    assert ("read_text", {"endpoint_id": "endpoint_1", "path": "calculator.py"}) in fake_runtime.requests
 
 
 @pytest.mark.asyncio

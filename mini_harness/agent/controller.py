@@ -159,6 +159,7 @@ class AgentController:
     async def ensure_remote_runtime(self, work_context: WorkContext) -> None:
         if self.runtime_config.mode != "ssh" or work_context.runtime_mode == "ssh":
             return
+        work_context.preserve_current_local_target()
         password_secret_ref = await self._prepare_ssh_password_secret()
         try:
             bundle = self._ensure_ssh_bundle_with_root(

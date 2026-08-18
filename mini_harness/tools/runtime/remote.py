@@ -350,6 +350,7 @@ class RequestSSHConnectionTool(RuntimeTool):
             context,
             runtime_config,
         )
+        context.preserve_current_local_target()
         try:
             bundle = await _ensure_ssh_bundle_with_root(
                 self.runtime.ensure_ssh,
