@@ -296,7 +296,7 @@ printf 'sh_path=%s\\n' "$(command -v sh 2>/dev/null || true)"
 envrt_python=''
 for envrt_candidate in {shlex.quote(preferred_python)} python3 python; do
   [ -n "$envrt_candidate" ] || continue
-  if command -v "$envrt_candidate" >/dev/null 2>&1; then
+  if command -v "$envrt_candidate" >/dev/null 2>&1 && "$envrt_candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1; then
     envrt_python="$envrt_candidate"
     break
   fi
