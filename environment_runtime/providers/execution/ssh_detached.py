@@ -2,7 +2,7 @@
 
 This mirrors ``local_detached`` but stores log/status files on the remote host
 and tails them over SFTP. The first implementation targets POSIX-like SSH
-servers with ``sh``, ``nohup``, and ``python3`` available.
+servers with ``nohup`` plus either Python or POSIX ``sh`` available.
 """
 
 from __future__ import annotations
@@ -34,13 +34,28 @@ STREAM = "stdout"
 
 
 def _launcher_bytes() -> bytes:
-    path = Path(__file__).with_name("_launcher.py")
+    return _resource_bytes("_launcher.py")
+
+
+def _sh_launcher_bytes() -> bytes:
+    return _resource_bytes("_launcher.sh")
+
+
+def _resource_bytes(name: str) -> bytes:
+    path = Path(__file__).with_name(name)
     if path.exists():
         return path.read_bytes()
-    data = pkgutil.get_data("environment_runtime.providers.execution", "_launcher.py")
+    data = pkgutil.get_data("environment_runtime.providers.execution", name)
     if data is None:
-        raise ProviderError("bundled launcher resource was not found")
+        raise ProviderError(f"bundled launcher resource was not found: {name}")
     return data
+
+
+@dataclass(frozen=True)
+class RemoteLauncher:
+    kind: str
+    command: str
+    remote_path: str
 
 
 @dataclass
@@ -49,6 +64,8 @@ class SSHDetachedHandle:
     transport: SSHTransportProvider
     sftp: SFTPFilesystemProvider
     remote_pid: int
+    launcher_kind: str
+    remote_launcher_file: str
     remote_log_file: str
     remote_status_file: str
     started_at: datetime
@@ -176,9 +193,9 @@ class SSHDetachedExecutionProvider:
         endpoint: Endpoint,
     ) -> SSHDetachedHandle:
         paths = self._paths(task_id, endpoint)
-        await self._upload_launcher(endpoint, paths["launcher"])
+        launcher = await self._prepare_launcher(endpoint, paths)
 
-        argv = self._launcher_argv(paths, command, cwd, env, endpoint)
+        argv = self._launcher_argv(launcher, paths, command, cwd, env)
         shell = self._detached_shell(argv)
         connection = await self.transport.connect(endpoint)
         try:
@@ -191,6 +208,8 @@ class SSHDetachedExecutionProvider:
             transport=self.transport,
             sftp=self.sftp,
             remote_pid=remote_pid,
+            launcher_kind=launcher.kind,
+            remote_launcher_file=launcher.remote_path,
             remote_log_file=paths["log"],
             remote_status_file=paths["status"],
             started_at=datetime.now(UTC),
@@ -227,6 +246,8 @@ class SSHDetachedExecutionProvider:
             transport=self.transport,
             sftp=self.sftp,
             remote_pid=remote_pid,
+            launcher_kind=str(ref.get("launcher_kind") or "unknown"),
+            remote_launcher_file=str(ref.get("remote_launcher") or ""),
             remote_log_file=log_file,
             remote_status_file=status_file,
             started_at=started_at,
@@ -239,8 +260,56 @@ class SSHDetachedExecutionProvider:
         handle.start()
         return SSHReattachOutcome(finished=False, alive=True, handle=handle)
 
-    async def _upload_launcher(self, endpoint: Endpoint, remote_launcher: str) -> None:
-        await self.sftp.write_bytes(endpoint, remote_launcher, _launcher_bytes())
+    async def _prepare_launcher(self, endpoint: Endpoint, paths: dict[str, str]) -> RemoteLauncher:
+        probe = await self._probe_launcher_support(endpoint)
+        if not probe.get("nohup_path"):
+            raise ProviderError(
+                "remote detached tasks require 'nohup', but it was not found on the SSH host"
+            )
+        python_command = probe.get("python_command")
+        if python_command:
+            launcher = RemoteLauncher(
+                kind="python",
+                command=python_command,
+                remote_path=paths["python_launcher"],
+            )
+            await self.sftp.write_bytes(endpoint, launcher.remote_path, _launcher_bytes())
+            return launcher
+        if probe.get("sh_path"):
+            launcher = RemoteLauncher(
+                kind="sh",
+                command="sh",
+                remote_path=paths["sh_launcher"],
+            )
+            await self.sftp.write_bytes(endpoint, launcher.remote_path, _sh_launcher_bytes())
+            return launcher
+        raise ProviderError(
+            "remote detached tasks require Python or POSIX sh; neither was found on the SSH host"
+        )
+
+    async def _probe_launcher_support(self, endpoint: Endpoint) -> dict[str, str]:
+        preferred_python = str(endpoint.config.get("remote_python") or self.remote_python)
+        probe = f"""
+printf 'ENVRT_LAUNCHER_PROBE_BEGIN\\n'
+printf 'nohup_path=%s\\n' "$(command -v nohup 2>/dev/null || true)"
+printf 'sh_path=%s\\n' "$(command -v sh 2>/dev/null || true)"
+envrt_python=''
+for envrt_candidate in {shlex.quote(preferred_python)} python3 python; do
+  [ -n "$envrt_candidate" ] || continue
+  if command -v "$envrt_candidate" >/dev/null 2>&1; then
+    envrt_python="$envrt_candidate"
+    break
+  fi
+done
+printf 'python_command=%s\\n' "$envrt_python"
+printf 'ENVRT_LAUNCHER_PROBE_END\\n'
+""".strip()
+        connection = await self.transport.connect(endpoint)
+        try:
+            result = await connection.run(probe, check=False)
+        except (OSError, asyncssh.Error) as exc:
+            raise ProviderError(f"failed to probe remote launcher support: {exc}") from exc
+        return _parse_key_value_block(_stdout_text(result.stdout), "ENVRT_LAUNCHER_PROBE")
 
     async def _read_status(self, endpoint: Endpoint, status_file: str) -> dict | None:
         try:
@@ -253,25 +322,27 @@ class SSHDetachedExecutionProvider:
     def _paths(self, task_id: str, endpoint: Endpoint) -> dict[str, str]:
         base = str(endpoint.config.get("remote_runtime_dir") or self.remote_runtime_dir)
         root = PurePosixPath(base)
+        python_launcher = (root / "bin" / "_launcher.py").as_posix()
         return {
             "runtime_dir": root.as_posix(),
-            "launcher": (root / "bin" / "_launcher.py").as_posix(),
+            "launcher": python_launcher,
+            "python_launcher": python_launcher,
+            "sh_launcher": (root / "bin" / "_launcher.sh").as_posix(),
             "log": (root / "logs" / f"{task_id}.log").as_posix(),
             "status": (root / "status" / f"{task_id}.status").as_posix(),
         }
 
     def _launcher_argv(
         self,
+        launcher: RemoteLauncher,
         paths: dict[str, str],
         command: CommandSpec,
         cwd: str | None,
         env: dict[str, str],
-        endpoint: Endpoint,
     ) -> list[str]:
-        remote_python = str(endpoint.config.get("remote_python") or self.remote_python)
         argv = [
-            remote_python,
-            paths["launcher"],
+            launcher.command,
+            launcher.remote_path,
             "--log",
             paths["log"],
             "--status",
@@ -302,6 +373,27 @@ def _stdout_text(stdout: bytes | str | None) -> str:
     if isinstance(stdout, bytes):
         return stdout.decode("utf-8", errors="replace")
     return stdout
+
+
+def _parse_key_value_block(output: str, marker_prefix: str) -> dict[str, str]:
+    begin = f"{marker_prefix}_BEGIN"
+    end = f"{marker_prefix}_END"
+    values: dict[str, str] = {}
+    in_block = False
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped == begin:
+            in_block = True
+            continue
+        if stripped == end:
+            break
+        if not in_block or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        if key:
+            values[key] = value.strip()
+    return values
 
 
 def _payload_exit_code(payload: dict | None) -> int | None:

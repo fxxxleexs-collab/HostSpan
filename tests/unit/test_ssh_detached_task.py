@@ -6,8 +6,12 @@ from types import SimpleNamespace
 import pytest
 
 from environment_runtime.core.commands import CommandSpec
-from environment_runtime.core.models import Task, TaskState
-from environment_runtime.providers.execution.ssh_detached import _launcher_bytes
+from environment_runtime.core.models import Endpoint, Task, TaskState
+from environment_runtime.providers.execution.ssh_detached import (
+    SSHDetachedExecutionProvider,
+    _launcher_bytes,
+    _sh_launcher_bytes,
+)
 from environment_runtime.services.endpoint import EndpointService
 from environment_runtime.services.environment import EnvironmentService
 from environment_runtime.services.task import TaskService
@@ -47,6 +51,52 @@ class FakeSSHDetachedProvider:
             "log": ".environment-runtime/logs/task.log",
             "status": ".environment-runtime/status/task.status",
         }
+
+
+class FakeRunResult:
+    def __init__(self, stdout: str = "", exit_status: int = 0) -> None:
+        self.stdout = stdout
+        self.exit_status = exit_status
+
+
+class FakeSSHConnection:
+    def __init__(self, probe_stdout: str) -> None:
+        self.probe_stdout = probe_stdout
+        self.commands: list[tuple[str, bool]] = []
+
+    async def run(self, command: str, check: bool = False) -> FakeRunResult:
+        self.commands.append((command, check))
+        if "ENVRT_LAUNCHER_PROBE_BEGIN" in command:
+            return FakeRunResult(self.probe_stdout)
+        if command.startswith("kill -0 "):
+            return FakeRunResult("", 0)
+        return FakeRunResult("4242\n")
+
+
+class FakeSSHTransport:
+    def __init__(self, probe_stdout: str) -> None:
+        self.connection = FakeSSHConnection(probe_stdout)
+
+    async def connect(self, endpoint: Endpoint) -> FakeSSHConnection:
+        _ = endpoint
+        return self.connection
+
+
+class FakeSFTPProvider:
+    def __init__(self) -> None:
+        self.writes: list[tuple[str, bytes]] = []
+
+    async def write_bytes(self, endpoint: Endpoint, path: str, data: bytes) -> None:
+        _ = endpoint
+        self.writes.append((path, data))
+
+    async def exists(self, endpoint: Endpoint, path: str) -> bool:
+        _ = endpoint, path
+        return False
+
+    async def read_bytes(self, endpoint: Endpoint, path: str) -> bytes:
+        _ = endpoint, path
+        return b""
 
 
 @pytest.fixture
@@ -92,6 +142,99 @@ def test_ssh_detached_launcher_resource_is_readable() -> None:
     assert b"Bundled launcher for detached persistent tasks" in data
 
 
+def test_ssh_detached_sh_launcher_resource_is_readable() -> None:
+    data = _sh_launcher_bytes()
+
+    assert b"POSIX fallback launcher for detached SSH tasks" in data
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ssh_detached_falls_back_to_sh_launcher_when_python_is_missing() -> None:
+    endpoint = Endpoint(
+        name="ssh-demo",
+        provider_type="ssh",
+        config={
+            "hostname": "example.test",
+            "username": "envrt",
+            "known_hosts_file": "known_hosts",
+        },
+    )
+    transport = FakeSSHTransport(
+        "\n".join(
+            [
+                "ENVRT_LAUNCHER_PROBE_BEGIN",
+                "nohup_path=/usr/bin/nohup",
+                "sh_path=/bin/sh",
+                "python_command=",
+                "ENVRT_LAUNCHER_PROBE_END",
+            ]
+        )
+    )
+    sftp = FakeSFTPProvider()
+    provider = SSHDetachedExecutionProvider(transport=transport, sftp=sftp)
+
+    handle = await provider.start(
+        command=CommandSpec(argv=["echo", "hi"]),
+        cwd="/srv/app",
+        env={"DEMO": "1"},
+        on_output=_ignore_output,
+        task_id="task_123",
+        endpoint=endpoint,
+    )
+    await handle.close()
+
+    assert handle.launcher_kind == "sh"
+    assert handle.remote_launcher_file == ".environment-runtime/bin/_launcher.sh"
+    assert sftp.writes[0][0] == ".environment-runtime/bin/_launcher.sh"
+    start_command = transport.connection.commands[1][0]
+    assert "nohup sh .environment-runtime/bin/_launcher.sh" in start_command
+    assert "--env DEMO=1" in start_command
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ssh_detached_prefers_python_launcher_when_available() -> None:
+    endpoint = Endpoint(
+        name="ssh-demo",
+        provider_type="ssh",
+        config={
+            "hostname": "example.test",
+            "username": "envrt",
+            "known_hosts_file": "known_hosts",
+        },
+    )
+    transport = FakeSSHTransport(
+        "\n".join(
+            [
+                "ENVRT_LAUNCHER_PROBE_BEGIN",
+                "nohup_path=/usr/bin/nohup",
+                "sh_path=/bin/sh",
+                "python_command=python3",
+                "ENVRT_LAUNCHER_PROBE_END",
+            ]
+        )
+    )
+    sftp = FakeSFTPProvider()
+    provider = SSHDetachedExecutionProvider(transport=transport, sftp=sftp)
+
+    handle = await provider.start(
+        command=CommandSpec(argv=["echo", "hi"]),
+        cwd=None,
+        env={},
+        on_output=_ignore_output,
+        task_id="task_123",
+        endpoint=endpoint,
+    )
+    await handle.close()
+
+    assert handle.launcher_kind == "python"
+    assert handle.remote_launcher_file == ".environment-runtime/bin/_launcher.py"
+    assert sftp.writes[0][0] == ".environment-runtime/bin/_launcher.py"
+    start_command = transport.connection.commands[1][0]
+    assert "nohup python3 .environment-runtime/bin/_launcher.py" in start_command
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_reattach_on_startup_supports_ssh_detached(runtime, ssh_environment) -> None:
@@ -124,3 +267,7 @@ async def test_reattach_on_startup_supports_ssh_detached(runtime, ssh_environmen
     assert provider.reattached_with_endpoint_id == endpoint.endpoint_id
     assert recovered.state == TaskState.SUCCEEDED
     assert recovered.exit_code == 0
+
+
+async def _ignore_output(stream: str, chunk: str) -> None:
+    _ = stream, chunk
