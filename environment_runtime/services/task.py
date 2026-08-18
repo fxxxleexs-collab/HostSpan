@@ -148,7 +148,12 @@ class TaskService:
             "endpoint_id": endpoint.endpoint_id,
             "remote_pid": handle.remote_pid,
             "remote_runtime_dir": endpoint.config.get("remote_runtime_dir", ".environment-runtime"),
-            "remote_launcher": provider._paths(task.task_id, endpoint)["launcher"],
+            "remote_launcher": getattr(
+                handle,
+                "remote_launcher_file",
+                provider._paths(task.task_id, endpoint)["launcher"],
+            ),
+            "launcher_kind": getattr(handle, "launcher_kind", "unknown"),
             "remote_log_file": handle.remote_log_file,
             "remote_status_file": handle.remote_status_file,
             "started_at": handle.started_at.isoformat(),

@@ -8,6 +8,10 @@ datas += [
     (
         'environment_runtime\\providers\\execution\\_launcher.py',
         'environment_runtime\\providers\\execution',
+    ),
+    (
+        'environment_runtime\\providers\\execution\\_launcher.sh',
+        'environment_runtime\\providers\\execution',
     )
 ]
 tmp_ret = collect_all('environment_runtime')
