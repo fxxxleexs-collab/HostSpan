@@ -3,12 +3,12 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "environment-runtime"
+name = "HostSpan"
 version = "0.1.0"
 description = "Stateful development environment runtime with workspaces, tasks, interactions, artifacts, and APIs."
 readme = "README.md"
 requires-python = ">=3.11"
-authors = [{name = "OpenAI Codex"}]
+authors = [{name = Chang Liu"}]
 dependencies = [
   "fastapi>=0.115,<1",
   "pydantic>=2.8,<3",
