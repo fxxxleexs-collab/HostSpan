@@ -15,7 +15,7 @@ from mini_harness.errors import ErrorCode, MiniHarnessError
 from mini_harness.permissions import PermissionDecision, PermissionRequest
 from mini_harness.runtime.client import HarnessRuntimeClient
 from mini_harness.runtime.ssh_trust import approve_trust_host_once, is_untrusted_host_key_error
-from mini_harness.runtime.work_context import RemoteToolStatus, WorkContext
+from mini_harness.runtime.work_context import RemoteEnvironmentInfo, RemoteToolStatus, WorkContext
 from mini_harness.tools.base import AgentTool
 from mini_harness.tools.runtime.common import TERMINAL_TASK_STATES, RuntimeTool
 from mini_harness.tools.schemas import EnsureRemoteToolInput, RequestSSHConnectionInput, ToolResult
@@ -397,10 +397,10 @@ class RequestSSHConnectionTool(RuntimeTool):
         context.remote_username = runtime_config.ssh.username
         context.remote_port = runtime_config.ssh.port
         context.remote_auth_method = runtime_config.ssh.auth_method
-        context.remote_os = "linux"
-        context.remote_shell = "bash"
+        context.remote_os = "unknown"
+        context.remote_shell = "unknown"
         context.refresh_workspace_policy()
-        await probe_remote_tool_status(self.runtime, context, tool="tmux")
+        await probe_remote_environment(self.runtime, context)
         context.record_runtime_transition(
             kind="remote",
             action="request_ssh_connection",
@@ -508,6 +508,86 @@ async def probe_remote_tool_status(
             active_after=context.remote_address_summary(),
         )
         return status
+
+
+async def probe_remote_environment(
+    runtime: HarnessRuntimeClient,
+    context: WorkContext,
+) -> RemoteEnvironmentInfo:
+    if context.runtime_mode != "ssh":
+        return context.record_remote_environment(
+            status="unknown",
+            reason="remote runtime is not connected",
+        )
+    try:
+        health = await asyncio.to_thread(runtime.endpoint_health, context.endpoint_id)
+        environment = health.get("environment") if isinstance(health, Mapping) else None
+        if not isinstance(environment, Mapping):
+            environment = {}
+        info = context.record_remote_environment(
+            status="ok",
+            os_name=_env_text(environment, "uname_s"),
+            arch=_env_text(environment, "uname_m"),
+            shell=_env_text(environment, "shell") or _first_available_shell(environment),
+            sh_path=_env_text(environment, "sh_path"),
+            bash_path=_env_text(environment, "bash_path"),
+            python3_path=_env_text(environment, "python3_path"),
+            python_path=_env_text(environment, "python_path"),
+            python3_version=_env_text(environment, "python3_version"),
+            python_version=_env_text(environment, "python_version"),
+            nohup_path=_env_text(environment, "nohup_path"),
+            tmux_path=_env_text(environment, "tmux_path"),
+            tmux_version=_env_text(environment, "tmux_version"),
+            sudo_path=_env_text(environment, "sudo_path"),
+        )
+        if info.tmux_path:
+            context.record_remote_tool_status(
+                "tmux",
+                "present",
+                version=info.tmux_version or info.tmux_path,
+            )
+        else:
+            context.record_remote_tool_status(
+                "tmux",
+                "missing",
+                reason="not found by SSH environment probe",
+            )
+        missing_core = [
+            name
+            for name, value in {
+                "sh": info.sh_path,
+                "nohup": info.nohup_path,
+                "python3": info.python3_path,
+                "python": info.python_path,
+            }.items()
+            if not value
+        ]
+        context.record_runtime_transition(
+            kind="remote",
+            action="probe_environment",
+            ref=context.remote_address_summary(),
+            summary=(
+                f"remote environment probe ok: os={info.os_name} arch={info.arch}; "
+                f"missing={','.join(missing_core) if missing_core else 'none'}"
+            ),
+            state="OK",
+            active_after=context.remote_address_summary(),
+        )
+        return info
+    except Exception as exc:
+        info = context.record_remote_environment(
+            status="unknown",
+            reason=f"probe failed: {exc}",
+        )
+        context.record_runtime_transition(
+            kind="remote",
+            action="probe_environment",
+            ref=context.remote_address_summary(),
+            summary="remote environment probe failed",
+            state="UNKNOWN",
+            active_after=context.remote_address_summary(),
+        )
+        return info
 
 
 async def _prepare_ssh_password_secret_for_tool(
@@ -791,6 +871,18 @@ def _terminal_observation_text(observation: Mapping[str, Any]) -> str:
     return str(observation.get("text") or "")
 
 
+def _env_text(environment: Mapping[str, Any], key: str) -> str | None:
+    value = environment.get(key)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _first_available_shell(environment: Mapping[str, Any]) -> str | None:
+    return _env_text(environment, "bash_path") or _env_text(environment, "sh_path")
+
+
 def _tmux_elevation_approval_request() -> ToolApprovalRequest:
     return ToolApprovalRequest(
         tool_name="remote",
@@ -827,5 +919,6 @@ __all__ = [
     "EnsureRemoteToolTool",
     "RequestSSHConnectionTool",
     "build_remote_tools",
+    "probe_remote_environment",
     "probe_remote_tool_status",
 ]

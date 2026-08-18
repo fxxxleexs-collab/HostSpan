@@ -23,7 +23,7 @@ from mini_harness.runtime.work_context import WorkContext
 from mini_harness.sync.config import SyncConfig
 from mini_harness.tools.adapter import build_runtime_tools
 from mini_harness.tools.registry import ToolRegistry
-from mini_harness.tools.runtime.remote import probe_remote_tool_status
+from mini_harness.tools.runtime.remote import probe_remote_environment
 from mini_harness.workspace import SandboxConfig
 
 
@@ -196,10 +196,10 @@ class AgentController:
         work_context.remote_username = self.runtime_config.ssh.username
         work_context.remote_port = self.runtime_config.ssh.port
         work_context.remote_auth_method = self.runtime_config.ssh.auth_method
-        work_context.remote_os = "linux"
-        work_context.remote_shell = "bash"
+        work_context.remote_os = "unknown"
+        work_context.remote_shell = "unknown"
         work_context.refresh_workspace_policy()
-        await probe_remote_tool_status(self.runtime_client, work_context, tool="tmux")
+        await probe_remote_environment(self.runtime_client, work_context)
 
     def _ensure_ssh_bundle_with_root(
         self,

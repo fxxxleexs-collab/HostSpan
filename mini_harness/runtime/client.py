@@ -21,6 +21,8 @@ class HarnessRuntimeClient(Protocol):
         trust_host_once: bool = False,
     ) -> dict[str, Any]: ...
 
+    def endpoint_health(self, endpoint_id: str) -> dict[str, Any]: ...
+
     def list_files(self, endpoint_id: str, path: str, recursive: bool = False) -> list[str]: ...
 
     def ensure_dir(self, endpoint_id: str, path: str) -> dict[str, Any]: ...
@@ -123,6 +125,9 @@ class SDKRuntimeClient:
             keepalive_interval=ssh.keepalive_interval,
             trust_host_once=trust_host_once,
         )
+
+    def endpoint_health(self, endpoint_id: str) -> dict[str, Any]:
+        return self.client.endpoints.health(endpoint_id)
 
     def list_files(self, endpoint_id: str, path: str, recursive: bool = False) -> list[str]:
         return self.client.files.list(endpoint_id, path, recursive)

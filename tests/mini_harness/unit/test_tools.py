@@ -2054,12 +2054,11 @@ async def test_controller_configures_ssh_runtime_before_loop(fake_runtime) -> No
     assert fake_runtime.requests[2:3] == [
         ("ensure_dir", {"endpoint_id": "endpoint_ssh", "path": "/srv/app"}),
     ]
-    assert ("observe_task", {
-        "task_id": "task_1",
-        "cursor": 0,
-        "max_chars": 4000,
-        "wait_seconds": 5.0,
-    }) in fake_runtime.requests
+    assert ("endpoint_health", {"endpoint_id": "endpoint_ssh"}) in fake_runtime.requests
+    assert not any(
+        name == "observe_task" and payload.get("max_chars") == 4000
+        for name, payload in fake_runtime.requests
+    )
 
 
 @pytest.mark.asyncio
@@ -2097,12 +2096,7 @@ async def test_controller_prompts_for_ssh_password_secret(fake_runtime) -> None:
             "has_password_secret_ref": True,
         },
     ) in fake_runtime.requests
-    assert ("observe_task", {
-        "task_id": "task_1",
-        "cursor": 0,
-        "max_chars": 4000,
-        "wait_seconds": 5.0,
-    }) in fake_runtime.requests
+    assert ("endpoint_health", {"endpoint_id": "endpoint_ssh"}) in fake_runtime.requests
 
 
 @pytest.mark.asyncio
@@ -2177,6 +2171,8 @@ async def test_request_ssh_connection_opens_interactive_setup(fake_runtime) -> N
     assert result.ok
     assert context.runtime_mode == "ssh"
     assert context.endpoint_id == "endpoint_ssh"
+    assert context.remote_environment.status == "ok"
+    assert context.remote_environment.python3_path == "/usr/bin/python3"
     assert context.remote_tool_statuses["tmux"].status == "missing"
     assert approval.secret_prompts == [
         "ssh_connection:remote dependencies are needed:remote-test",
