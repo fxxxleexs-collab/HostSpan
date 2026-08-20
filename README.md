@@ -11,6 +11,100 @@ HostSpan is a Python execution runtime for agent harnesses and developer automat
 - replayable terminal output
 - local broker and SDK access
 
+```mermaid
+flowchart TB
+    %% =========================
+    %% Style Definitions (配色与圆角)
+    %% =========================
+    classDef default fill:#ffffff,stroke:#cbd5e1,stroke-width:1.5px,color:#334155,rx:5px
+    classDef agent fill:#f3e8ff,stroke:#a855f7,stroke-width:2px,color:#4c1d95,rx:8px
+    classDef runtime fill:#e0f2fe,stroke:#0ea5e9,stroke-width:2px,color:#075985,rx:8px
+    classDef remote fill:#ffedd5,stroke:#f97316,stroke-width:2px,color:#7c2d12,rx:8px
+    classDef state fill:#fef9c3,stroke:#eab308,stroke-width:2px,color:#713f12,rx:8px
+    classDef important stroke:#ef4444,stroke-width:3px,stroke-dasharray: 5 5
+
+    %% =========================
+    %% Agent Layer
+    %% =========================
+    subgraph AGENT["🧠 Agent / Harness"]
+        A(("Agent Loop")):::agent
+        C[("Work Context<br/>files · tasks · terminal state")]:::state
+        A <--> C
+    end
+
+    %% =========================
+    %% Runtime
+    %% =========================
+    subgraph RUNTIME["⚙️ Environment Runtime"]
+        SDK["AgentRuntimeClient<br/>(Unified SDK)"]:::runtime
+
+        BROKER{"Runtime Broker<br/>request · stream · recovery"}:::runtime
+
+        subgraph SERVICES["Runtime Services"]
+            direction LR
+            FILE["📁 File Service"]:::runtime
+            CMD["⚡ Command Service"]:::runtime
+            TERM["🖥️ Terminal Service"]:::runtime
+        end
+
+        STATE[("State Normalization<br/>Task · Frame · Session")]:::state
+
+        SDK --> BROKER
+        BROKER --> SERVICES
+
+        SERVICES --> FILE
+        SERVICES --> CMD
+        SERVICES --> TERM
+
+        FILE --> STATE
+        CMD --> STATE
+        TERM --> STATE
+    end
+
+    %% =========================
+    %% Providers / Targets
+    %% =========================
+    subgraph TARGET["🎯 Execution Target"]
+        LOCAL["💻 Local Providers"]:::default
+
+        subgraph REMOTE["🌐 Remote Host (No Agent Daemon)"]
+            SSH{"SSH / SFTP"}:::remote
+            PROC["Remote Process<br/>(detached task)"]:::remote
+            TMUX["PTY / tmux<br/>(interactive session)"]:::remote
+            FS[("Remote Filesystem")]:::remote
+
+            SSH --> PROC
+            SSH --> TMUX
+            SSH --> FS
+        end
+    end
+
+    %% =========================
+    %% Relationships & Edges
+    %% =========================
+    %% Agent requests
+    A -->|"read / write / run / attach"| SDK
+
+    %% Runtime dispatch
+    FILE --> LOCAL
+    CMD --> LOCAL
+    TERM --> LOCAL
+
+    FILE --> SSH
+    CMD --> SSH
+    TERM --> SSH
+
+    %% Remote observations (Dashed)
+    FS -.->|"file metadata / content"| FILE
+    PROC -.->|"status / exit code / logs"| CMD
+    TMUX -.->|"screen / cursor / state"| TERM
+
+    %% Critical feedback loop (Thick)
+    STATE == "structured runtime state" ==> SDK
+    SDK == "observation" ==> C
+    C == "next decision" ==> A
+```
+
 HostSpan does **not** require a dedicated agent daemon on the remote machine, and it does not depend on any specific LLM or agent framework.
 
 ```text
