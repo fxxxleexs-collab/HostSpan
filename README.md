@@ -14,40 +14,28 @@ HostSpan is a Python execution runtime for agent harnesses and developer automat
 ```mermaid
 flowchart TB
     %% =========================
-    %% Style Definitions (配色与圆角)
-    %% =========================
-    classDef default fill:#ffffff,stroke:#cbd5e1,stroke-width:1.5px,color:#334155,rx:5px
-    classDef agent fill:#f3e8ff,stroke:#a855f7,stroke-width:2px,color:#4c1d95,rx:8px
-    classDef runtime fill:#e0f2fe,stroke:#0ea5e9,stroke-width:2px,color:#075985,rx:8px
-    classDef remote fill:#ffedd5,stroke:#f97316,stroke-width:2px,color:#7c2d12,rx:8px
-    classDef state fill:#fef9c3,stroke:#eab308,stroke-width:2px,color:#713f12,rx:8px
-    classDef important stroke:#ef4444,stroke-width:3px,stroke-dasharray: 5 5
-
-    %% =========================
     %% Agent Layer
     %% =========================
-    subgraph AGENT["🧠 Agent / Harness"]
-        A(("Agent Loop")):::agent
-        C[("Work Context<br/>files · tasks · terminal state")]:::state
+    subgraph AGENT["Agent / Harness"]
+        A["Agent Loop"]
+        C["Work Context<br/>files · tasks · terminal state"]
         A <--> C
     end
 
     %% =========================
     %% Runtime
     %% =========================
-    subgraph RUNTIME["⚙️ Environment Runtime"]
-        SDK["AgentRuntimeClient<br/>(Unified SDK)"]:::runtime
+    subgraph RUNTIME["Environment Runtime"]
+        SDK["AgentRuntimeClient<br/>Unified SDK"]
 
-        BROKER{"Runtime Broker<br/>request · stream · recovery"}:::runtime
+        BROKER["Runtime Broker<br/>request · stream · recovery"]
 
-        subgraph SERVICES["Runtime Services"]
-            direction LR
-            FILE["📁 File Service"]:::runtime
-            CMD["⚡ Command Service"]:::runtime
-            TERM["🖥️ Terminal Service"]:::runtime
-        end
+        SERVICES["Runtime Services"]
+        FILE["File Service"]
+        CMD["Command / Task Service"]
+        TERM["Terminal / Session Service"]
 
-        STATE[("State Normalization<br/>Task · Frame · Session")]:::state
+        STATE["State Normalization<br/>Task State · TerminalFrame · Session State"]
 
         SDK --> BROKER
         BROKER --> SERVICES
@@ -64,14 +52,14 @@ flowchart TB
     %% =========================
     %% Providers / Targets
     %% =========================
-    subgraph TARGET["🎯 Execution Target"]
-        LOCAL["💻 Local Providers"]:::default
+    subgraph TARGET["Execution Target"]
+        LOCAL["Local Providers"]
 
-        subgraph REMOTE["🌐 Remote Host (No Agent Daemon)"]
-            SSH{"SSH / SFTP"}:::remote
-            PROC["Remote Process<br/>(detached task)"]:::remote
-            TMUX["PTY / tmux<br/>(interactive session)"]:::remote
-            FS[("Remote Filesystem")]:::remote
+        subgraph REMOTE["Remote Host — no agent daemon"]
+            SSH["SSH / SFTP"]
+            PROC["Remote Process<br/>detached task"]
+            TMUX["PTY / tmux<br/>interactive session"]
+            FS["Remote Filesystem"]
 
             SSH --> PROC
             SSH --> TMUX
@@ -79,9 +67,6 @@ flowchart TB
         end
     end
 
-    %% =========================
-    %% Relationships & Edges
-    %% =========================
     %% Agent requests
     A -->|"read / write / run / attach"| SDK
 
@@ -94,15 +79,15 @@ flowchart TB
     CMD --> SSH
     TERM --> SSH
 
-    %% Remote observations (Dashed)
+    %% Remote observations
     FS -.->|"file metadata / content"| FILE
-    PROC -.->|"status / exit code / logs"| CMD
-    TMUX -.->|"screen / cursor / state"| TERM
+    PROC -.->|"status / exit code / stdout / stderr"| CMD
+    TMUX -.->|"screen / cursor / session state"| TERM
 
-    %% Critical feedback loop (Thick)
-    STATE == "structured runtime state" ==> SDK
-    SDK == "observation" ==> C
-    C == "next decision" ==> A
+    %% Critical feedback loop
+    STATE ==>|"structured runtime state"| SDK
+    SDK ==>|"observation"| C
+    C ==>|"next decision"| A
 ```
 
 ```mermaid
