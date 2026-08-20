@@ -90,144 +90,6 @@ flowchart TB
     C ==>|"next decision"| A
 ```
 
-```mermaid
-flowchart TB
-
-    USER["User Task"]
-
-    %% =========================
-    %% Agent Core
-    %% =========================
-    subgraph AGENT["Mini Harness Agent"]
-
-        SESSION["AgentSession / Controller<br/>runtime setup · model · config"]
-
-        LOOP["Agent Loop<br/>plan → act → observe → repeat"]
-
-        SM["State Machine<br/>PLANNING → TOOL_SELECTED<br/>→ EXECUTING → PROCESSING_RESULT"]
-
-        MODEL["Model Provider<br/>OpenAI-compatible / Anthropic"]
-
-        CTX["Agent Context<br/>conversation · tool results<br/>compaction"]
-
-        WORK["Work Context<br/>workspace · targets<br/>tasks · terminal sessions<br/>runtime activity"]
-
-        SESSION --> LOOP
-        LOOP --- SM
-
-        LOOP -->|"messages + tool definitions"| MODEL
-        MODEL -->|"ToolDecision / FinalDecision"| LOOP
-
-        CTX -->|"prompt context"| LOOP
-        WORK -->|"environment state"| LOOP
-    end
-
-
-    %% =========================
-    %% Tool Control Layer
-    %% =========================
-    subgraph TOOL_LAYER["Tool Control Layer"]
-
-        REG["Tool Registry<br/>dispatch + validation"]
-
-        PERM["Permission Policy<br/>sandbox boundaries"]
-
-        APPROVAL["Human Approval<br/>dangerous / sensitive actions"]
-
-        REG --> PERM
-        PERM --> APPROVAL
-    end
-
-    LOOP -->|"tool call"| REG
-
-
-    %% =========================
-    %% Model-facing facade
-    %% =========================
-    subgraph FACADE["Model-facing Semantic Tools"]
-
-        FILE["file<br/>list · read · write · edit"]
-
-        COMMAND["command<br/>run"]
-
-        TASK["task<br/>start · observe<br/>list · cancel"]
-
-        REMOTE["remote<br/>connect · ensure_tool"]
-
-        TERMINAL["terminal<br/>open · observe · command<br/>control · activate · close"]
-    end
-
-    REG --> FILE
-    REG --> COMMAND
-    REG --> TASK
-    REG --> REMOTE
-    REG --> TERMINAL
-
-
-    %% =========================
-    %% Internal tools
-    %% =========================
-    subgraph INTERNAL["Internal Tool Implementations"]
-
-        FILE_IMPL["File Operations"]
-        CMD_IMPL["Short Command"]
-        TASK_IMPL["Durable Task Management"]
-        REMOTE_IMPL["SSH / Remote Setup"]
-        TERM_IMPL["Interactive Session Management"]
-    end
-
-    FILE --> FILE_IMPL
-    COMMAND --> CMD_IMPL
-    TASK --> TASK_IMPL
-    REMOTE --> REMOTE_IMPL
-    TERMINAL --> TERM_IMPL
-
-
-    %% =========================
-    %% Runtime boundary
-    %% =========================
-    CLIENT["AgentRuntimeClient<br/>Unified Runtime SDK"]
-
-    FILE_IMPL --> CLIENT
-    CMD_IMPL --> CLIENT
-    TASK_IMPL --> CLIENT
-    REMOTE_IMPL --> CLIENT
-    TERM_IMPL --> CLIENT
-
-
-    subgraph RUNTIME["Environment Runtime"]
-
-        RTFILE["Files"]
-        RTCMD["Commands / Tasks"]
-        RTTERM["Terminal Sessions"]
-        RTREMOTE["Local / SSH Targets"]
-
-        RTREMOTE --- RTFILE
-        RTREMOTE --- RTCMD
-        RTREMOTE --- RTTERM
-    end
-
-    CLIENT --> RUNTIME
-
-
-    %% =========================
-    %% Feedback
-    %% =========================
-    RUNTIME -->|"output · state · metadata"| CLIENT
-
-    CLIENT -->|"ToolResult"| REG
-
-    REG -->|"result"| CTX
-    REG -->|"task / session / target state"| WORK
-
-    CTX -->|"next iteration"| LOOP
-    WORK -->|"next iteration"| LOOP
-
-
-    USER --> SESSION
-    LOOP -->|"FinalDecision"| USER
-```
-
 
 HostSpan does **not** require a dedicated agent daemon on the remote machine, and it does not depend on any specific LLM or agent framework.
 
@@ -507,7 +369,163 @@ print(client.sessions.tail_until(session["session_id"], "hello-from-tmux")["text
 
 ## Mini Harness
 
-This repository also includes `mini_harness`, a small coding-agent harness used to validate HostSpan through the same public SDK intended for external consumers.
+This repository also includes `mini_harness`, an optional reference coding-agent harness used to validate HostSpan through the same public SDK intended for external consumers. It is **not** required to use HostSpan; its purpose is to exercise the runtime as a real agent would and to provide a compact example of stateful local/remote integration.
+
+### Agent structure
+
+Mini Harness keeps the model loop small and treats HostSpan as the execution/state layer beneath it:
+
+```mermaid
+flowchart LR
+    U["User Task"] --> L["Agent Loop<br/>plan · act · observe"]
+
+    L <-->|"messages / decision"| M["LLM Provider"]
+    C["Agent Context<br/>conversation · tool results · compaction"] --> L
+
+    L -->|"tool call"| T["Semantic Tools<br/>file · command · task<br/>remote · terminal"]
+    T -->|"public SDK"| SDK["AgentRuntimeClient"]
+    SDK --> R["HostSpan Runtime<br/>Local / SSH"]
+
+    R -->|"structured runtime state"| W["Work Context<br/>workspace · targets<br/>tasks · terminal sessions"]
+    W -->|"next observation"| L
+```
+
+`Agent Context` tracks the conversation and model-facing history. `Work Context` tracks the execution environment: the active workspace/target, task inventory, terminal sessions, and recent runtime activity. The agent therefore does not have to reconstruct its current machine state from raw shell output on every turn.
+
+### Model-facing tool facade
+
+Mini Harness intentionally exposes **five semantic tool namespaces** instead of presenting every low-level runtime operation as a separate model tool. Each namespace validates an `action` and dispatches internally through the tool registry, permission/approval checks, and `AgentRuntimeClient`.
+
+| Tool | Main actions | Intended use |
+| --- | --- | --- |
+| `file` | `list`, `read`, `write`, `edit` | Workspace file operations. The same model-facing interface can target local files or remote SFTP-backed files. |
+| `command` | `run` | Short, clean, non-interactive commands such as checks, builds, tests, and inspections. If execution remains live, the returned task can be observed through `task`. |
+| `task` | `start`, `observe`, `list`, `cancel` | Long-running non-interactive work with persisted identity, logs, state, and recovery semantics. |
+| `remote` | `request_ssh_connection`, `ensure_tool` | Establish or request remote runtime access and check/install remote runtime prerequisites such as `tmux` when needed. |
+| `terminal` | `open`, `list`, `inspect`, `activate`, `observe`, `command`, `control`, `human_input`, `close` | Stateful interactive work: PTY/tmux sessions, REPLs, foreground processes, control keys, sensitive-input handoff, and session continuity. |
+
+This keeps the model-facing surface small while the implementation can still select the correct local/SSH provider, persistence behavior, terminal backend, and recovery path underneath.
+
+```text
+LLM decision
+    │
+    ▼
+semantic tool facade
+    │
+    ▼
+tool registry + validation
+    │
+    ├── permission / approval checks
+    ▼
+internal tool implementation
+    │
+    ▼
+AgentRuntimeClient
+    │
+    ▼
+HostSpan Runtime
+    │
+    ▼
+ToolResult + Work Context update
+    │
+    └──────────────► next agent turn
+```
+
+<details>
+<summary><strong>Detailed agent/tool flow</strong></summary>
+
+```mermaid
+flowchart TB
+
+    USER["User Task"]
+
+    subgraph AGENT["Mini Harness Agent"]
+        SESSION["AgentSession / Controller<br/>runtime setup · model · config"]
+        LOOP["Agent Loop<br/>plan → act → observe → repeat"]
+        SM["State Machine<br/>PLANNING → TOOL_SELECTED<br/>→ EXECUTING → PROCESSING_RESULT"]
+        MODEL["Model Provider<br/>OpenAI-compatible / Anthropic"]
+        CTX["Agent Context<br/>conversation · tool results<br/>compaction"]
+        WORK["Work Context<br/>workspace · targets<br/>tasks · terminal sessions<br/>runtime activity"]
+
+        SESSION --> LOOP
+        LOOP --- SM
+        LOOP -->|"messages + tool definitions"| MODEL
+        MODEL -->|"ToolDecision / FinalDecision"| LOOP
+        CTX -->|"prompt context"| LOOP
+        WORK -->|"environment state"| LOOP
+    end
+
+    subgraph CONTROL["Tool Control Layer"]
+        REG["Tool Registry<br/>dispatch + validation"]
+        PERM["Permission Policy<br/>sandbox boundaries"]
+        APPROVAL["Human Approval<br/>dangerous / sensitive actions"]
+        REG --> PERM --> APPROVAL
+    end
+
+    LOOP -->|"tool call"| REG
+
+    subgraph FACADE["Model-facing Semantic Tools"]
+        FILE["file<br/>list · read · write · edit"]
+        COMMAND["command<br/>run"]
+        TASK["task<br/>start · observe · list · cancel"]
+        REMOTE["remote<br/>request_ssh_connection · ensure_tool"]
+        TERMINAL["terminal<br/>interactive session lifecycle"]
+    end
+
+    REG --> FILE
+    REG --> COMMAND
+    REG --> TASK
+    REG --> REMOTE
+    REG --> TERMINAL
+
+    subgraph INTERNAL["Internal Tool Implementations"]
+        FILE_IMPL["File Operations"]
+        CMD_IMPL["Short Command"]
+        TASK_IMPL["Durable Task Management"]
+        REMOTE_IMPL["SSH / Remote Setup"]
+        TERM_IMPL["Interactive Session Management"]
+    end
+
+    FILE --> FILE_IMPL
+    COMMAND --> CMD_IMPL
+    TASK --> TASK_IMPL
+    REMOTE --> REMOTE_IMPL
+    TERMINAL --> TERM_IMPL
+
+    CLIENT["AgentRuntimeClient<br/>Unified Runtime SDK"]
+
+    FILE_IMPL --> CLIENT
+    CMD_IMPL --> CLIENT
+    TASK_IMPL --> CLIENT
+    REMOTE_IMPL --> CLIENT
+    TERM_IMPL --> CLIENT
+
+    subgraph RUNTIME["Environment Runtime"]
+        RTFILE["Files"]
+        RTCMD["Commands / Tasks"]
+        RTTERM["Terminal Sessions"]
+        RTREMOTE["Local / SSH Targets"]
+
+        RTREMOTE --- RTFILE
+        RTREMOTE --- RTCMD
+        RTREMOTE --- RTTERM
+    end
+
+    CLIENT --> RUNTIME
+    RUNTIME -->|"output · state · metadata"| CLIENT
+    CLIENT -->|"ToolResult"| REG
+    REG -->|"result"| CTX
+    REG -->|"task / session / target state"| WORK
+    CTX -->|"next iteration"| LOOP
+    WORK -->|"next iteration"| LOOP
+
+    USER --> SESSION
+    LOOP -->|"FinalDecision"| USER
+```
+
+</details>
+
+The integration boundary remains the public HostSpan SDK:
 
 ```text
 Mini Harness
