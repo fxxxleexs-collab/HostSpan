@@ -105,6 +105,145 @@ flowchart TB
     C == "next decision" ==> A
 ```
 
+```mermaid
+flowchart TB
+
+    USER["User Task"]
+
+    %% =========================
+    %% Agent Core
+    %% =========================
+    subgraph AGENT["Mini Harness Agent"]
+
+        SESSION["AgentSession / Controller<br/>runtime setup · model · config"]
+
+        LOOP["Agent Loop<br/>plan → act → observe → repeat"]
+
+        SM["State Machine<br/>PLANNING → TOOL_SELECTED<br/>→ EXECUTING → PROCESSING_RESULT"]
+
+        MODEL["Model Provider<br/>OpenAI-compatible / Anthropic"]
+
+        CTX["Agent Context<br/>conversation · tool results<br/>compaction"]
+
+        WORK["Work Context<br/>workspace · targets<br/>tasks · terminal sessions<br/>runtime activity"]
+
+        SESSION --> LOOP
+        LOOP --- SM
+
+        LOOP -->|"messages + tool definitions"| MODEL
+        MODEL -->|"ToolDecision / FinalDecision"| LOOP
+
+        CTX -->|"prompt context"| LOOP
+        WORK -->|"environment state"| LOOP
+    end
+
+
+    %% =========================
+    %% Tool Control Layer
+    %% =========================
+    subgraph TOOL_LAYER["Tool Control Layer"]
+
+        REG["Tool Registry<br/>dispatch + validation"]
+
+        PERM["Permission Policy<br/>sandbox boundaries"]
+
+        APPROVAL["Human Approval<br/>dangerous / sensitive actions"]
+
+        REG --> PERM
+        PERM --> APPROVAL
+    end
+
+    LOOP -->|"tool call"| REG
+
+
+    %% =========================
+    %% Model-facing facade
+    %% =========================
+    subgraph FACADE["Model-facing Semantic Tools"]
+
+        FILE["file<br/>list · read · write · edit"]
+
+        COMMAND["command<br/>run"]
+
+        TASK["task<br/>start · observe<br/>list · cancel"]
+
+        REMOTE["remote<br/>connect · ensure_tool"]
+
+        TERMINAL["terminal<br/>open · observe · command<br/>control · activate · close"]
+    end
+
+    REG --> FILE
+    REG --> COMMAND
+    REG --> TASK
+    REG --> REMOTE
+    REG --> TERMINAL
+
+
+    %% =========================
+    %% Internal tools
+    %% =========================
+    subgraph INTERNAL["Internal Tool Implementations"]
+
+        FILE_IMPL["File Operations"]
+        CMD_IMPL["Short Command"]
+        TASK_IMPL["Durable Task Management"]
+        REMOTE_IMPL["SSH / Remote Setup"]
+        TERM_IMPL["Interactive Session Management"]
+    end
+
+    FILE --> FILE_IMPL
+    COMMAND --> CMD_IMPL
+    TASK --> TASK_IMPL
+    REMOTE --> REMOTE_IMPL
+    TERMINAL --> TERM_IMPL
+
+
+    %% =========================
+    %% Runtime boundary
+    %% =========================
+    CLIENT["AgentRuntimeClient<br/>Unified Runtime SDK"]
+
+    FILE_IMPL --> CLIENT
+    CMD_IMPL --> CLIENT
+    TASK_IMPL --> CLIENT
+    REMOTE_IMPL --> CLIENT
+    TERM_IMPL --> CLIENT
+
+
+    subgraph RUNTIME["Environment Runtime"]
+
+        RTFILE["Files"]
+        RTCMD["Commands / Tasks"]
+        RTTERM["Terminal Sessions"]
+        RTREMOTE["Local / SSH Targets"]
+
+        RTREMOTE --- RTFILE
+        RTREMOTE --- RTCMD
+        RTREMOTE --- RTTERM
+    end
+
+    CLIENT --> RUNTIME
+
+
+    %% =========================
+    %% Feedback
+    %% =========================
+    RUNTIME -->|"output · state · metadata"| CLIENT
+
+    CLIENT -->|"ToolResult"| REG
+
+    REG -->|"result"| CTX
+    REG -->|"task / session / target state"| WORK
+
+    CTX -->|"next iteration"| LOOP
+    WORK -->|"next iteration"| LOOP
+
+
+    USER --> SESSION
+    LOOP -->|"FinalDecision"| USER
+```
+
+
 HostSpan does **not** require a dedicated agent daemon on the remote machine, and it does not depend on any specific LLM or agent framework.
 
 ```text
